@@ -186,6 +186,8 @@ Other keys: `space` freezes, `r` refreshes, `t` theme (dark, light, mono), `b` o
 
 **Cost.** The view reads data the page already collects; the extra work is one `/metrics` request and one memory reading every 2 seconds. `MOE_CACHE_MONITOR=0` turns the sampling off (the view then shows only the log). The page answers on this machine only: `/api/monitor` is not part of what `--ui-lan` allows.
 
+**Compare models.** The **⚖ Compare** button opens the benchmark-suite view: records of measured models side by side, one card per model, run a suite, import a record ([BENCH_SUITE](BENCH_SUITE.md)).
+
 ## 6. Chat
 
 The middle pane is the page's own chat. Start a model, type, press Enter (Shift+Enter for a new line). The answer appears as it is written.

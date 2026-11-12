@@ -2428,6 +2428,45 @@ class Foreign:
         return None
 
 
+# ---- the benchmark suite (TEST-1142): run it from the page, compare records, import, publish ----
+import subprocess as _sp, threading as _th, time as _time
+import moe_cache_suite as suite      # noqa: E402
+
+
+class SuiteJob:
+    """One `bench-suite run` at a time, started from the page as a child process (the same command a user types); state idle | running | done | error, the last output lines as progress."""
+    def __init__(self):
+        self.lock = _th.Lock(); self.proc = None; self.state = "idle"; self.lines = []; self.started = None; self.what = ""
+
+    def start(self, models, profile, out_dir):
+        with self.lock:
+            if self.state == "running":
+                raise ValueError("a suite is already running")
+            if profile not in ("quick", "standard", "night"):
+                raise ValueError("profile: quick, standard or night")
+            cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "moe_cache.py"), "bench-suite", "run", *models, "--profile", profile, "--out", out_dir]
+            self.proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, encoding="utf-8", errors="replace")
+            self.state = "running"; self.lines = []; self.started = _time.time(); self.what = f"{profile}: " + ", ".join(os.path.basename(m) for m in models)
+            _th.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
+
+    def _pump(self, proc):
+        for line in proc.stdout:
+            with self.lock:
+                self.lines = (self.lines + [line.rstrip()])[-40:]
+        rc = proc.wait()
+        with self.lock:
+            self.state = "done" if rc == 0 else "error"
+
+    def cancel(self):
+        with self.lock:
+            if self.proc is not None and self.state == "running":
+                self.proc.terminate(); self.state = "error"; self.lines.append("cancelled")
+
+    def status(self):
+        with self.lock:
+            return {"state": self.state, "what": self.what, "lines": self.lines[-12:], "seconds": round(_time.time() - self.started) if self.started and self.state == "running" else None}
+
+
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
@@ -2596,6 +2635,15 @@ class Handler(BaseHTTPRequestHandler):
                     with open(chat_path(q["id"]), encoding="utf-8") as fh:
                         return self.send(200, json.load(fh))
                 return self.send(200, {"dir": CHAT_DIR, "chats": list_chats()})
+            if u.path == "/api/suite/records":             # TEST-1142: the suite records of this user (private folder)
+                return self.send(200, {"dir": suite.default_dir(), "records": suite.list_records(suite.default_dir())})
+            if u.path == "/api/suite/compare":
+                ids = [x for x in (q.get("ids") or "").split(",") if x]
+                if not 1 <= len(ids) <= 6:
+                    raise ValueError("ids: one to six record ids, comma separated; the first is the reference")
+                return self.send(200, suite.compare_ids(suite.default_dir(), ids))
+            if u.path == "/api/suite/status":
+                return self.send(200, self.suite.status())
             if u.path == "/api/monitor":                   # GUI-041: the Monitor view (this machine only: it carries the whole log)
                 # R15-01: req=<id> only the requests after that id; layers=0 without the per-layer columns (a client that polls every second wants the small payload)
                 return self.send(200, self.runner.monitor_payload(float(q.get("since") or 0), int(q.get("log") or 0), tail=min(int(q.get("tail") or 0), 200) or None,
@@ -2637,7 +2685,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = -1
-        if not 0 <= n <= (MAX_CHAT_BODY if self.path in ("/api/chat", "/api/chats/save") else MAX_BODY):
+        if not 0 <= n <= (MAX_CHAT_BODY if self.path in ("/api/chat", "/api/chats/save", "/api/suite/import") else MAX_BODY):
             self.close_connection = True
             return self.send(413, {"error": "request too large"})
         try:
@@ -2694,6 +2742,20 @@ class Handler(BaseHTTPRequestHandler):
                         s["share_ram"] = True
                 self.runner.start(s, on_demand=bool(body.get("on_demand")))
                 return self.send(200, self.runner.status())
+            if self.path == "/api/suite/import":           # TEST-1142: a record pasted or dropped into the page
+                return self.send(200, {"id": suite.import_text(suite.default_dir(), str(body.get("text") or ""))})
+            if self.path == "/api/suite/publish":
+                return self.send(200, {"published": suite.set_published(suite.default_dir(), str(body.get("id") or ""), bool(body.get("published", True)))})
+            if self.path == "/api/suite/run":
+                if self.running():
+                    raise ValueError("stop the model that this page runs first: the suite starts every model itself and a second model would not fit in memory")
+                known = {m["path"] for m in find_models(self.store.folders())}
+                models = body.get("models") or []
+                if not isinstance(models, list) or not 1 <= len(models) <= 4 or any(m not in known for m in models):
+                    raise ValueError("models: one to four model files from the list of this page")
+                self.suite.start(models, str(body.get("profile") or "quick"), suite.default_dir()); return self.send(200, self.suite.status())
+            if self.path == "/api/suite/cancel":
+                self.suite.cancel(); return self.send(200, self.suite.status())
             if self.path == "/api/audit/start":            # GUI-043: re-score an answer in exact mode: {messages, answer, mode: auto | beside | pause}
                 msgs, ans, think = body.get("messages"), body.get("answer"), body.get("reasoning") or ""
                 if not isinstance(msgs, list) or not all(isinstance(m, dict) and isinstance(m.get("content"), (str, type(None))) for m in msgs) or not isinstance(ans, str) or not ans.strip() or not isinstance(think, str):
@@ -3226,7 +3288,7 @@ def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
         mc.say(line)
     downloads = dl.Downloads()
     downloads.on_change = lambda j: setattr(store, "models_at", 0)          # a finished download shows in the model list at once
-    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "audit": AuditJob(), "extra": {}, "lan_hosts": tuple(lan_hosts), "token": token or secrets.token_urlsafe(24)})
+    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "audit": AuditJob(), "suite": SuiteJob(), "extra": {}, "lan_hosts": tuple(lan_hosts), "token": token or secrets.token_urlsafe(24)})
     class _Srv(ThreadingHTTPServer):
         # http.server sets SO_REUSEADDR; on Windows that lets a second instance bind the same port (a double-clicked moe-cache.bat twice gave two competing
         # managers on 8070 and "forbidden" pages from the wrong token). Linux needs it to restart on a port in TIME_WAIT, Windows does not.

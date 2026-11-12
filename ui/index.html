@@ -336,6 +336,12 @@ button.danger { border-color:var(--ink); }
   .chathead { padding:6px 10px; }
   .msg.user { max-width:92%; }
 }
+/* TEST-1142: the Compare view */
+.cmprow{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:6px 0}.cmpwrap{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.cmplist{min-width:230px;max-width:280px;max-height:60vh;overflow:auto}.cmplist label{display:block;padding:3px 0;font-size:13px}.cmplist .small{display:block;margin-left:22px}
+.cmpgrid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));flex:1;min-width:240px}
+.cmpcard{border:1px solid var(--line,#333);border-radius:8px;padding:10px}.cmpcard h4{margin:0;font-size:15px}.cmpcard .sec{margin-top:8px;font-size:11px;text-transform:uppercase;opacity:.7;border-top:1px solid var(--line,#333);padding-top:4px}
+.cmpcard .row{display:flex;justify-content:space-between;gap:6px;font-size:13px}.cmpcard .better{color:var(--ok,#3fb27f)}.cmpcard .worse{color:var(--bad,#e0675c)}.cmpcard .flat{opacity:.6}.cmpcard .ref{font-size:11px;text-transform:uppercase;color:var(--accent,#e08a55)}
 </style>
 </head>
 <body>
@@ -350,6 +356,7 @@ button.danger { border-color:var(--ink); }
     <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
     <span class="startgrp"><button class="primary" id="start">Start</button><button class="primary" id="switch" hidden title="Stop the running model and start the selected one with the settings shown">Switch</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
     <button class="ghost" id="monpop" title="Small always-on-top-able window (360 x 480): speed, context, cache, SSD, memory and the last log lines">⧉ Mini</button>
+    <button class="ghost" id="cmpopen" title="Compare models: the benchmark suite, one card per model (private records on this computer)">⚖ Compare</button>
     <button class="ghost" id="monopen" title="Live monitor: speed, cache, SSD, memory, per-layer hits, plan and a searchable log">📈 Monitor</button>
     <button class="icon" id="tglRight" title="Status, context, files, agents, log">◧</button>
     <div class="menu rowmenu" id="rowmenu" role="menu" hidden></div>
@@ -487,6 +494,18 @@ button.danger { border-color:var(--ink); }
 <div id="chart-tip" hidden></div>
 
 <!-- ================= Monitor (GUI-041) ================= -->
+<div class="modal" id="cmpdlg" hidden><div class="box" role="dialog" aria-labelledby="cmptitle">
+  <div class="mhead"><h3 id="cmptitle">Compare models</h3><span class="small" id="cmpstate"></span><span class="grow" style="flex:1"></span><button id="cmpclose" class="ghost">Close</button></div>
+  <div class="small" style="margin:4px 0">Same tasks, same settings for every model; the first card is the reference. Records stay on this computer (private) until you publish one.</div>
+  <div class="cmprow">
+    <label class="small">Model <select id="cmpmodel" aria-label="Model to measure"></select></label>
+    <label class="small">Suite <select id="cmpprofile" aria-label="Suite size"><option value="quick">quick (about 15 min)</option><option value="standard">standard (about 2 h)</option><option value="night">night (hours, with the hard set)</option></select></label>
+    <button id="cmprun">Run suite</button><button id="cmpcancel" class="ghost" hidden>Cancel</button>
+    <label class="small ghostbtn">Import a record <input type="file" id="cmpfile" accept=".json,application/json" hidden></label>
+  </div>
+  <pre class="small" id="cmplog" hidden style="max-height:90px;overflow:auto;margin:4px 0"></pre>
+  <div class="cmpwrap"><div id="cmplist" class="cmplist" aria-label="Records"></div><div id="cmpcards" class="cmpgrid"></div></div>
+</div></div>
 <div class="modal" id="mondlg" hidden><div class="box" role="dialog" aria-labelledby="montitle">
   <div class="mhead">
     <h3 id="montitle">Monitor</h3><span class="small" id="monstate"></span><span class="grow" style="flex:1"></span>
@@ -2031,6 +2050,58 @@ async function monPop() {       // GUI-044: the small window is written into a s
 }
 $("monpop").onclick = monPop;
 $("monopen").onclick = monOpen; $("monclose").onclick = monClose;
+// ---- TEST-1142: the Compare view (suite records, comparison cards, running a suite) ----
+const CMP = { open: false, recs: [], sel: [], timer: null };
+const CMP_SECTIONS = { speed: "speed", memory: "memory", quality: "quality vs f16 KV", tasks: "tasks", tasks_on: "tasks", hard: "hard reasoning" };
+function cmpFmt(v, unit) { if (v === null || v === undefined) return "-"; const n = typeof v === "number" ? (Math.abs(v) >= 100 ? Math.round(v).toLocaleString("en-US") : String(+v.toPrecision(4))) : String(v); return n + (unit ? " " + unit : ""); }
+async function cmpOpen() {
+  CMP.open = true; $("cmpdlg").hidden = false; $("cmpmodel").innerHTML = (S.models || []).map(m => `<option value="${esc(m.path)}">${esc(m.name)}</option>`).join("");
+  await cmpLoad(); cmpPoll();
+}
+function cmpClose() { CMP.open = false; $("cmpdlg").hidden = true; clearTimeout(CMP.timer); }
+async function cmpLoad() {
+  let j; try { j = await api("/api/suite/records"); } catch (e) { $("cmpstate").textContent = e.message; return; }
+  CMP.recs = j.records; CMP.sel = CMP.sel.filter(id => CMP.recs.some(r => r.id == id));
+  $("cmplist").innerHTML = CMP.recs.length ? CMP.recs.map(r => `<label><input type="checkbox" data-cid="${esc(r.id)}" ${CMP.sel.includes(r.id) ? "checked" : ""}> ${esc(r.name)} ${esc(r.quant)}<span class="small">${esc(r.created)} · ${esc(r.profile || "")} · ${r.published ? "published" : "private"} ${r.published ? "" : `<a href="#" data-cpub="${esc(r.id)}">publish</a>`}</span></label>`).join("") : '<div class="small">No records yet. Run a suite or import a record.</div>';
+  await cmpCards();
+}
+async function cmpCards() {
+  if (!CMP.sel.length) { $("cmpcards").innerHTML = '<div class="small">Tick two or more records to compare them; the first one ticked is the reference.</div>'; return; }
+  let r; try { r = await api("/api/suite/compare?ids=" + encodeURIComponent(CMP.sel.join(","))); } catch (e) { $("cmpcards").textContent = e.message; return; }
+  $("cmpcards").innerHTML = r.meta.map((m, i) => {
+    let last = "", rows = "";
+    for (const x of r.rows) {
+      if (x.section != last) { rows += `<div class="sec">${esc(CMP_SECTIONS[x.section] || x.section)}</div>`; last = x.section; }
+      const d = x.deltas_pct[i], mk = x.marks[i];
+      rows += `<div class="row"><span>${esc(x.label)}</span><span>${esc(cmpFmt(x.values[i], x.unit))}${d === null || !mk ? "" : ` <span class="${mk == "=" ? "flat" : mk}">${mk == "=" ? "=" : (d >= 0 ? "+" : "") + Math.round(d) + " %"}</span>`}</span></div>`;
+    }
+    return `<div class="cmpcard"><div class="ref">${i == 0 ? "reference" : "vs " + esc(r.records[0])}</div><h4>${esc(m.name)} ${esc(m.quant)}</h4><div class="small">${esc(m.created)} · ${m.published ? "published" : "private"}</div>${rows}</div>`;
+  }).join("") + (r.skipped.length ? `<div class="small" style="grid-column:1/-1">${r.skipped.map(esc).join("<br>")}</div>` : "");
+}
+async function cmpPoll() {
+  clearTimeout(CMP.timer); if (!CMP.open) return;
+  let st; try { st = await api("/api/suite/status"); } catch (e) { return; }
+  const run = st.state == "running"; $("cmprun").disabled = run; $("cmpcancel").hidden = !run; $("cmplog").hidden = !st.lines.length;
+  $("cmplog").textContent = st.lines.join("\n"); $("cmpstate").textContent = run ? `running ${st.what} (${st.seconds} s)` : (st.state == "error" ? "the last run failed" : "");
+  if (CMP.last == "running" && st.state == "done") await cmpLoad();
+  CMP.last = st.state; CMP.timer = setTimeout(cmpPoll, run ? 3000 : 8000);
+}
+$("cmpopen").onclick = cmpOpen; $("cmpclose").onclick = cmpClose;
+$("cmplist").addEventListener("change", ev => { const id = ev.target.dataset && ev.target.dataset.cid; if (!id) return; CMP.sel = ev.target.checked ? CMP.sel.concat([id]) : CMP.sel.filter(x => x != id); cmpCards(); });
+$("cmplist").addEventListener("click", async ev => {
+  const id = ev.target.dataset && ev.target.dataset.cpub; if (!id) return; ev.preventDefault();
+  if (!await askConfirm("Publish this record?\n\nIt only sets a flag on this computer: nothing is uploaded and nothing shows it on the public board until you review it.", "Publish")) return;
+  try { await api("/api/suite/publish", { id }); await cmpLoad(); } catch (e) { showErr(e.message); }
+});
+$("cmprun").onclick = async () => {
+  try { await api("/api/suite/run", { models: [$("cmpmodel").value], profile: $("cmpprofile").value }); cmpPoll(); } catch (e) { showErr(e.message); }
+};
+$("cmpcancel").onclick = async () => { try { await api("/api/suite/cancel", {}); cmpPoll(); } catch (e) { showErr(e.message); } };
+$("cmpfile").onchange = async ev => {
+  const f = ev.target.files[0]; if (!f) return; ev.target.value = "";
+  try { const id = (await api("/api/suite/import", { text: await f.text() })).id; if (!CMP.sel.includes(id)) CMP.sel.push(id); await cmpLoad(); } catch (e) { showErr(e.message); }
+};
+
 $("monpause").onclick = () => { M.paused = !M.paused; $("monpause").textContent = M.paused ? "Resume" : "Pause"; if (!M.paused) monPoll(); };
 $("monrange").onchange = () => monPaint();
 $("monq").oninput = () => monLog(true); $("monlevel").onchange = () => monLog(true); document.querySelectorAll(".monsrc").forEach(e => e.onchange = () => monLog(true));

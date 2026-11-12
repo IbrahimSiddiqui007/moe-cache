@@ -143,7 +143,7 @@ def measure(url, name, quant, prof, model_path=None, kv_flags=(), tmp=None, work
 
 
 def cmd_run(a):
-    out = a.out or os.path.join(ROOT, "benchmarks", "suites"); os.makedirs(out, exist_ok=True); recs = []
+    out = a.out or S.default_dir(); os.makedirs(out, exist_ok=True); recs = []
     targets = [(None, a.name or "server", a.quant, a.url)] if a.url else [(m, os.path.splitext(os.path.basename(m))[0], a.quant, None) for m in a.models]
     for model, name, quant, url in targets:
         proc = None

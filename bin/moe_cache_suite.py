@@ -168,6 +168,71 @@ def load(path):
         return json.load(f)
 
 
+# ---- the records folder (private by default) and what the control page needs ---------------------------------------------------------------------
+def default_dir():
+    """benchmarks/suites in a checkout (git-ignored), else a folder in the user's data directory. Private to this user."""
+    repo = os.path.join(HERE, "..", "benchmarks")
+    if os.path.isdir(repo):
+        return os.path.abspath(os.path.join(repo, "suites"))
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "moe-cache", "suites")
+
+
+ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
+MAX_RECORD_BYTES = 5_000_000
+
+
+def record_path(d, rid):
+    if not ID_RE.match(rid or ""):
+        raise ValueError("bad record id")
+    return os.path.join(d, rid + ".json")
+
+
+def list_records(d):
+    out = []
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.endswith(".json"):
+            continue
+        try:
+            r = load(os.path.join(d, f))
+        except (OSError, ValueError):
+            continue
+        if r.get("suite_record_schema") != SUITE_SCHEMA:
+            continue
+        m = r.get("model", {})
+        out.append({"id": r.get("id", f[:-5]), "name": m.get("name", "?"), "quant": m.get("quant", ""), "created": r.get("created_utc", ""), "profile": r.get("profile", ""), "published": bool(r.get("published")), "sections": sorted(r.get("sections", {}))})
+    return sorted(out, key=lambda x: x["created"], reverse=True)
+
+
+def import_text(d, text):
+    """Validate a pasted or dropped record and store it; returns its id. Never overwrites a record with another content (the id carries a hash of the content)."""
+    if len(text) > MAX_RECORD_BYTES:
+        raise ValueError("record too large")
+    rec = json.loads(text); probs = validate_record(rec) if isinstance(rec, dict) else ["not an object"]
+    if probs:
+        raise ValueError("invalid record: " + "; ".join(probs[:3]))
+    rid = rec["id"]; path = record_path(d, rid)
+    os.makedirs(d, exist_ok=True)
+    if os.path.exists(path) and load(path) != rec:
+        raise ValueError(f"a different record with the id {rid} exists")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rec, f, indent=1)
+    return rid
+
+
+def set_published(d, rid, value=True):
+    path = record_path(d, rid); rec = load(path); rec["published"] = bool(value)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rec, f, indent=1)
+    return rec["published"]
+
+
+def compare_ids(d, ids, noise=2.0):
+    recs = [load(record_path(d, i)) for i in ids]
+    res = compare(recs, noise); res["meta"] = [{"id": r["id"], "name": r["model"].get("name", "?"), "quant": r["model"].get("quant", ""), "size_gb": r["model"].get("size_gb"), "created": r.get("created_utc", ""), "published": bool(r.get("published")), "machine": r.get("machine", {}).get("platform", "")} for r in recs]
+    return res
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0]); sp = ap.add_subparsers(dest="cmd", required=True)
     v = sp.add_parser("validate"); v.add_argument("files", nargs="+")
