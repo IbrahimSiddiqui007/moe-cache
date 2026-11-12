@@ -23,6 +23,7 @@ sys.path.insert(0, HERE)
 
 CHARS_PER_TOKEN = 3.0       # deliberately low: a turn is judged too big a little early, never too late
 MARGIN = 48                 # tokens of slack for the chat template around a turn
+CPT_MARGIN = 1.03           # TEST-905: without /tokenize the sizes follow the characters per token seen so far, plus this 3 % margin
 MIN_PROMPT_N = 64           # a turn that read fewer new tokens does not enter the prompt-speed mean (timer noise)
 MIN_PREDICTED_N = 16        # the same for decode speed
 SYSTEM = "You are a careful coding assistant working in the user's repository. Answer briefly."
@@ -348,6 +349,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
     hint = ANSWER_HINT if hint_text is None else hint_text
     turns, history = [], [{"role": "system", "content": SYSTEM if system is None else system}]
     prev_total, n, stop = 0, 0, "max turns reached"
+    cpt = CHARS_PER_TOKEN       # TEST-905: lowered to the densest characters-per-token ratio the server's own prompt counts showed (never raised above the default)
     use_tokenize = True
     t_start = time.time()
     while max_turns is None or n < max_turns:
@@ -361,7 +363,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             if real is None and use_tokenize:
                 use_tokenize = False                       # no /tokenize: the guess below, and it is not asked again
                 log("  (the server has no /tokenize: turns are sized by characters, with the safety net of a context-full answer)")
-            est = (real + MARGIN) if real is not None else (len(full) / CHARS_PER_TOKEN + MARGIN)
+            est = (real + MARGIN) if real is not None else (len(full) / cpt * CPT_MARGIN + MARGIN)
             if prev_total + est + max_tokens <= ctx:
                 pick = cand; break
             if script:
@@ -387,6 +389,8 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
         s1 = stats.snapshot() if stats else None
         tm, us = r["timings"] or {}, r["usage"] or {}
         prompt_len = (tm["prompt_n"] + tm.get("cache_n", 0)) if "prompt_n" in tm else us.get("prompt_tokens")
+        if prompt_len and not use_tokenize:
+            cpt = min(cpt, sum(len(m["content"]) for m in history) / prompt_len)     # chars of this request / the tokens the server counted for it
         pred_n = tm.get("predicted_n", us.get("completion_tokens"))
         row = {"turn": n, "kind": pick["kind"], "user_chars": len(pick["text"]), "error": r["error"],
                "tokens_added": (prompt_len - prev_total) if prompt_len is not None else None,
