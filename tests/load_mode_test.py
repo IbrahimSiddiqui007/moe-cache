@@ -5,7 +5,6 @@ import os, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
-sys.path.insert(0, os.path.join(HERE, "..", "planner"))
 import moe_cache as mc  # noqa: E402
 
 FAILS = []
@@ -40,8 +39,8 @@ cmd = ["llama-server", "-m", f, "--load-mode", "mmap"]
 r = lambda m=M(), a=None, c=cmd, e=(), mod=f, sp=5.0: mc.load_mode_low_ram(a or A(), c, list(e), m, mod, sp)
 
 why = r(M(avail=14 * GIB))
-check(why and "13.5 GiB" in why and "14.0 GiB of RAM is available" in why and "--load-mode none" in why and "5.0 GiB of it stays in RAM" in why, f"14 GiB available for a 13.5 GiB file: none, and the note says the figures ({why and why[:80]})")
-check(r(M(avail=17 * GIB)) is not None, "17 GiB available (under file + 4 = 17.5): none")
+check(why and "13.5 GiB" in why and "14.0 GiB of RAM is available" in why and "stage about 8.5 GiB" in why and "--load-mode none" in why and "5.0 GiB stays in RAM" in why, f"14 GiB available for a 13.5 GiB file: none, and the note says the figures ({why and why[:80]})")
+check(r(M(avail=16 * GIB)) is not None and r(M(avail=17 * GIB)) is None, "critic L3: mmap stages file - spill = 8.5 GiB, plus the reserve twice (8): 16 GiB available -> none, 17 -> mmap")
 check(r(M(avail=18 * GIB)) is None, "18 GiB available (over file + 4): mmap stays")
 check(r(M(windows=False, avail=1 * GIB)) is None, "Linux: mmap stays (page cache serves it, no spike measured)")
 check(r(M(avail=14 * GIB), A(exact=True)) is None and r(M(avail=14 * GIB), A(stock=True)) is None, "--exact and --stock: nothing changed")
@@ -112,5 +111,10 @@ mode, say = stage(19 * GIB, fits=False, over=0.7, windows=False)
 check(mode == "mmap", f"Linux: mmap stays ({mode})")
 mode, say = stage(19 * GIB, fits=False, over=0.7, extra=["--load-mode", "mmap"])
 check(mode == "mmap" and "takes almost all" not in say, f"a --load-mode of your own: kept ({mode})")
+# critic L2: the commit check must not turn the launcher's own --load-mode none back into mmap
+mode, say = stage(19 * GIB, fits=False, over=0.7)
+check(mode == "none" and mc.LOAD_NONE_BY_RULE[0] is True, "the rule's own none is marked for the commit check")
+mode, say = stage(30 * GIB, fits=False, over=4.0)
+check(mode == "mmap" and mc.LOAD_NONE_BY_RULE[0] is False, "mmap: not marked")
 print("load mode test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)
