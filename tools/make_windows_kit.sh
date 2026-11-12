@@ -28,7 +28,7 @@ cp "$X/desktop/src-tauri/icons/icon.ico" "$K/moe-cache.ico"
 MCXX="${MINGW_CXX:-x86_64-w64-mingw32-g++}"; WRES="${MCXX%g++}windres"; command -v "$WRES" >/dev/null || WRES=x86_64-w64-mingw32-windres
 printf '1 ICON "%s"\n' "$K/moe-cache.ico" > "$X/win_launcher.rc"
 "$WRES" -i "$X/win_launcher.rc" -o "$X/win_launcher_res.o" || { echo "FAIL: windres could not embed the icon"; exit 1; }
-"$MCXX" -x c -O2 -Wall -municode -static -DMC_VERSION="\"$V\"" -o "$K/moe-cache.exe" "$X/tools/win_launcher.c" -x none "$X/win_launcher_res.o"   # MINGW_CXX as build.sh
+"$MCXX" -x c -O2 -Wall -municode -static -DMC_VERSION="\"$V\"" -Wl,--no-insert-timestamp -o "$K/moe-cache.exe" "$X/tools/win_launcher.c" -x none "$X/win_launcher_res.o"   # MINGW_CXX as build.sh
 # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
 for d in "$K"/ggml-moe-cache-api*.dll "$K/moe-cache.exe"; do
   i=$(x86_64-w64-mingw32-objdump -p "$d" | grep "DLL Name") || { echo "FAIL: no import list for $d"; exit 1; }
@@ -45,6 +45,7 @@ cp "$X/LICENSE" "$X/CHANGELOG.md" "$X/models.json" "$K/"     # the model catalog
 # one download for friends: the official, unmodified llama.cpp Vulkan build in llama\ (MIT; its licence is copied next to it). Pinned and checked
 # against the release asset's sha256; MOE_CACHE_KIT_NO_LLAMA=1 builds the kit without it (the launcher then searches C:\llama and the rest as before)
 LLAMA_TAG=b12207; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=c8c84eff8b7eae83602d3cf2dd6defe16c47d1011b4a2514905c1817e3a909ca
+LLAMA_LICENSE_SHA=94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d     # sha256 of the LICENSE file at that tag (update with LLAMA_TAG)
 # LLAMA_PATCHED_WIN_DIR=DIR (the release workflow sets it: the unpacked llama_patched.yml server + ggml-vulkan.dll) bundles OUR patched build of the same pin
 # instead, every patch built in and off (tools/bundle_llama_patched.sh). Unset = the official build as below.
 if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_WIN_DIR:-}" ]; then
@@ -52,13 +53,15 @@ if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_WIN_DIR:-}" 
 elif [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ]; then
   Z="${LLAMA_ZIP_CACHE:-$X}/$LLAMA_ZIP"
   # retried with backoff, and skipped when the zip is already in the cache folder with the right sha256 (CI restores LLAMA_ZIP_CACHE with actions/cache)
-  mkdir -p "$(dirname "$Z")"; "$X/tools/ci/fetch.sh" "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_ZIP" "$Z" "$LLAMA_SHA" || exit 1
+  # a shared, predictable cache folder lets another user on a build host plant the zip between the download, the hash check and the unpacking (as in bundle_llama_linux.sh, AUD-064)
+  CD="$(dirname "$Z")"; mkdir -p "$CD"; [ -O "$CD" ] && [ ! -L "$CD" ] || { echo "FAIL: $CD is not a folder you own (set LLAMA_ZIP_CACHE to one)"; exit 1; }
+  chmod go-w "$CD"; "$X/tools/ci/fetch.sh" "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_ZIP" "$Z" "$LLAMA_SHA" || exit 1
   echo "$LLAMA_SHA  $Z" | sha256sum -c - >/dev/null || { echo "FAIL: $LLAMA_ZIP sha256 does not match the release asset"; exit 1; }
   mkdir -p "$K/llama"
   python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$Z" "$K/llama"
   [ -f "$K/llama/llama-server.exe" ] || { echo "FAIL: no llama-server.exe in $LLAMA_ZIP"; exit 1; }
-  "$X/tools/ci/fetch.sh" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$LLAMA_TAG/LICENSE" "$(dirname "$Z")/LICENSE-llama.cpp-$LLAMA_TAG.txt" || exit 1   # pinned by the tag; cached next to the zip
-  cp "$(dirname "$Z")/LICENSE-llama.cpp-$LLAMA_TAG.txt" "$K/llama/LICENSE-llama.cpp.txt"
+  "$X/tools/ci/fetch.sh" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$LLAMA_TAG/LICENSE" "$CD/LICENSE-llama.cpp-$LLAMA_TAG.txt" "$LLAMA_LICENSE_SHA" || exit 1   # pinned by the tag and by its sha256; cached next to the zip
+  cp "$CD/LICENSE-llama.cpp-$LLAMA_TAG.txt" "$K/llama/LICENSE-llama.cpp.txt"
   printf 'Official llama.cpp %s Vulkan build for Windows x64, unmodified (%s, sha256 %s), from\r\nhttps://github.com/ggml-org/llama.cpp/releases/tag/%s\r\nLicence: MIT (LICENSE-llama.cpp.txt). moe-cache finds it here; set LLAMA_SERVER to use another build.\r\n' \
     "$LLAMA_TAG" "$LLAMA_ZIP" "$LLAMA_SHA" "$LLAMA_TAG" > "$K/llama/README-moe-cache.txt"
 fi
@@ -73,14 +76,6 @@ git rev-parse --short HEAD > "$K/REVISION"     # the kit has no .git: the benchm
 printf '@echo off\r\nrem moe-cache control page: double-click. "moe-cache.bat --shortcut" adds it to the Start menu.\r\ncall "%%~dp0bin\\moe-cache-ui.bat" %%*\r\n' > "$K/moe-cache.bat"
 find "$K" -name __pycache__ -prune -exec rm -rf {} +
 mkdir -p dist
-python3 - "$X/kit" "$N" "$PWD/dist/$N.zip" <<'EOF'
-import os, sys, zipfile
-root, name, out = sys.argv[1:]
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-    for d, _, files in sorted(os.walk(os.path.join(root, name))):
-        for f in sorted(files):
-            p = os.path.join(d, f)
-            z.write(p, os.path.relpath(p, root))
-EOF
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}" python3 tools/reproducible_zip.py "$X/kit" "$N" "$PWD/dist/$N.zip"     # same commit, same bytes (PACKAGING-828)
 ( cd dist && sha256sum "$N.zip" > SHA256SUMS-windows && cat SHA256SUMS-windows )
 echo "built from commit $(git rev-parse --short HEAD) -> dist/$N.zip"

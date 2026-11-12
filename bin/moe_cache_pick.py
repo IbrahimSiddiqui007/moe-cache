@@ -808,7 +808,7 @@ def rec_lines(r):
     return out
 
 
-DOWNLOAD_HINT = ("Run the same command again to continue: `hf download` keeps the files that finished and resumes a half-written one. "
+DOWNLOAD_HINT = ("Run the same command again to continue: `hf download` normally keeps the files that finished (we have not tested that it also resumes a half-written one). "
                  "If it fails again, a proxy or VPN may be in the way: set HTTPS_PROXY for your proxy, or switch the VPN off, and retry.")
 
 
