@@ -323,8 +323,8 @@ jobs:
         run: |
           V="${TAG#v}"
           assets=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
-          for pat in "moe-cache-v$V-linux-x86_64.tar.gz" "SHA256SUMS" "install.sh" "install.ps1" "moe-cache-v$V-windows-x64.zip" "SHA256SUMS-windows"; do
+          for pat in "moe-cache-v$V-linux-x86_64.tar.gz" "moe-cache-v$V-ggml0.26-linux-x86_64.tar.gz" "SHA256SUMS" "install.sh" "install.ps1" "moe-cache-v$V-windows-x64.zip" "SHA256SUMS-windows"; do
             echo "$assets" | grep -Fxq "$pat" || { echo "FAIL: $pat is not attached to $TAG; the release stays a draft"; exit 1; }
           done
-          echo "all six files are attached to the draft $TAG. Smoke-test the draft's own files, then publish: tools/publish_release.sh $TAG"
+          echo "all seven files are attached to the draft $TAG. Smoke-test the draft's own files, then publish: tools/publish_release.sh $TAG"
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq '"isDraft=\(.isDraft)"'

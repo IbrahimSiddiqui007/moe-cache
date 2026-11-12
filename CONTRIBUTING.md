@@ -25,7 +25,7 @@ Models bigger than your RAM: add `--limit GB` (hard cgroup, swap off). Never run
 Use `python3 bin/moe_cache.py bench-report MODEL.gguf` (or **Share my numbers** on the control page; `--chat` runs a multi-turn conversation, see docs/SHARE_YOUR_NUMBERS.md); runs that were not clean (hot CPU, background load) are flagged and must be repeated, not quoted. Differences below 10 % need paired runs in both orders. See docs/TEST_PROTOCOL.md.
 
 ## Workflow
-Work happens on the `experimental` branch and is promoted to `main` when identity and the checks above pass. Releases are tags (`vX.Y.Z`) on `main`; GitHub Actions builds and attests them.
+Work happens on the `experimental` branch and is promoted to `main` when identity and the checks above pass. Releases are tags (`vX.Y.Z`) on the release commit of `experimental`; GitHub Actions builds and attests them, and once the release is published `main` is fast-forwarded to the tagged commit (docs/internal/RELEASE_CHECKLIST.md, section 4).
 
 ## Style
 Match the surrounding code. No new dependencies in the plugin beyond ggml and the C++ standard library. Comments say what is not obvious.
