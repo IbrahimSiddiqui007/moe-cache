@@ -98,7 +98,7 @@ check(b["gpu"] == {"model": 11500.25, "kv": 1024.0, "rs": 149.62, "compute": 801
       f"parse: the last line per device and kind wins (the zero-size planning pass is dropped); host buffers are CPU ({b})")
 check(rr.parse_load_buffers(["nothing here"]) is None, "parse: no buffer line -> None")
 mdl = os.path.join(TMP, "dense-7b-Q4.gguf"); make_dense(mdl)
-cmd = ["llama-server", "-m", mdl, "-c", "65536", "-ctk", "q4_0", "-ctv", "q4_0", "-ub", "512", "-np", "1", "--port", "8080"]
+cmd = ["no-such-llama-server", "-m", mdl, "-c", "65536", "-ctk", "q4_0", "-ctv", "q4_0", "-ub", "512", "-np", "1", "--port", "8080"]
 check(rr.cmd_facts(cmd) == (mdl, 65536, "q4_0", "q4_0", 512, 1) and rr.cmd_facts(["x"]) is None and rr.cmd_facts(["-m", "a", "-c", "1024"])[2:4] == ("f16", "f16"),
       "cmd_facts: model, ctx, KV types (f16 default), ub, np")
 cd = os.path.join(TMP, "meas")
@@ -114,6 +114,13 @@ need, same = rr.measured_need_gib(m, 512)
 check(abs(need - (11500.25 + 1024 + 149.62 + 801.5) / 1024) < 1e-9 and same, "measured_need_gib: model + KV + recurrent + compute")
 need2, same2 = rr.measured_need_gib(m, 4096, 0.2)
 check(not same2 and abs(need2 - (11500.25 + 1024 + 149.62) / 1024 - 0.2) < 1e-9, "measured_need_gib: another ubatch size takes the table's compute figure")
+need3, _ = rr.measured_need_gib(dict(m, compute_mib=50.0), None, 0.8)
+check(abs(need3 - (11500.25 + 1024 + 149.62) / 1024 - 0.8) < 1e-9, "measured_need_gib: a small measured compute buffer never plans below the table's fixed figure")
+exe = os.path.join(TMP, "llama-server-a"); open(exe, "w").write("x" * 10)
+cmdx = [exe] + cmd[1:]
+rr.measure_save(cd, cmdx, "Vulkan0 GPU", b, now=6000)
+check(rr.measure_load(cd, mdl, 65536, "q4_0", "q4_0", "Vulkan0 GPU", now=6001, exe=exe) and rr.measure_load(cd, mdl, 65536, "q4_0", "q4_0", "Vulkan0 GPU", now=6001, exe=os.path.join(TMP, "other-build")) is None,
+      "measure: a measurement belongs to its llama-server binary")
 
 # --- the dense fit uses it ---
 ctx = 16384
@@ -130,7 +137,7 @@ class M:
 t0 = mc.dense_gpu_fit_pair(a, mdl, ctx, M(), with_q4=True)
 check(t0 and not t0[3].get("measured"), "dense_gpu_fit_pair: no GPU known / nothing stored -> the tables")
 mc.REAL_ROOM["device"] = "AMD Radeon RX 9070 XT"
-cmd2 = ["llama-server", "-m", mdl, "-c", str(ctx), "-ctk", "q4_0", "-ctv", "q4_0"]
+cmd2 = ["no-such-llama-server", "-m", mdl, "-c", str(ctx), "-ctk", "q4_0", "-ctv", "q4_0"]
 rr.measure_save(mc.CACHE_DIR, cmd2, "AMD Radeon RX 9070 XT", {"gpu": {"model": 9000.0, "kv": 700.0, "rs": 100.0, "compute": 500.0}, "cpu": {}, "offloaded": (24, 24)})
 t1 = mc.dense_gpu_fit_pair(a, mdl, ctx, M(), with_q4=True)
 check(t1 and t1[3]["measured"] and not t1[1].get("measured") and abs(t1[3]["need_gib"] - (9000 + 700 + 100 + 500) / 1024) < 0.3, f"dense_gpu_fit_pair: the q4_0 rung uses the stored load, the others the tables ({t1[3]['need_gib']:.2f} GiB)")

@@ -3118,7 +3118,7 @@ def measured_need(model, ctx, rung):
             return None
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from real_room import measure_load, measured_need_gib
-        m = measure_load(CACHE_DIR, model, ctx, rung[0], rung[1], dev)
+        m = measure_load(CACHE_DIR, model, ctx, rung[0], rung[1], dev, exe=REAL_ROOM.get("ls"))
         return measured_need_gib(m)[0] if m else None
     except Exception:
         return None
@@ -3181,6 +3181,8 @@ def gpu_stage(a, ls, win, machine):
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
             real_room_stage(a, g, machine)
+            if REAL_ROOM.get("device"):
+                REAL_ROOM["ls"] = ls          # the llama-server binary a measurement belongs to (planner/real_room.py exe_ident)
             # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
             # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
     return vram_user, listing, gpu

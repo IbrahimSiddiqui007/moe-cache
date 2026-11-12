@@ -122,8 +122,8 @@ def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=No
         if room_learn(cache_dir, device, ded, sha, room_mib=room_mib) and not warned:
             warned = True
             say(f"moe-cache: warning: GPU memory is paging: {sha:.0f} MiB of this server sit in shared system memory (the card keeps {ded / 1024:.1f} GiB of dedicated memory for it, "
-                "the desktop and other programs hold the rest), so decode is slower. The next start plans with that room and takes a smaller KV cache type (q8_0, then K q8_0 / V q4_0, "
-                "then q4_0) or moves layers to RAM; closing programs that use the card gives it room back")
+                "the desktop and other programs hold the rest), so decode is slower. A dense model's next start plans with that room and takes a smaller KV cache type first "
+                "(q8_0, then K q8_0 / V q4_0, then q4_0); closing programs that use the card gives the room back")
 
 
 # ---- every load is a measurement ----
@@ -178,14 +178,25 @@ def cmd_facts(cmd):
     return model, num(_flag(cmd, "-c", "--ctx-size"), 0), ctk or "f16", ctv or ctk or "f16", num(_flag(cmd, "-ub", "--ubatch-size"), 512), num(_flag(cmd, "-np", "--parallel"), 1)
 
 
-def measure_key(model, ctx, ctk, ctv, device):
-    """The key of one measurement: the model file (name, size, modification second), the context, the KV types and the GPU. ub / np are stored inside, not in the key."""
+def exe_ident(path):
+    """(size, modification second) of the llama-server binary: another build or driver-matched update prints other buffer sizes, so a measurement belongs to one binary. (0, 0) when unknown."""
+    try:
+        import shutil
+        p = shutil.which(path) or path
+        st = os.stat(p)
+        return st.st_size, int(st.st_mtime)
+    except (OSError, TypeError):
+        return 0, 0
+
+
+def measure_key(model, ctx, ctk, ctv, device, exe=None):
+    """The key of one measurement: the model file (name, size, modification second), the context, the KV types, the GPU and the llama-server binary. ub / np are stored inside, not in the key."""
     try:
         st = os.stat(model)
         ident = (os.path.basename(model), st.st_size, int(st.st_mtime))
     except OSError:
         ident = (os.path.basename(model), 0, 0)
-    return hashlib.sha256(json.dumps([ident, ctx, ctk, ctv, device, MEASURE_VERSION]).encode()).hexdigest()[:20]
+    return hashlib.sha256(json.dumps([ident, ctx, ctk, ctv, device, list(exe_ident(exe)) if exe else [0, 0], MEASURE_VERSION]).encode()).hexdigest()[:20]
 
 
 def _measure_file(cache_dir, key):
@@ -201,7 +212,7 @@ def measure_save(cache_dir, cmd, device, buffers, ded=None, sha=None, now=None):
     if not off or off[0] < off[1]:
         return None
     model, ctx, ctk, ctv, ub, npar = f
-    key = measure_key(model, ctx, ctk, ctv, device)
+    key = measure_key(model, ctx, ctk, ctv, device, cmd[0] if cmd else None)
     g = buffers["gpu"]
     rec = {"version": MEASURE_VERSION, "t": now or time.time(), "device": device, "ctx": ctx, "ctk": ctk, "ctv": ctv, "ub": ub, "np": npar,
            "model_mib": g.get("model", 0.0), "kv_mib": g.get("kv", 0.0), "rs_mib": g.get("rs", 0.0), "compute_mib": g.get("compute", 0.0) + g.get("output", 0.0),
@@ -213,9 +224,9 @@ def measure_save(cache_dir, cmd, device, buffers, ded=None, sha=None, now=None):
     return key if _write_json(_measure_file(cache_dir, key), rec) else None
 
 
-def measure_load(cache_dir, model, ctx, ctk, ctv, device, now=None):
+def measure_load(cache_dir, model, ctx, ctk, ctv, device, now=None, exe=None):
     """The stored measurement of this exact plan (model file, context, KV types, GPU), or None (missing, older than 90 days, other version)."""
-    d = _read_json(_measure_file(cache_dir, measure_key(model, ctx, ctk, ctv, device)))
+    d = _read_json(_measure_file(cache_dir, measure_key(model, ctx, ctk, ctv, device, exe)))
     try:
         if d.get("version") == MEASURE_VERSION and (now or time.time()) - float(d.get("t", 0)) <= MEASURE_KEEP_S and d.get("model_mib"):
             return d
@@ -225,8 +236,10 @@ def measure_load(cache_dir, model, ctx, ctk, ctv, device, now=None):
 
 
 def measured_need_gib(m, ub=None, table_fixed_gib=0.2):
-    """GiB the stored load needed on the GPU: model + KV + recurrent state + compute buffer. The compute buffer follows the ubatch size: with another ub than the one measured, the table's
-    fixed figure stands in for it (and the result is marked approximate by the caller through the second value). -> (need GiB without margin, compute taken from the measurement?)"""
+    """GiB the stored load needed on the GPU: model + KV + recurrent state + compute buffer. The compute buffer follows the ubatch size (the plan's -ub is not known when the KV type is chosen):
+    the larger of the measured one and the table's fixed figure counts, so a later -ub 4096 is not planned as smaller than the table says; with another ub than the measured one the table figure
+    stands. -> (need GiB without margin, compute taken from the measurement?)"""
     same_ub = ub is None or int(ub) == int(m.get("ub", 0))
-    comp = (m.get("compute_mib", 0.0) / 1024) if same_ub else table_fixed_gib
-    return (m["model_mib"] + m.get("kv_mib", 0.0) + m.get("rs_mib", 0.0)) / 1024 + comp, same_ub
+    meas = m.get("compute_mib", 0.0) / 1024
+    comp = max(meas, table_fixed_gib) if same_ub else table_fixed_gib
+    return (m["model_mib"] + m.get("kv_mib", 0.0) + m.get("rs_mib", 0.0)) / 1024 + comp, same_ub and meas >= table_fixed_gib
