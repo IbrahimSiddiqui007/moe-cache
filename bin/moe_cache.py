@@ -2083,7 +2083,7 @@ def ram_note_probe(pid):
 
 def start_ram_note(p, env, say_fn=None, probe=None):
     """LAUNCHER-1145: while llama-server (process p) runs, ONE plain line (planner/commit_guard.py RamNote) when it holds a big part of the RAM and what is left is low, so the owner knows
-    why the desktop got slow (other programs paged out). Read-only, rate limited (10 min), MOE_CACHE_RAM_NOTE=0 turns it off. Returns the note or None."""
+    why the desktop got slow (other programs paged out). Read-only, rate limited (30 min), MOE_CACHE_RAM_NOTE=0 turns it off. Returns the note or None."""
     if env.get("MOE_CACHE_RAM_NOTE", os.environ.get("MOE_CACHE_RAM_NOTE", "")) == "0":
         return None
     sys.path.insert(0, os.path.join(HERE, "planner"))

@@ -43,6 +43,7 @@
 | `MOE_CACHE_WIN_BUFFERED=0\|1\|2` | Windows private-memory path only: 0 unbuffered, 1 buffered through the file cache, 2 adds random-access hints (buffered is the default; see COMPATIBILITY.md) |
 | `MOE_CACHE_COMMIT_CHECK=0` | Windows: skip the pre-load commit estimate (same as `--no-commit-check`): see TROUBLESHOOTING.md, "Crashes on Windows with other programs open" |
 | `MOE_CACHE_COMMIT_GUARD=stop\|warn\|off` | the run-time memory guard of the launcher: warns under the soft line and stops llama-server under the hard line (2 GB free commit on Windows, 1 GB MemAvailable on Linux). Default `stop` on Windows, `warn` on Linux (not measured there yet); `warn` never stops it |
+| `MOE_CACHE_RAM_NOTE=0` | turns off the RAM note: one plain line (`moe-cache: warning: moe-cache holds 13.1 GB of RAM; other programs are likely being paged out (available 1.2 GB of 31.2 GB) ...`) when llama-server holds a big part of the RAM (at least 4 GiB and 15 % of it) and what is available is under 3 GiB or 10 % of it; at most every 30 minutes; read-only, nothing is stopped or changed |
 | `MOE_CACHE_HOST_RESERVE_MIB` | memory kept free for llama-server's prompt cache (`--cache-ram`); the launcher sets it |
 | `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
 

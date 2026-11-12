@@ -403,7 +403,7 @@ class CommitGuard:
 # max(3 GiB, 10 % of it) (both measured runs were under 3 GB and about 6-9 % of the RAM; 10 % leaves a little room before the point where it hurts and stays rare on a machine that is just busy).
 RAM_NOTE_AVAIL_MIN, RAM_NOTE_AVAIL_FRAC = 3 * GiB, 0.10
 RAM_NOTE_SERVER_MIN, RAM_NOTE_SERVER_FRAC = 4 * GiB, 0.15
-RAM_NOTE_REPEAT_S = 600.0           # rate limit: the same line again only after 10 minutes of it still being true
+RAM_NOTE_REPEAT_S = 1800.0          # rate limit: the same line again only after 30 minutes of it still being true (a busy 16 GB machine sits under the line for hours: no nagging)
 RAM_NOTE_RECOVER = 1 * GiB          # re-armed only when available is this far over the line again (no flapping around it)
 
 

@@ -396,13 +396,13 @@ check(cg.ram_note_state(8 * GB, 1.5 * GB, 16 * GB) and not cg.ram_note_state(8 *
 check("holds 13.1 GB of RAM" in cg.ram_note_line(13.1 * GB, 1.2 * GB, 31.2 * GB) and "available 1.2 GB" in cg.ram_note_line(13.1 * GB, 1.2 * GB, 31.2 * GB) and cg.ram_note_line(1, 1, 2).startswith("moe-cache: warning: ")
       and "nothing was stopped" in cg.ram_note_line(1, 1, 2), "ram note: one plain line, a 'moe-cache: warning:' line (the Monitor and the page lift those)")
 clock = [0.0]; said = []; samples = [(13.1 * GB, 1.8 * GB, 31.2 * GB)]
-rn = cg.RamNote(lambda: samples[0], said.append, repeat=600.0, clock=lambda: clock[0])
+rn = cg.RamNote(lambda: samples[0], said.append, repeat=cg.RAM_NOTE_REPEAT_S, clock=lambda: clock[0])
 check(rn.poll() is True and len(said) == 1, "ram note: the first sample over the line says it")
-for t in (10, 20, 300, 599):
+for t in (10, 20, 300, 600, 1799):
     clock[0] = t
     check(rn.poll() is False, f"ram note: rate limit, nothing at {t} s")
-clock[0] = 601
-check(rn.poll() is True and len(said) == 2, "ram note: again after 10 minutes while it still holds")
+clock[0] = 1801
+check(rn.poll() is True and len(said) == 2, "ram note: again after 30 minutes while it still holds")
 samples[0] = (13.1 * GB, 3.4 * GB, 31.2 * GB); clock[0] = 2000
 check(rn.poll() is False and len(said) == 2, "ram note: eased a little (not 1 GB over the line): still quiet and not re-armed")
 samples[0] = (13.1 * GB, 5.0 * GB, 31.2 * GB); clock[0] = 2010
