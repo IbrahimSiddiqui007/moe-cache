@@ -145,4 +145,18 @@ try:
 finally:
     mc.say = _sv
 check(_a.vram is None and any("is integrated" in x for x in _said), f"gpu_stage: the iGPU under a different adapter name is recognised: planned without VRAM (a.vram {_a.vram!r})")
+# ENGINE-029 (critic BR-16): two threads asking for a plan at once load planner/plan.py once (a lock around the module cache)
+import threading
+_pd = os.path.join(TMP, "fakehere"); os.makedirs(os.path.join(_pd, "planner"))
+open(os.path.join(_pd, "planner", "plan.py"), "w").write("import time, builtins\nbuiltins._PLAN_LOADS = getattr(builtins, '_PLAN_LOADS', 0) + 1\ntime.sleep(0.3)\ndef plan_info(model, ctx=None, ram_gib=None, vram_gib=None):\n    return {'ok': 1}\n")
+_oh, _om = mc.HERE, list(mc._PLAN_MODULE)
+mc.HERE = _pd; del mc._PLAN_MODULE[:]
+try:
+    _ts = [threading.Thread(target=mc.planner_answer, args=("m", 4096)) for _ in range(6)]
+    [t_.start() for t_ in _ts]; [t_.join() for t_ in _ts]
+    import builtins
+    _loads = getattr(builtins, "_PLAN_LOADS", 0)
+finally:
+    mc.HERE = _oh; mc._PLAN_MODULE[:] = _om
+check(_loads == 1, f"ENGINE-029: six threads asking for a plan at once load plan.py once (loads {_loads})")
 sys.exit(1 if fails else 0)

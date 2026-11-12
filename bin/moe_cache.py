@@ -2904,18 +2904,20 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
 
 
 _PLAN_MODULE = []
+_PLAN_LOCK = threading.Lock()      # ENGINE-029 (critic BR-16): the control page and the launcher can ask at once; plan.py is loaded once
 
 
 def planner_answer(model, ctx, ram_gib=None, vram_gib=None):
     """ENGINE-029: planner/plan.py's answer (the dict `plan.py --json` prints), computed in this process. The launcher used to start a second Python for it (about
     0.06 s of every launch, and a second decision path nobody could step into); plan.py stays runnable as a script for people who call it directly.
     Raises planner.plan.PlanError (a message for the user) or the GGUF reader's ValueError / OSError for a model it cannot read."""
-    if not _PLAN_MODULE:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("moe_cache_plan", os.path.join(HERE, "planner", "plan.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _PLAN_MODULE.append(mod)
+    with _PLAN_LOCK:
+        if not _PLAN_MODULE:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("moe_cache_plan", os.path.join(HERE, "planner", "plan.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _PLAN_MODULE.append(mod)
     return _PLAN_MODULE[0].plan_info(model, ctx=ctx, ram_gib=ram_gib, vram_gib=vram_gib)
 
 
