@@ -51,6 +51,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
         total = sum(toks(m, div) for m in msgs)
         if getattr(s, "llama_rule", False):               # llama.cpp: refuses only a prompt over the context, with this message
             if total > s.n_ctx:
+                s.refused = getattr(s, "refused", 0) + 1
                 b = json.dumps({"error": {"code": 400, "message": f"the request ({total} tokens) exceeds the available context size ({s.n_ctx} tokens), try increasing it", "type": "exceed_context_size_error"}}).encode()
                 self.send_response(400); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b); return
         elif total + body["max_tokens"] > s.n_ctx:
@@ -333,4 +334,5 @@ q2 = cb.run_conversation(ut2, "stock", 16384, 256, 42, "", "m", 30, None, None, 
 check(q2["stop_reason"] == "context full" and q2["final_depth"] is not None and not any(t["error"] for t in q2["turns"]),
       f"dense tokens, no /tokenize: the guess may be low, a 400 context refusal still ends as context full ({q2['stop_reason']}, final depth {q2['final_depth']})")
 check(T2.requests and True, "the no-/tokenize run did send requests")
+check(getattr(T2, "refused", 0) == 0, f"TEST-905: no /tokenize and 1 character per token: the sizes follow the server's own prompt counts, so no request was refused for the context (refused {getattr(T2, 'refused', 0)})")
 sys.exit(1 if fails else 0)
