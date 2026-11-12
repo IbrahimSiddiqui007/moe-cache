@@ -1,0 +1,276 @@
+[
+ {
+  "id": "sudoku_1",
+  "category": "sudoku",
+  "prompt": "Solve this 9x9 sudoku (. = empty). It has exactly one solution.\n\n1 6 . 9 . 4 3 . 8\n. . . . . . . . .\n8 . . . . . 4 9 .\n. . 9 . . 7 . . 2\n2 5 . . 4 . . . .\n. . . . . 6 . 8 .\n. . . . 6 5 . . .\n9 . 8 2 . . . 4 .\n. . . 3 . . . . .\n\nGive the completed grid as 81 digits in reading order, no spaces, as the answer.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "162954378594783261873612495489137652256849713317526984721465839938271546645398127",
+   "grid": "16.9.43.8.........8.....49...9..7..225..4.........6.8.....65...9.82...4....3....."
+  },
+  "why_hard": "24 givens: long chains of eliminations, easy to slip one digit; every wrong digit fails the whole grid."
+ },
+ {
+  "id": "sudoku_2",
+  "category": "sudoku",
+  "prompt": "Solve this 9x9 sudoku (. = empty). It has exactly one solution.\n\n. 1 . . . . 3 . .\n. . 8 6 . 3 . 2 4\n. . 9 2 . . . . .\n. 4 . 1 . . . 5 .\n. . . . 2 . . 1 7\n. . . . . 9 . . 2\n8 . . . . . . 4 .\n4 . 1 . . . 2 . .\n. . . . . 7 . . 5\n\nGive the completed grid as 81 digits in reading order, no spaces, as the answer.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "214785369758693124639241578342178956596324817187569432865932741471856293923417685",
+   "grid": ".1....3....86.3.24..92......4.1...5.....2..17.....9..28......4.4.1...2.......7..5"
+  },
+  "why_hard": "23 givens: long chains of eliminations, easy to slip one digit; every wrong digit fails the whole grid."
+ },
+ {
+  "id": "sudoku_3",
+  "category": "sudoku",
+  "prompt": "Solve this 9x9 sudoku (. = empty). It has exactly one solution.\n\n. . . . . . . . 8\n. . . 2 . . . 3 4\n. . . . 3 4 9 5 .\n. . 3 . 1 . 6 . .\n6 9 . . 2 . . . 5\n4 . . . . . . . .\n. 4 9 7 . . . . .\n. . . 5 . . 7 . 2\n. 6 . . 8 1 . . .\n\nGive the completed grid as 81 digits in reading order, no spaces, as the answer.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "134956278956278134278134956823415697697823415415697823549762381381549762762381549",
+   "grid": "........8...2...34....3495...3.1.6..69..2...54.........497........5..7.2.6..81..."
+  },
+  "why_hard": "22 givens: long chains of eliminations, easy to slip one digit; every wrong digit fails the whole grid."
+ },
+ {
+  "id": "sudoku_4",
+  "category": "sudoku",
+  "prompt": "Solve this 9x9 sudoku (. = empty). It has exactly one solution.\n\n. . . . . 3 7 . .\n. 5 . 2 . 9 . . 6\n4 . . . . 5 1 . 2\n3 . . . 5 . . 2 4\n. . . . . . . . .\n. 8 . 4 . . 3 . 7\n2 . 3 . . . . 1 9\n. . 9 . . . . . .\n. 7 . . 8 . . . .\n\nGive the completed grid as 81 digits in reading order, no spaces, as the answer.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "192643758758219436436875192367158924924736581581492367243567819819324675675981243",
+   "grid": ".....37...5.2.9..64....51.23...5..24..........8.4..3.72.3....19..9.......7..8...."
+  },
+  "why_hard": "23 givens: long chains of eliminations, easy to slip one digit; every wrong digit fails the whole grid."
+ },
+ {
+  "id": "cryptarithm_1",
+  "category": "cryptarithm",
+  "prompt": "Each letter stands for a different digit 0-9 (same letter, same digit; no leading zero). Solve SEND + MORE = MONEY. Answer with the letter=digit pairs sorted alphabetically, comma separated, like `A=1,B=2`.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "D=7,E=5,M=1,N=6,O=0,R=8,S=9,Y=2"
+  },
+  "why_hard": "8 letters, carry reasoning with unique solution; models branch and backtrack a lot."
+ },
+ {
+  "id": "cryptarithm_3",
+  "category": "cryptarithm",
+  "prompt": "Each letter stands for a different digit 0-9 (same letter, same digit; no leading zero). Solve EAT + THAT = APPLE. Answer with the letter=digit pairs sorted alphabetically, comma separated, like `A=1,B=2`.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "A=1,E=8,H=2,L=3,P=0,T=9"
+  },
+  "why_hard": "6 letters, carry reasoning with unique solution; models branch and backtrack a lot."
+ },
+ {
+  "id": "cryptarithm_4",
+  "category": "cryptarithm",
+  "prompt": "Each letter stands for a different digit 0-9 (same letter, same digit; no leading zero). Solve CROSS + ROADS = DANGER. Answer with the letter=digit pairs sorted alphabetically, comma separated, like `A=1,B=2`.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "A=5,C=9,D=1,E=4,G=7,N=8,O=2,R=6,S=3"
+  },
+  "why_hard": "9 letters, carry reasoning with unique solution; models branch and backtrack a lot."
+ },
+ {
+  "id": "cryptarithm_5",
+  "category": "cryptarithm",
+  "prompt": "Each letter stands for a different digit 0-9 (same letter, same digit; no leading zero). Solve BASE + BALL = GAMES. Answer with the letter=digit pairs sorted alphabetically, comma separated, like `A=1,B=2`.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "A=4,B=7,E=3,G=1,L=5,M=9,S=8"
+  },
+  "why_hard": "7 letters, carry reasoning with unique solution; models branch and backtrack a lot."
+ },
+ {
+  "id": "logicgrid_1",
+  "category": "logic grid",
+  "prompt": "There are 5 houses in a row, numbered 1 (left) to 5 (right). Each house has one value of each category: nationality: Brit, Swede, Dane, Norwegian, German; colour: red, green, white, yellow, blue; drink: tea, coffee, milk, beer, water; pet: dog, bird, cat, horse, fish; sport: tennis, chess, golf, rugby, squash.\nClues:\n- The yellow (colour) and the German (nationality) are in neighbouring houses.\n- The golf (sport) and the coffee (drink) are in neighbouring houses.\n- The red (colour) is in the house directly to the left of the tennis (sport).\n- The milk (drink) and the cat (pet) are in neighbouring houses.\n- The tea (drink) is in the house directly to the left of the white (colour).\n- The squash (sport) and the red (colour) are in the same house.\n- The squash (sport) and the milk (drink) are in neighbouring houses.\n- The golf (sport) and the fish (pet) are in the same house.\n- The rugby (sport) lives in house 1.\n- The tea (drink) and the horse (pet) are not in the same house.\n- The swede (nationality) and the water (drink) are not in the same house.\n- The norwegian (nationality) and the red (colour) are not in the same house.\n- The dog (pet) and the squash (sport) are in neighbouring houses.\n- The green (colour) is in the house directly to the left of the horse (pet).\n- The swede (nationality) and the cat (pet) are in neighbouring houses.\n- The milk (drink) is in the house directly to the left of the yellow (colour).\n- The brit (nationality) and the rugby (sport) are in the same house.\nQuestion: what is the nationality of the person whose colour is red? Answer with that single word.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "word",
+   "answer": "dane"
+  },
+  "why_hard": "Einstein-style 5x5 grid with 17 clues and a unique solution: needs systematic case analysis."
+ },
+ {
+  "id": "logicgrid_2",
+  "category": "logic grid",
+  "prompt": "There are 5 houses in a row, numbered 1 (left) to 5 (right). Each house has one value of each category: nationality: Brit, Swede, Dane, Norwegian, German; colour: red, green, white, yellow, blue; drink: tea, coffee, milk, beer, water; pet: dog, bird, cat, horse, fish; sport: tennis, chess, golf, rugby, squash.\nClues:\n- The golf (sport) and the bird (pet) are in neighbouring houses.\n- The fish (pet) and the white (colour) are in the same house.\n- The rugby (sport) and the white (colour) are not in the same house.\n- The swede (nationality) is in the house directly to the left of the cat (pet).\n- The brit (nationality) and the water (drink) are in neighbouring houses.\n- The yellow (colour) and the water (drink) are in the same house.\n- The dane (nationality) and the blue (colour) are in neighbouring houses.\n- The norwegian (nationality) and the horse (pet) are in the same house.\n- The red (colour) and the milk (drink) are in the same house.\n- The brit (nationality) and the bird (pet) are in neighbouring houses.\n- The brit (nationality) and the fish (pet) are in the same house.\n- The dog (pet) and the tea (drink) are in the same house.\n- The coffee (drink) and the blue (colour) are in neighbouring houses.\n- The water (drink) and the rugby (sport) are in neighbouring houses.\n- The yellow (colour) and the Dane (nationality) are in the same house.\n- The water (drink) and the tennis (sport) are in the same house.\n- The horse (pet) and the chess (sport) are in neighbouring houses.\nQuestion: what is the nationality of the person whose sport is tennis? Answer with that single word.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "word",
+   "answer": "dane"
+  },
+  "why_hard": "Einstein-style 5x5 grid with 17 clues and a unique solution: needs systematic case analysis."
+ },
+ {
+  "id": "logicgrid_3",
+  "category": "logic grid",
+  "prompt": "There are 5 houses in a row, numbered 1 (left) to 5 (right). Each house has one value of each category: nationality: Brit, Swede, Dane, Norwegian, German; colour: red, green, white, yellow, blue; drink: tea, coffee, milk, beer, water; pet: dog, bird, cat, horse, fish; sport: tennis, chess, golf, rugby, squash.\nClues:\n- The red (colour) and the milk (drink) are in the same house.\n- The fish (pet) and the yellow (colour) are in the same house.\n- The german (nationality) and the milk (drink) are in the same house.\n- The green (colour) and the squash (sport) are in the same house.\n- The cat (pet) and the water (drink) are in neighbouring houses.\n- The tennis (sport) and the bird (pet) are not in the same house.\n- The tea (drink) and the green (colour) are not in the same house.\n- The dane (nationality) and the white (colour) are in neighbouring houses.\n- The white (colour) and the beer (drink) are in the same house.\n- The bird (pet) is in the house directly to the left of the water (drink).\n- The swede (nationality) and the blue (colour) are not in the same house.\n- The golf (sport) and the German (nationality) are not in the same house.\n- The milk (drink) and the chess (sport) are in neighbouring houses.\n- The tea (drink) lives in house 1.\n- The german (nationality) is in the house directly to the left of the water (drink).\n- The swede (nationality) and the horse (pet) are in the same house.\n- The cat (pet) and the golf (sport) are not in the same house.\n- The brit (nationality) is in the house directly to the left of the dog (pet).\nQuestion: what is the nationality of the person whose drink is beer? Answer with that single word.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "word",
+   "answer": "brit"
+  },
+  "why_hard": "Einstein-style 5x5 grid with 18 clues and a unique solution: needs systematic case analysis."
+ },
+ {
+  "id": "logicgrid_4",
+  "category": "logic grid",
+  "prompt": "There are 5 houses in a row, numbered 1 (left) to 5 (right). Each house has one value of each category: nationality: Brit, Swede, Dane, Norwegian, German; colour: red, green, white, yellow, blue; drink: tea, coffee, milk, beer, water; pet: dog, bird, cat, horse, fish; sport: tennis, chess, golf, rugby, squash.\nClues:\n- The green (colour) and the Norwegian (nationality) are in neighbouring houses.\n- The tea (drink) is in the house directly to the left of the golf (sport).\n- The beer (drink) and the bird (pet) are in neighbouring houses.\n- The chess (sport) and the yellow (colour) are in the same house.\n- The brit (nationality) and the blue (colour) are in the same house.\n- The water (drink) and the bird (pet) are in neighbouring houses.\n- The golf (sport) and the Brit (nationality) are not in the same house.\n- The dog (pet) lives in house 1.\n- The tea (drink) lives in house 4.\n- The fish (pet) and the golf (sport) are not in the same house.\n- The chess (sport) and the red (colour) are in neighbouring houses.\n- The rugby (sport) and the German (nationality) are in the same house.\n- The tennis (sport) and the Brit (nationality) are not in the same house.\n- The chess (sport) and the German (nationality) are in neighbouring houses.\n- The water (drink) and the horse (pet) are in the same house.\n- The blue (colour) and the milk (drink) are not in the same house.\n- The swede (nationality) and the water (drink) are not in the same house.\n- The tennis (sport) and the Swede (nationality) are not in the same house.\n- The rugby (sport) and the coffee (drink) are in neighbouring houses.\n- The cat (pet) is in the house directly to the left of the red (colour).\nQuestion: what is the nationality of the person whose pet is bird? Answer with that single word.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "word",
+   "answer": "norwegian"
+  },
+  "why_hard": "Einstein-style 5x5 grid with 20 clues and a unique solution: needs systematic case analysis."
+ },
+ {
+  "id": "bigarith_1",
+  "category": "long arithmetic",
+  "prompt": "Compute exactly: 6433012 * 3530829 + 514002 * 514002. Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "22978063382952"
+  },
+  "why_hard": "14-digit products by hand: thinking models write out partial products and re-check them, a long, error-prone chain."
+ },
+ {
+  "id": "bigarith_2",
+  "category": "long arithmetic",
+  "prompt": "Compute exactly: 1810111 * 2215279 + 961168 * 961168. Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "4933744810193"
+  },
+  "why_hard": "14-digit products by hand: thinking models write out partial products and re-check them, a long, error-prone chain."
+ },
+ {
+  "id": "bigarith_3",
+  "category": "long arithmetic",
+  "prompt": "Compute exactly: 9990608 * 2579240 + 483452 * 483452. Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "26001901614224"
+  },
+  "why_hard": "14-digit products by hand: thinking models write out partial products and re-check them, a long, error-prone chain."
+ },
+ {
+  "id": "modexp_1",
+  "category": "modular arithmetic",
+  "prompt": "Compute 4^16310877 mod 1000003. Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "735902"
+  },
+  "why_hard": "Square-and-multiply with 20+ squarings of 9-digit numbers modulo a prime: long exact arithmetic, one slip ruins the answer."
+ },
+ {
+  "id": "modexp_2",
+  "category": "modular arithmetic",
+  "prompt": "Compute 4^2490531 mod 998244353. Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "388620387"
+  },
+  "why_hard": "Square-and-multiply with 20+ squarings of 9-digit numbers modulo a prime: long exact arithmetic, one slip ruins the answer."
+ },
+ {
+  "id": "modexp_3",
+  "category": "modular arithmetic",
+  "prompt": "Compute 16^2220555 mod 1000003. Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "956267"
+  },
+  "why_hard": "Square-and-multiply with 20+ squarings of 9-digit numbers modulo a prime: long exact arithmetic, one slip ruins the answer."
+ },
+ {
+  "id": "graph_1",
+  "category": "graph",
+  "prompt": "A directed graph has nodes 0..13 and weighted edges (u->v:weight): 0->5:8; 0->9:1; 0->12:6; 1->6:3; 1->8:3; 1->9:2; 2->5:4; 2->6:3; 2->12:2; 3->8:2; 3->9:1; 3->13:9; 4->10:2; 4->13:9; 5->4:1; 5->8:6; 5->9:2; 6->1:5; 6->12:4; 6->13:7; 7->0:8; 7->12:3; 7->13:1; 8->0:4; 8->7:5; 8->9:7; 9->3:4; 9->6:3; 9->10:5; 10->5:4; 10->8:7; 10->12:8; 11->5:7; 11->9:2; 11->12:3; 12->0:4; 12->4:1; 12->13:7; 13->4:2; 13->5:2; 13->9:9.\nHow many different shortest paths are there from node 0 to node 7? Answer with `<shortest distance>,<number of shortest paths>`.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "12,1"
+  },
+  "why_hard": "41 edges: Dijkstra by hand with path counting; ties are easy to miss."
+ },
+ {
+  "id": "graph_2",
+  "category": "graph",
+  "prompt": "A directed graph has nodes 0..15 and weighted edges (u->v:weight): 0->10:9; 0->12:8; 0->15:8; 1->7:5; 1->9:4; 1->10:2; 2->1:9; 2->4:8; 2->13:5; 3->1:3; 3->10:5; 3->14:9; 4->3:1; 4->7:1; 4->10:8; 5->2:5; 5->7:6; 5->13:4; 6->5:1; 6->9:1; 6->12:6; 7->2:7; 7->5:2; 7->15:1; 8->4:1; 8->11:2; 8->14:7; 9->3:2; 9->4:5; 9->6:4; 10->6:3; 10->8:5; 10->15:3; 11->6:8; 11->12:4; 11->15:2; 12->1:1; 12->3:4; 12->9:5; 13->4:7; 13->9:5; 13->12:1; 14->6:6; 14->10:3; 14->11:5; 15->5:3; 15->14:6.\nHow many different shortest paths are there from node 0 to node 11? Answer with `<shortest distance>,<number of shortest paths>`.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "16,1"
+  },
+  "why_hard": "47 edges: Dijkstra by hand with path counting; ties are easy to miss."
+ },
+ {
+  "id": "graph_3",
+  "category": "graph",
+  "prompt": "A directed graph has nodes 0..17 and weighted edges (u->v:weight): 0->13:1; 0->15:7; 0->17:4; 1->6:2; 1->12:6; 1->17:9; 2->0:9; 2->4:9; 2->7:1; 3->2:8; 3->11:5; 3->12:9; 4->9:1; 4->12:2; 4->14:3; 5->6:4; 5->9:5; 5->13:5; 6->7:4; 6->13:1; 6->17:3; 7->0:7; 7->15:9; 7->17:2; 8->5:8; 8->9:4; 8->15:1; 9->4:2; 9->6:4; 9->8:9; 10->4:5; 10->5:1; 10->15:1; 11->1:5; 11->15:7; 12->4:7; 12->8:2; 12->10:8; 13->4:5; 13->8:8; 13->12:3; 14->6:6; 14->17:9; 15->4:7; 15->7:8; 15->11:1; 16->7:4; 16->11:5; 16->15:7; 17->1:7; 17->3:2; 17->14:2.\nHow many different shortest paths are there from node 0 to node 7? Answer with `<shortest distance>,<number of shortest paths>`.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "15,4"
+  },
+  "why_hard": "52 edges: Dijkstra by hand with path counting; ties are easy to miss."
+ },
+ {
+  "id": "count_1",
+  "category": "combinatorics",
+  "prompt": "How many binary strings of length 14 contain none of the substrings 0110, 1001? Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "3794"
+  },
+  "why_hard": "Needs a transfer-matrix / DP over overlapping forbidden patterns; brute-force by hand is hopeless, so the model must set up and iterate a recurrence exactly."
+ },
+ {
+  "id": "count_2",
+  "category": "combinatorics",
+  "prompt": "How many binary strings of length 16 contain none of the substrings 000, 1111? Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "8937"
+  },
+  "why_hard": "Needs a transfer-matrix / DP over overlapping forbidden patterns; brute-force by hand is hopeless, so the model must set up and iterate a recurrence exactly."
+ },
+ {
+  "id": "count_3",
+  "category": "combinatorics",
+  "prompt": "How many binary strings of length 12 contain none of the substrings 10101, 0110? Answer with the integer only.\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "int",
+   "answer": "1767"
+  },
+  "why_hard": "Needs a transfer-matrix / DP over overlapping forbidden patterns; brute-force by hand is hopeless, so the model must set up and iterate a recurrence exactly."
+ },
+ {
+  "id": "trace_1",
+  "category": "program tracing",
+  "prompt": "What does this program print? Give the exact output (for a tuple print it as Python prints it).\n\n```python\ndef f(n):\n    a, b, steps = 0, 1, 0\n    while n > 1:\n        if n % 2: n = 3 * n + 1\n        else: n //= 2\n        a, b = b, (a + b) % 1000\n        steps += 1\n    return steps, a\nprint(f(837799))\n```\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "(524, 493)"
+  },
+  "why_hard": "Many iterations of a state update (hundreds of steps / a 1000-entry DP table): the model has to simulate exactly or find a closed form."
+ },
+ {
+  "id": "trace_2",
+  "category": "program tracing",
+  "prompt": "What does this program print? Give the exact output (for a tuple print it as Python prints it).\n\n```python\ndef f(s):\n    x = 7\n    for i, ch in enumerate(s):\n        x = (x * 31 + ord(ch) * (i + 1)) % 10007\n    return x\nprint(f('the quick brown fox jumps over the lazy dog 1234567890'))\n```\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "7797"
+  },
+  "why_hard": "Many iterations of a state update (hundreds of steps / a 1000-entry DP table): the model has to simulate exactly or find a closed form."
+ },
+ {
+  "id": "trace_3",
+  "category": "program tracing",
+  "prompt": "What does this program print? Give the exact output (for a tuple print it as Python prints it).\n\n```python\ndef f(n):\n    t = [0] * (n + 1); t[0] = 1\n    for c in (1, 5, 10, 25, 50):\n        for v in range(c, n + 1): t[v] += t[v - c]\n    return t[n]\nprint(f(1000))\n```\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`.",
+  "check": {
+   "kind": "exact",
+   "answer": "801451"
+  },
+  "why_hard": "Many iterations of a state update (hundreds of steps / a 1000-entry DP table): the model has to simulate exactly or find a closed form."
+ }
+]
