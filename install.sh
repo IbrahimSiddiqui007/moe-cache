@@ -38,6 +38,9 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   REL_PREFIX="${PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/moe-cache}"
   REL_BASE="${MOE_CACHE_BASE_URL:-https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/$MOE_CACHE_REF}"   # MOE_CACHE_BASE_URL: tests, mirrors
   case "$REL_PREFIX" in /*) ;; *) REL_PREFIX="$PWD/$REL_PREFIX";; esac; case "$BINDIR" in /*) ;; *) BINDIR="$PWD/$BINDIR";; esac
+  # RELEASE-686: the tag is a release tag (it names the tarball and goes into paths and urls), and a mirror is https, a local folder or this machine
+  echo "$MOE_CACHE_REF" | grep -Eq '^v[0-9]+(\.[0-9]+)*([.-][A-Za-z0-9]+)*$' || { echo "REFUSED: MOE_CACHE_REF '$MOE_CACHE_REF' does not look like a release tag (v0.3.8, v0.3.8-beta1)"; exit 1; }
+  case "$REL_BASE" in https://*|file://*|http://127.0.0.1[:/]*|http://localhost[:/]*|http://\[::1\][:/]*) ;; *) echo "REFUSED: the download address $REL_BASE is not https (MOE_CACHE_BASE_URL may be https, a file:// folder or this machine)"; exit 1;; esac
   REL_VER="${MOE_CACHE_REF#v}"; REL_NAME="moe-cache-v$REL_VER-ggml0.26-linux-x86_64"
   REL_SHIM="$BINDIR/moe-cache"; REL_MARK="# moe-cache command written by install.sh"; REL_REC="$REL_PREFIX/.installed"
   rec() { [ -f "$REL_REC" ] && sed -n "s/^$1=//p" "$REL_REC" | tail -1; }
@@ -124,6 +127,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   fi
   say "2/3 unpack (into a temporary folder; the old version stays until the new one is complete)"
   tar -tzf "$TMP/$REL_NAME.tar.gz" | awk -v n="$REL_NAME/" 'index($0, n) != 1 || $0 ~ /\.\.\//{bad=1} END{exit bad}' || { echo "REFUSED: the tarball has files outside $REL_NAME/"; exit 1; }
+  tar -tvzf "$TMP/$REL_NAME.tar.gz" | awk 'substr($0,1,1) !~ /[-d]/{bad=1} END{exit bad}' || { echo "REFUSED: the tarball has a member that is not a plain file or folder (link, device)"; exit 1; }      # RELEASE-686
   OLD="$(rec version || true)"
   if [ -f "$REL_PREFIX/versions/$REL_NAME/bin/moe_cache.py" ] && [ "$OLD" = "$REL_VER" ]; then echo "moe-cache $REL_VER is already unpacked here: refreshing the command only"
   else

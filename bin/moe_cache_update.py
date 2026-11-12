@@ -33,7 +33,8 @@ def newest_stable_tag(fetch_json):
 def version_key(v):
     """Sortable key of a release version or tag ('v0.3.6', '0.3.6-beta2'): numbers first, a final release sorts after its own pre-releases.
     None when it is not a version (then nothing is compared)."""
-    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:[.-]([A-Za-z0-9.]+))?", str(v).strip())
+    v = re.sub(r"(-\d+-g[0-9a-f]+)?(-dirty)?(\+.*)?$", "", str(v).strip())      # RELEASE-686: a build of a release ('0.3.6+dirty', '0.3.6-5-gabc1234-dirty') compares as that release
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:[.-]([A-Za-z0-9.]+))?", v)
     if not m:
         return None
     nums = tuple(int(x) for x in m.group(1).split("."))
@@ -154,6 +155,7 @@ MAX_SCRIPT = 2_000_000      # the installer scripts are a few tens of KB; anythi
 SIGNER_WORKFLOW = f"{REPO}/.github/workflows/release.yml"      # only an attestation made by this repository's release workflow counts (as packages.yml)
 # gh output that means "gh could not reach GitHub / the service said later", not "the file does not match its attestation"
 _NETWORK = re.compile(r"no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5\d\d|rate limit|unexpected EOF", re.I)
+_OLDGH = re.compile(r"unknown command|unknown subcommand|no such command|is not a (gh )?command|Usage:.*gh <command>", re.I)      # an old gh has no `attestation` command
 _NOLOGIN = re.compile(r"gh auth login|not logged in|authentication required|requires authentication|HTTP 401|bad credentials|GH_TOKEN", re.I)
 
 
@@ -171,6 +173,8 @@ def attestation(path, env=None):
     out = (r.stderr or r.stdout).strip()
     if _NETWORK.search(out):
         return "skipped", "gh could not reach GitHub to verify: " + out[-200:]
+    if _OLDGH.search(out) and "attestation" in out.lower():
+        return "skipped", "this gh is too old: it has no `attestation` command (update gh, then try again)"
     if _NOLOGIN.search(out):      # not gated on `gh auth status`: it exits 1 when any saved account has a bad token although the active one works
         return "skipped", "gh has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working `gh auth login` (see: gh auth status)"
     return "failed", "gh attestation verify FAILED: " + out[-300:]
@@ -184,6 +188,7 @@ def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, 
         say("moe-cache: this copy was not put here by the moe-cache installer (a git checkout, or an unpacked tarball / kit), so `update --apply` leaves it alone.")
         say("  Install the release the normal way (README, 'Quickest: one line'), or update this copy by hand. Nothing was changed.")
         return 1
+    explicit_tag = tag is not None
     tag = tag or newest_stable_tag(fetch_json)
     if not tag:
         say("moe-cache: could not read the newest release from GitHub (offline? rate limit?). Nothing was changed.")
@@ -195,11 +200,17 @@ def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, 
         say(f"moe-cache {version} is already the newest release. Nothing to do.")
         return 0
     mine, theirs = version_key(version), version_key(tag)
+    if explicit_tag and theirs and not mine and not allow_downgrade:      # RELEASE-686: the running version is not a release number, so "older" cannot be told: fail closed
+        say(f"moe-cache: REFUSED: the running version '{version}' is not a release number, so it cannot be told whether {tag} is older (a downgrade). Nothing was changed. If you mean it, add --allow-downgrade.")
+        return 1
     if mine and theirs and theirs < mine and not allow_downgrade:
         say(f"moe-cache: REFUSED: {tag} is older than the running {version}, so this would be a downgrade. Nothing was changed. If you mean it, add --allow-downgrade.")
         return 1
     default_base = base_url is None and not env.get("MOE_CACHE_BASE_URL")
     base = base_url or env.get("MOE_CACHE_BASE_URL") or f"https://github.com/{REPO}/releases/download/{tag}"
+    if re.match(r"http://(?!(127\.0\.0\.1|localhost|\[::1\])([:/]|$))", base, re.I):          # RELEASE-686: a mirror over plain http can be changed on the way; https, a local folder (file://) or this machine only
+        say(f"moe-cache: REFUSED: MOE_CACHE_BASE_URL {base} is not https. Nothing was changed.")
+        return 1
     name = "install.ps1" if layout["kind"] == "windows" else "install.sh"
     say(f"moe-cache {version} -> {tag}: download {base}/{name}, run it for {layout.get('prefix') or layout.get('root')}")
     say("  the installer checks the package against the release's SHA256SUMS and its build attestation (when gh can), unpacks beside the old version and rolls back on a failure"
