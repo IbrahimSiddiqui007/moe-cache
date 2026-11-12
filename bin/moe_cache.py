@@ -3222,24 +3222,33 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
 LOAD_MODE_RAM_MARGIN_GIB = 4.0
 
 
-def load_mode_low_ram(a, cmd, extra, machine, model):
-    """LAUNCHER-1133 follow-up (prepared, not merged; waits for rn038_mmapnone): a dense model that does NOT fit fully on the GPU keeps mmap (the spilled weights stay file-backed),
-    but when the RAM the server may use is under the model file plus LOAD_MODE_RAM_MARGIN_GIB the mmap load of the PC's 27B tripped the 26 GB guard (private 13 GB; chain 2026-11-12,
-    f5af74c, 64k, q4_0): then `--load-mode none`, which 29520bb and the first 0.3.8 plans used for the same model. Same exceptions as load_mode_fit_none (Linux, --exact / --stock, -ot,
-    CPU-only, a load flag of your own). Returns the plain note, or None (mmap stays)."""
-    if not machine.windows or a.exact or a.stock or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0":
+def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
+    """LAUNCHER-1133 follow-up (critic 2026-11-12: bounded, margin from the cap): a dense model that does NOT fit fully on the GPU keeps mmap (the weights that stay in RAM are file-backed and
+    can be evicted), unless the mmap load itself would eat the RAM the server may use: chain's real load of f5af74c (27B UD-Q3_K_XL, 64k, q4_0, mmap) read ~9-12 GB of mapped file pages into
+    the working set and tripped the 26 GB guard; 29520bb used `--load-mode none` for the same model. Then `--load-mode none` (the GPU takes the weights as they are read), but ONLY when
+      - the file is at least as big as the RAM the server may use minus the reserve (mmap would fill it), and
+      - the part that stays in RAM (spill_gib, the planner's over-GiB of the chosen KV rung) plus the reserve still fits in that RAM (none copies it into private memory: commit and used RAM
+        go up by that part; a 40 GiB file with 14 GiB available stays mmap).
+    The reserve is the larger of 4 GiB and what the machine keeps free (physical RAM minus mem_cap(): max(4 GiB, 12.5 %)). Same exceptions as load_mode_fit_none (Linux, --exact / --stock, -ot,
+    CPU-only, a load flag of your own). Unknown spill -> mmap stays. Returns the plain note, or None."""
+    if not machine.windows or a.exact or a.stock or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0" or spill_gib is None:
         return None
     if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
     try:
         size = os.path.getsize(model)
         avail = machine.mem_for_server(a.ram)
+        total, cap = machine.mem_total(), machine.mem_cap()
     except (OSError, TypeError):
         return None
-    if not size or not avail or avail >= size + LOAD_MODE_RAM_MARGIN_GIB * 2**30:
+    if not size or not avail:
         return None
-    return (f"the model file is {size / 2**30:.1f} GiB and {avail / 2**30:.1f} GiB of RAM is available (less than the file plus {LOAD_MODE_RAM_MARGIN_GIB:.0f} GiB): --load-mode none "
-            "(the weights are read into memory as the GPU takes them, not mapped from the file first; --exact or --load-mode after -- keeps llama.cpp's default)")
+    margin = max(LOAD_MODE_RAM_MARGIN_GIB, (total - cap) / 2**30 if total and cap and total > cap else 0.0)
+    if avail >= size + margin * 2**30 or spill_gib + margin > avail / 2**30:
+        return None
+    return (f"the model file is {size / 2**30:.1f} GiB, {avail / 2**30:.1f} GiB of RAM is available to the server (less than the file plus {margin:.1f} GiB the machine keeps free) "
+            f"and about {spill_gib:.1f} GiB of it stays in RAM: --load-mode none (the weights are read into memory as the GPU takes them, not mapped from the file first; "
+            "--exact or --load-mode after -- keeps llama.cpp's default)")
 
 
 def gpu_fit_words(r, kv_name):
@@ -3932,6 +3941,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
             + ("" if a.auto_fit else ". --no-auto-fit brings -ngl 99 back"))
     # LAUNCHER-983: tell the log scan whether work on the CPU is part of this plan (experts on the CPU by design, FFN weights in RAM, CPU-only, a dense model the estimate says is over the GPU)
     expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and "-ot" in cmd))
+    r = None
     if dense and not expect:
         pair = dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True)
         kv_name = arg_after(extra, "-ctk", "--cache-type-k") or "f16"
@@ -3945,7 +3955,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
             cmd[cmd.index("--load-mode") + 1] = "none"
             say("moe-cache: " + why)
     elif dense and not cpu_only and "--load-mode" in cmd:
-        why = load_mode_low_ram(a, cmd, extra, machine, model)
+        why = load_mode_low_ram(a, cmd, extra, machine, model, r["over_gib"] if r and r.get("over_gib") is not None else None)
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
             say("moe-cache: " + why)
