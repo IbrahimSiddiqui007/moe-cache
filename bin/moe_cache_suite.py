@@ -30,12 +30,12 @@ def file_hash(path):
     return h.hexdigest()[:12]
 
 
-def new_record(model, machine=None, software=None, settings=None, sections=None, profile="", notes=None, now=None):
+def new_record(model, machine=None, software=None, settings=None, sections=None, profile="", notes=None, now=None, served=None, partial=False):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     sections = {k: v for k, v in (sections or {}).items() if k in SECTIONS}
-    ident = hashlib.sha256(json.dumps([model, settings, sections], sort_keys=True, default=str).encode()).hexdigest()[:6]
+    ident = hashlib.sha256(json.dumps([model, settings, served, sections, partial], sort_keys=True, default=str).encode()).hexdigest()[:6]
     return {"suite_record_schema": SUITE_SCHEMA, "created_utc": now.strftime("%Y-%m-%d %H:%M"), "id": f"{now.strftime('%Y-%m-%d')}_{re.sub(r'[^A-Za-z0-9._-]+', '-', model.get('name', 'model'))}_{ident}",
-            "published": False, "profile": profile, "model": model, "machine": machine or {}, "software": software or {}, "settings": settings or {}, "sections": sections, "notes": notes or []}
+            "published": False, "profile": profile, "model": model, "machine": machine or {}, "software": software or {}, "served": served or {}, "settings": settings or {}, "sections": sections, "notes": notes or [], "partial": bool(partial)}
 
 
 # ---- converters from what the existing tools write ----------------------------------------------------------------------------------------------
@@ -43,21 +43,35 @@ def pctl(v, p):
     v = sorted(v); return v[min(len(v) - 1, int(round(p * (len(v) - 1))))] if v else 0
 
 
-def section_hard(run, tasks_hash=""):
-    """From a tools/hard_tasks_run.py output."""
-    it = [x for x in run["items"] if x]; th = [x["think_tokens"] for x in it]; cats = {}
+def section_hard(run, tasks_hash="", ctx=None):
+    """From a tools/hard_tasks_run.py output. Tasks that ended in an error (not a wrong answer) are counted in `errors` and are not in n or pass. ctx = the context the server ran with: with no cap the
+    context is the only limit, so it is part of the protocol."""
+    it = [x for x in run["items"] if x and not x.get("error")]; err = sum(1 for x in run["items"] if x and x.get("error")); th = [x["think_tokens"] for x in it]; cats = {}
     for x in it:
         c = cats.setdefault(x["category"], [0, 0]); c[0] += int(x["pass"]); c[1] += 1
-    return {"protocol": protocol_hash(kind="hard", tasks=tasks_hash, cap=run.get("cap", 0), temp=0), "n": len(it), "pass": sum(x["pass"] for x in it), "think_median": statistics.median(th) if th else 0, "think_p90": pctl(th, .9),
-            "think_max": max(th) if th else 0, "loops": sum(x["loop"] for x in it), "cap_hits": sum(x["cap_hit"] for x in it), "cap": run.get("cap", 0), "by_category": cats}
+    return {"protocol": protocol_hash(kind="hard", tasks=tasks_hash, cap=run.get("cap", 0), ctx=ctx, loop=run.get("loop_rule", "weak-12x3"), temp=0), "n": len(it), "pass": sum(x["pass"] for x in it), "errors": err,
+            "think_median": statistics.median(th) if th else 0, "think_p90": pctl(th, .9), "think_max": max(th) if th else 0, "loops": sum(x["loop"] for x in it), "loops_in_passed": sum(1 for x in it if x["loop"] and x["pass"]),
+            "cap_hits": sum(x["cap_hit"] for x in it), "timeouts": sum(1 for x in it if x.get("stop") == "timeout"), "no_think_tag": sum(1 for x in it if x.get("think_tag") is False), "cap": run.get("cap", 0), "by_category": cats}
+
+
+def task_answer_ok(text, patterns, stop="", think="off"):
+    """(passed, cut_inside_thinking): the answer is looked for only after the last </think>. A text that ends (stop=limit) while the think block is still open has no answer: it is a cut,
+    not a pass, even when the reasoning happens to mention the answer."""
+    cut = ("<think>" in text and "</think>" not in text) or (think == "on" and stop == "limit" and "</think>" not in text)
+    if cut:
+        return False, True
+    body = text.split("</think>")[-1] if "</think>" in text else text
+    body = re.sub(r"<think>.*?</think>", "", body, flags=re.S).lower()
+    return any(re.search(p, body) for p in patterns), False
 
 
 def section_tasks(run, think, tasks_hash="", cap=0):
-    """From a tools/quality_yardstick.py run output (the 202-task set)."""
-    sys.path.insert(0, os.path.join(HERE, "..", "tools")); import quality_yardstick as Y
-    its = [x for x in run["items"] if x.get("kind") == "task"]
-    ok = [bool(any(re.search(p, Y.strip_think(x["text"]).lower()) for p in x["answers"])) for x in its]
-    return {"protocol": protocol_hash(kind="tasks", tasks=tasks_hash, think=think, cap=cap, temp=0), "n": len(its), "pass": sum(ok), "think": think, "cap": cap}
+    """From a tools/quality_yardstick.py run output (the 202-task set). Scored on the text after </think> only (task_answer_ok); `cut` = answers cut off inside the thinking, `thinking_seen` = answers that
+    contain a think block at all (with thinking 'off' that is a model that ignores the switch)."""
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    its = [x for x in run["items"] if x.get("kind") == "task"]; res = [task_answer_ok(x["text"], x["answers"], x.get("stop", ""), think) for x in its]
+    return {"protocol": protocol_hash(kind="tasks", tasks=tasks_hash, think=think, cap=cap, temp=0), "n": len(its), "pass": sum(1 for ok, _ in res if ok), "think": think, "cap": cap,
+            "cut": sum(1 for _, c in res if c), "thinking_seen": sum(1 for x in its if "</think>" in x["text"] or "<think>" in x["text"])}
 
 
 _KL = {"kl_mean": r"Mean\s+KLD:\s+(-?[\d.]+)", "kl_median": r"Median\s+KLD:\s+(-?[\d.]+)", "kl_p90": r"90\.0%\s+KLD:\s+(-?[\d.]+)", "top1_pct": r"Same top p:\s+([\d.]+)"}
@@ -92,7 +106,41 @@ def validate_record(rec):
 
 
 # ---- compare -----------------------------------------------------------------------------------------------------------------------------------
-# (section, label, getter, unit, better: +1 higher is better, -1 lower is better)
+# What must be the same for two records to be compared (the record's `served` block says what the server really ran; machine and kit come from the record).
+# A section whose results depend on a setting is NOT compared across a known difference in it (it shows '-' and a line says which); the others only get a warning line.
+ENV_KEYS = ("machine", "kit", "build", "ctx", "np", "ctk", "ctv")
+REFUSE = {"speed": ENV_KEYS, "memory": ENV_KEYS, "hard": ("ctx", "np", "ctk", "ctv", "build"), "tasks": (), "tasks_on": (), "quality": ()}
+SINGLE_RUN_NOISE_PCT = 10.0      # one run per number: no spread is known, so only a change of 10 % or more gets a colour
+
+
+def machine_id(m):
+    return " | ".join(str(m[k]) for k in ("cpu_model", "ram_gib", "gpu_model", "vram_mib", "os", "platform", "ram_gb", "cpu_count") if m.get(k) not in (None, "not recorded")) or None
+
+
+def env_of(rec):
+    sv = rec.get("served") or {}
+    return {"machine": machine_id(rec.get("machine") or {}), "kit": (rec.get("software") or {}).get("kit"), "build": sv.get("build"), "ctx": sv.get("ctx"), "np": sv.get("np"), "ctk": sv.get("ctk"), "ctv": sv.get("ctv")}
+
+
+def env_diff(ra, rb):
+    """({key: (a, b)} known differences, [keys not recorded in one of the two])."""
+    ea, eb = env_of(ra), env_of(rb); diff, unknown = {}, []
+    for k in ENV_KEYS:
+        if ea[k] is None or eb[k] is None:
+            unknown.append(k)
+        elif ea[k] != eb[k]:
+            diff[k] = (ea[k], eb[k])
+    return diff, unknown
+
+
+def wilson(k, n, z=1.96):
+    """95 % Wilson interval (low, high) of k passes in n tasks, as fractions."""
+    if n <= 0:
+        return (0.0, 1.0)
+    p = k / n; d = 1 + z * z / n; c = (p + z * z / (2 * n)) / d; h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** .5) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
 def _band(depth, key):
     def g(s):
         for b in s.get("bands", []):
@@ -109,34 +157,54 @@ def _n(records, sec):
     return "?"
 
 
+# row: (section, label, getter, unit, better (+1 higher is better, -1 lower), kind): pass = a pass count of n tasks (Wilson interval), count = a small count (loops, cap hits), run = one measured number
 def _metrics(records):
-    rows = [("speed", "ttft", lambda s: s.get("ttft_ms"), "ms", -1), ("speed", "decode batch 1", lambda s: s.get("decode_b1"), "tok/s", 1), ("speed", "decode batch 4", lambda s: s.get("decode_b4"), "tok/s", 1)]
+    rows = [("speed", "ttft", lambda s: s.get("ttft_ms"), "ms", -1, "run"), ("speed", "decode batch 1", lambda s: s.get("decode_b1"), "tok/s", 1, "run"), ("speed", "decode batch 4", lambda s: s.get("decode_b4"), "tok/s", 1, "run")]
     depths = sorted({b["depth"] for r in records for b in r["sections"].get("speed", {}).get("bands", [])})
     for d in depths:
-        rows.insert(0, ("speed", f"decode at {d // 1024}k", _band(d, "decode_tps"), "tok/s", 1)); rows.insert(1, ("speed", f"prompt at {d // 1024}k", _band(d, "prompt_tps"), "tok/s", 1))
-    rows += [("memory", "server RSS", lambda s: s.get("rss_gb"), "GB", -1), ("memory", "VRAM", lambda s: s.get("vram_gb"), "GB", -1),
-             ("quality", "KL mean", lambda s: s.get("kl_mean"), "", -1), ("quality", "same top token", lambda s: s.get("top1_pct"), "%", 1),
-             ("tasks", f"tasks passed of {_n(records, 'tasks')}, thinking off", lambda s: s.get("pass"), "", 1), ("tasks_on", f"tasks passed of {_n(records, 'tasks_on')}, thinking on", lambda s: s.get("pass"), "", 1),
-             ("hard", "hard tasks passed", lambda s: s.get("pass"), "", 1), ("hard", "thinking tokens, median", lambda s: s.get("think_median"), "", -1), ("hard", "thinking tokens, p90", lambda s: s.get("think_p90"), "", -1),
-             ("hard", "loops", lambda s: s.get("loops"), "", -1), ("hard", "cap hits", lambda s: s.get("cap_hits"), "", -1)]
+        rows.insert(0, ("speed", f"decode at {d // 1024}k", _band(d, "decode_tps"), "tok/s", 1, "run")); rows.insert(1, ("speed", f"prompt at {d // 1024}k", _band(d, "prompt_tps"), "tok/s", 1, "run"))
+    rows += [("memory", "server RSS", lambda s: s.get("rss_gb"), "GB", -1, "run"), ("memory", "VRAM", lambda s: s.get("vram_gb"), "GB", -1, "run"),
+             ("quality", "KL mean (KV cost)", lambda s: s.get("kl_mean"), "", -1, "kl"), ("quality", "same top token (KV cost)", lambda s: s.get("top1_pct"), "%", 1, "kl"),
+             ("tasks", f"tasks passed of {_n(records, 'tasks')}, thinking off", lambda s: s.get("pass"), "", 1, "pass"), ("tasks_on", f"tasks passed of {_n(records, 'tasks_on')}, thinking on", lambda s: s.get("pass"), "", 1, "pass"),
+             ("hard", f"hard tasks passed of {_n(records, 'hard')}", lambda s: s.get("pass"), "", 1, "pass"), ("hard", "thinking tokens, median", lambda s: s.get("think_median"), "", -1, "run"), ("hard", "thinking tokens, p90", lambda s: s.get("think_p90"), "", -1, "run"),
+             ("hard", "loops", lambda s: s.get("loops"), "", -1, "count"), ("hard", "cap hits", lambda s: s.get("cap_hits"), "", -1, "count")]
     return rows
 
 
-def compare(records, noise_pct=2.0):
-    """Returns {"records": [labels], "rows": [{section, label, unit, values, deltas, marks}], "skipped": [text]}; the first record is the reference. A section is compared only between records whose
-    protocol hash equals the reference's; the others show '-' and a line in `skipped` says which section and why."""
-    labels = [f"{r['model'].get('name', '?')} {r['model'].get('quant', '')}".strip() for r in records]; skipped = []; rows = []
-    for sec, label, get, unit, better in _metrics(records):
-        ref_s = records[0]["sections"].get(sec); vals = []
+def _same_model(records):
+    key = lambda r: (r["model"].get("name"), r["model"].get("quant"), r["model"].get("file"))
+    return all(key(r) == key(records[0]) for r in records)
+
+
+def compare(records, noise_pct=SINGLE_RUN_NOISE_PCT):
+    """Returns {"records": [labels], "rows": [{section, label, unit, kind, values, ns, deltas_pct, marks}], "skipped": [text], "warnings": [text]}; the first record is the reference.
+    A section is compared only between records whose protocol hash equals the reference's and whose known server settings (REFUSE) are equal; the others show '-' and a line in `skipped` says
+    which section and why. Marks: pass counts use a 95 % Wilson interval (overlap = '='); counts of 0-1 apart are '='; one-run numbers need `noise_pct` (default 10 %); the KL rows carry no
+    mark between different models (KL against the model's own f16 KV is what the KV cache costs, not how good the model is)."""
+    labels = [f"{r['model'].get('name', '?')} {r['model'].get('quant', '')}".strip() for r in records]; skipped = []; warnings = []; rows = []; same_model = _same_model(records)
+    for i in range(1, len(records)):
+        diff, unknown = env_diff(records[0], records[i])
+        for k, (x, y) in diff.items():
+            warnings.append(f"{labels[i]} was measured with another {k} than {labels[0]} ({y} against {x})")
+        if unknown:
+            warnings.append(f"{labels[i]}: {', '.join(unknown)} not recorded in one of the two records, so it could not be checked")
+    for sec, label, get, unit, better, kind in _metrics(records):
+        ref_s = records[0]["sections"].get(sec); vals = []; ns = []
         for i, r in enumerate(records):
             s = r["sections"].get(sec); v = None
             if s is not None:
+                why = None
                 if ref_s is not None and s.get("protocol") != ref_s.get("protocol"):
-                    msg = f"{sec}: {labels[i]} was measured with a different protocol than {labels[0]} ({s.get('protocol')} against {ref_s.get('protocol')}); not compared"
-                    if msg not in skipped: skipped.append(msg)
+                    why = f"{sec}: {labels[i]} was measured with a different protocol than {labels[0]} ({s.get('protocol')} against {ref_s.get('protocol')}); not compared"
+                elif i > 0 and ref_s is not None:
+                    bad = [f"{k} ({x} against {y})" for k, (x, y) in env_diff(records[0], r)[0].items() if k in REFUSE.get(sec, ())]
+                    if bad:
+                        why = f"{sec}: {labels[i]} not compared with {labels[0]}: another " + ", ".join(bad)
+                if why:
+                    if why not in skipped: skipped.append(why)
                 else:
                     v = get(s)
-            vals.append(v)
+            vals.append(v); ns.append(s.get("n") if (s is not None and v is not None) else None)
         if all(v is None for v in vals):
             continue
         base = vals[0]; deltas = []; marks = []
@@ -144,9 +212,17 @@ def compare(records, noise_pct=2.0):
             if i == 0 or v is None or base is None:
                 deltas.append(None); marks.append(""); continue
             d = v - base; pct = (d / base * 100) if base else None; deltas.append(pct)
-            marks.append("=" if d == 0 or (pct is not None and abs(pct) <= noise_pct) else ("better" if d * better > 0 else "worse"))
-        rows.append({"section": sec, "label": label, "unit": unit, "values": vals, "deltas_pct": deltas, "marks": marks})
-    return {"records": labels, "rows": rows, "skipped": skipped}
+            if kind == "kl" and not same_model:
+                mk = ""
+            elif kind == "pass" and ns[0] and ns[i]:
+                a, b = wilson(base, ns[0]), wilson(v, ns[i]); mk = "=" if not (b[0] > a[1] or a[0] > b[1]) else ("better" if d * better > 0 else "worse")
+            elif kind == "count":
+                mk = "=" if abs(d) <= 1 else ("better" if d * better > 0 else "worse")
+            else:
+                mk = "=" if d == 0 or (pct is not None and abs(pct) < noise_pct) else ("better" if d * better > 0 else "worse")
+            marks.append(mk)
+        rows.append({"section": sec, "label": label, "unit": unit, "kind": kind, "values": vals, "ns": ns, "deltas_pct": deltas, "marks": marks})
+    return {"records": labels, "rows": rows, "skipped": skipped, "warnings": warnings}
 
 
 def compare_text(res):
@@ -160,7 +236,7 @@ def compare_text(res):
                 if d is not None and m: t += f" ({d:+.0f} % {m})" if m != "=" else " (=)"
                 cells.append(t)
         lines.append(f"{r['label'] + (' ' + r['unit'] if r['unit'] else ''):26s}" + "".join(f"{c:>{w}s}" for c in cells))
-    return "\n".join(lines + [""] + res["skipped"])
+    return "\n".join(lines + [""] + res["skipped"] + res.get("warnings", []) + ["(one run per number; pass counts: 95 % interval; speed: 10 % or more; counts: 2 or more apart)"])
 
 
 def load(path):
@@ -182,8 +258,11 @@ ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 MAX_RECORD_BYTES = 5_000_000
 
 
+RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}      # Windows device names
+
+
 def record_path(d, rid):
-    if not ID_RE.match(rid or ""):
+    if not ID_RE.match(rid or "") or rid.split(".")[0].lower() in RESERVED:
         raise ValueError("bad record id")
     return os.path.join(d, rid + ".json")
 
@@ -211,32 +290,39 @@ def import_text(d, text):
     rec = json.loads(text); probs = validate_record(rec) if isinstance(rec, dict) else ["not an object"]
     if probs:
         raise ValueError("invalid record: " + "; ".join(probs[:3]))
+    rec["published"] = False                 # an imported record is private here: publishing is a separate, explicit step of this user
     rid = rec["id"]; path = record_path(d, rid)
     os.makedirs(d, exist_ok=True)
-    if os.path.exists(path) and load(path) != rec:
+    if os.path.exists(path) and {**load(path), "published": False} != rec:
         raise ValueError(f"a different record with the id {rid} exists")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(rec, f, indent=1)
+    if not os.path.exists(path):
+        _write_json(path, rec)
     return rid
+
+
+def _write_json(path, rec):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(rec, f, indent=1)
+    os.replace(tmp, path)
 
 
 def set_published(d, rid, value=True):
     path = record_path(d, rid); rec = load(path); rec["published"] = bool(value)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(rec, f, indent=1)
+    _write_json(path, rec)
     return rec["published"]
 
 
-def compare_ids(d, ids, noise=2.0):
+def compare_ids(d, ids, noise=SINGLE_RUN_NOISE_PCT):
     recs = [load(record_path(d, i)) for i in ids]
-    res = compare(recs, noise); res["meta"] = [{"id": r["id"], "name": r["model"].get("name", "?"), "quant": r["model"].get("quant", ""), "size_gb": r["model"].get("size_gb"), "created": r.get("created_utc", ""), "published": bool(r.get("published")), "machine": r.get("machine", {}).get("platform", "")} for r in recs]
+    res = compare(recs, noise); res["meta"] = [{"id": r["id"], "name": r["model"].get("name", "?"), "quant": r["model"].get("quant", ""), "size_gb": r["model"].get("size_gb"), "created": r.get("created_utc", ""), "published": bool(r.get("published")), "partial": bool(r.get("partial")), "served": " · ".join(x for x in [f'ctx {(r.get("served") or {}).get("ctx")}' if (r.get("served") or {}).get("ctx") else "", f'KV {(r.get("served") or {}).get("ctk")}/{(r.get("served") or {}).get("ctv")}' if (r.get("served") or {}).get("ctk") else "", f'{(r.get("served") or {}).get("np")} slots' if (r.get("served") or {}).get("np") else ""] if x), "machine": (r.get("machine") or {}).get("gpu_model") or (r.get("machine") or {}).get("cpu_model") or (r.get("machine") or {}).get("platform", "")} for r in recs]
     return res
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0]); sp = ap.add_subparsers(dest="cmd", required=True)
     v = sp.add_parser("validate"); v.add_argument("files", nargs="+")
-    c = sp.add_parser("compare"); c.add_argument("files", nargs="+"); c.add_argument("--json", action="store_true"); c.add_argument("--noise", type=float, default=2.0)
+    c = sp.add_parser("compare"); c.add_argument("files", nargs="+"); c.add_argument("--json", action="store_true"); c.add_argument("--noise", type=float, default=SINGLE_RUN_NOISE_PCT)
     s = sp.add_parser("show"); s.add_argument("file")
     n = sp.add_parser("new"); n.add_argument("--model", required=True); n.add_argument("--quant", default=""); n.add_argument("--size-gb", type=float); n.add_argument("--section", action="append", default=[]); n.add_argument("--out", required=True); n.add_argument("--profile", default="")
     p = sp.add_parser("publish"); p.add_argument("file")
@@ -257,9 +343,9 @@ def main(argv=None):
         model = {"name": a.model, "quant": a.quant}; model.update({"size_gb": a.size_gb} if a.size_gb else {})
         rec = new_record(model, sections=secs, profile=a.profile); pr = validate_record(rec)
         if pr: print("invalid:", "; ".join(pr), file=sys.stderr); return 1
-        json.dump(rec, open(a.out, "w"), indent=1); print("wrote", a.out, rec["id"]); return 0
+        _write_json(a.out, rec); print("wrote", a.out, rec["id"]); return 0
     if a.cmd == "publish":
-        rec = load(a.file); rec["published"] = True; json.dump(rec, open(a.file, "w"), indent=1); print("marked published:", a.file, "(nothing reads published suite records yet; the board needs the owner's review)"); return 0
+        rec = load(a.file); rec["published"] = True; _write_json(a.file, rec); print("marked published:", a.file, "(nothing reads published suite records yet; the board needs the owner's review)"); return 0
 
 
 if __name__ == "__main__":

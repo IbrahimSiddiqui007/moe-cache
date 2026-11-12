@@ -496,10 +496,10 @@ button.danger { border-color:var(--ink); }
 <!-- ================= Monitor (GUI-041) ================= -->
 <div class="modal" id="cmpdlg" hidden><div class="box" role="dialog" aria-labelledby="cmptitle">
   <div class="mhead"><h3 id="cmptitle">Compare models</h3><span class="small" id="cmpstate"></span><span class="grow" style="flex:1"></span><button id="cmpclose" class="ghost">Close</button></div>
-  <div class="small" style="margin:4px 0">Same tasks, same settings for every model; the first card is the reference. Records stay on this computer (private) until you publish one.</div>
+  <div class="small" style="margin:4px 0">The first card is the reference. Every number is one run; green or red only where the difference is outside the noise of one run (pass counts: 95 % interval, speed and memory: 10 %). Where two models ran with other server settings (context, KV cache, build, machine) the notes say so. Records stay on this computer (private) until you publish one.</div>
   <div class="cmprow">
     <label class="small">Model <select id="cmpmodel" aria-label="Model to measure"></select></label>
-    <label class="small">Suite <select id="cmpprofile" aria-label="Suite size"><option value="quick">quick (about 15 min)</option><option value="standard">standard (about 2 h)</option><option value="night">night (hours, with the hard set)</option></select></label>
+    <label class="small">Suite <select id="cmpprofile" aria-label="Suite size"><option value="quick">quick (a speed probe and 20 tasks: minutes)</option><option value="standard">standard (32k conversation, 202 tasks twice, KL: an hour or more)</option><option value="night">night (65k conversation and the hard set: many hours)</option></select></label>
     <button id="cmprun">Run suite</button><button id="cmpcancel" class="ghost" hidden>Cancel</button>
     <label class="small ghostbtn">Import a record <input type="file" id="cmpfile" accept=".json,application/json" hidden></label>
   </div>
@@ -2052,7 +2052,7 @@ $("monpop").onclick = monPop;
 $("monopen").onclick = monOpen; $("monclose").onclick = monClose;
 // ---- TEST-1142: the Compare view (suite records, comparison cards, running a suite) ----
 const CMP = { open: false, recs: [], sel: [], timer: null };
-const CMP_SECTIONS = { speed: "speed", memory: "memory", quality: "quality vs f16 KV", tasks: "tasks", tasks_on: "tasks", hard: "hard reasoning" };
+const CMP_SECTIONS = { speed: "speed", memory: "memory", quality: "KV cache cost (KL vs f16 KV)", tasks: "tasks", tasks_on: "tasks", hard: "hard reasoning" };
 function cmpFmt(v, unit) { if (v === null || v === undefined) return "-"; const n = typeof v === "number" ? (Math.abs(v) >= 100 ? Math.round(v).toLocaleString("en-US") : String(+v.toPrecision(4))) : String(v); return n + (unit ? " " + unit : ""); }
 async function cmpOpen() {
   CMP.open = true; $("cmpdlg").hidden = false; $("cmpmodel").innerHTML = (S.models || []).map(m => `<option value="${esc(m.path)}">${esc(m.name)}</option>`).join("");
@@ -2073,14 +2073,14 @@ async function cmpCards() {
     for (const x of r.rows) {
       if (x.section != last) { rows += `<div class="sec">${esc(CMP_SECTIONS[x.section] || x.section)}</div>`; last = x.section; }
       const d = x.deltas_pct[i], mk = x.marks[i];
-      rows += `<div class="row"><span>${esc(x.label)}</span><span>${esc(cmpFmt(x.values[i], x.unit))}${d === null || !mk ? "" : ` <span class="${mk == "=" ? "flat" : mk}">${mk == "=" ? "=" : (d >= 0 ? "+" : "") + Math.round(d) + " %"}</span>`}</span></div>`;
+      rows += `<div class="row"><span>${esc(x.label)}</span><span>${esc(cmpFmt(x.values[i], x.unit))}${d === null || !mk ? "" : ` <span class="${mk == "=" ? "flat" : mk}">${mk == "=" ? "=" : (d >= 0 ? "+" : "") + Math.round(d) + " %"}</span>`}${x.values[i] === null ? "" : (x.kind == "pass" && x.ns[i] ? ` <span class="small">n=${x.ns[i]}</span>` : (x.kind == "run" ? ' <span class="small">1 run</span>' : ""))}</span></div>`;
     }
-    return `<div class="cmpcard"><div class="ref">${i == 0 ? "reference" : "vs " + esc(r.records[0])}</div><h4>${esc(m.name)} ${esc(m.quant)}</h4><div class="small">${esc(m.created)} · ${m.published ? "published" : "private"}</div>${rows}</div>`;
-  }).join("") + (r.skipped.length ? `<div class="small" style="grid-column:1/-1">${r.skipped.map(esc).join("<br>")}</div>` : "");
+    return `<div class="cmpcard"><div class="ref">${i == 0 ? "reference" : "vs " + esc(r.records[0])}</div><h4>${esc(m.name)} ${esc(m.quant)}</h4><div class="small">${esc(m.created)} · ${m.published ? "published" : "private"}${m.partial ? " · partial" : ""}</div><div class="small">${esc(m.served || "server settings not recorded")}</div>${rows}</div>`;
+  }).join("") + ((r.skipped.length || r.warnings.length) ? `<div class="small" style="grid-column:1/-1">${r.skipped.concat(r.warnings).map(esc).join("<br>")}</div>` : "");
 }
 async function cmpPoll() {
   clearTimeout(CMP.timer); if (!CMP.open) return;
-  let st; try { st = await api("/api/suite/status"); } catch (e) { return; }
+  let st; try { st = await api("/api/suite/status"); } catch (e) { CMP.timer = setTimeout(cmpPoll, 10000); return; }
   const run = st.state == "running"; $("cmprun").disabled = run; $("cmpcancel").hidden = !run; $("cmplog").hidden = !st.lines.length;
   $("cmplog").textContent = st.lines.join("\n"); $("cmpstate").textContent = run ? `running ${st.what} (${st.seconds} s)` : (st.state == "error" ? "the last run failed" : "");
   if (CMP.last == "running" && st.state == "done") await cmpLoad();

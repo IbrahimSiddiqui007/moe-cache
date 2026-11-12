@@ -21,7 +21,7 @@ def rec(name, hard, dec):
                                                                                                          "hard": {"protocol": "H", "n": 27, "pass": hard, "think_median": 5000, "think_p90": 9000, "think_max": 12000, "loops": 0, "cap_hits": 0, "cap": 0}})
 
 
-d = tempfile.mkdtemp(); A, B = rec("model-A", 20, 25.0), rec("model-B", 22, 24.0)
+d = tempfile.mkdtemp(); A, B = rec("model-A", 9, 25.0), rec("model-B", 24, 24.0)
 check(os.path.dirname(S.default_dir()).endswith("benchmarks") or S.default_dir().endswith(os.path.join("moe-cache", "suites")), "default_dir: the checkout's benchmarks/suites or the user data folder")
 ida = S.import_text(d, json.dumps(A)); idb = S.import_text(d, json.dumps(B))
 check(ida == A["id"] and os.path.exists(os.path.join(d, ida + ".json")), "import stores a valid record under its id")
@@ -42,8 +42,18 @@ for rid in ("../etc/passwd", "a/b", "", "x" * 200, "a b"):
         ok = True
     check(ok, f"record_path refuses the id {rid[:20]!r}")
 res = S.compare_ids(d, [ida, idb])
-check(res["meta"][0]["name"] == "model-A" and any(r["label"] == "hard tasks passed" and r["marks"][1] == "better" for r in res["rows"]), "compare_ids: reference first, hard pass 22 against 20 is better")
+check(res["meta"][0]["name"] == "model-A" and any(r["label"] == "hard tasks passed of 27" and r["marks"][1] == "better" for r in res["rows"]), "compare_ids: reference first, hard pass 24 against 9 of 27 is better")
 check(S.set_published(d, ida) is True and S.load(os.path.join(d, ida + ".json"))["published"] is True and [r for r in S.list_records(d) if r["id"] == ida][0]["published"], "publish sets only the flag")
+
+pre = json.loads(json.dumps(A)); pre["published"] = True; d2 = tempfile.mkdtemp(); ip = S.import_text(d2, json.dumps(pre))
+check(S.load(os.path.join(d2, ip + ".json"))["published"] is False, "an imported record arrives private even when it says published: true")
+check(S.import_text(d, json.dumps(A)) == ida, "after publishing, importing the same record again is still fine (the flag is not part of its identity)")
+for rid in ("CON", "nul.json", "com1", "LPT9"):
+    try:
+        S.record_path(d, rid); ok = False
+    except ValueError:
+        ok = True
+    check(ok, f"record_path refuses the Windows device name {rid}")
 
 # the one-at-a-time job (a fake child process instead of a real suite)
 job = ui.SuiteJob()
@@ -70,6 +80,29 @@ try:
 finally:
     ui._sp.Popen = orig
 
+# cancel: a real child that starts a grandchild (like launcher -> llama-server) is stopped as a whole tree; a stale job never changes a newer job's state
+if os.name != "nt":
+    job2 = ui.SuiteJob(); import subprocess as _s
+    real = _s.Popen
+    def spawn(cmd, **kw):
+        kw.pop("text", None); kw.pop("encoding", None); kw.pop("errors", None)
+        return real(["sh", "-c", "sleep 300 & echo started; wait"], stdout=_s.PIPE, stderr=_s.STDOUT, text=True, **{k: v for k, v in kw.items() if k in ("start_new_session",)})
+    ui._sp.Popen = spawn
+    try:
+        job2.start(["/m/a.gguf"], "quick", d); time.sleep(0.8)
+        import moe_cache_record as rr
+        tree = rr.probe().tree(job2.proc.pid); old_proc = job2.proc
+        check(len(tree) >= 2 and job2.running(), "a started suite has a child with its own child (like the launcher's llama-server)")
+        job2.cancel(); time.sleep(0.5)
+        gone = not any(os.path.exists(f"/proc/{k}") and open(f"/proc/{k}/stat").read().split()[2] != "Z" for k in tree)
+        check(gone and job2.status()["state"] == "error" and "cancelled" in job2.status()["lines"][-1], "cancel stops the whole process tree, not only the run")
+        job2.start(["/m/b.gguf"], "quick", d); newer = job2.proc; time.sleep(0.3)
+        job2._pump(old_proc)         # the first job's pump finishing late
+        check(job2.status()["state"] == "running" and job2.proc is newer, "a stale pump of a cancelled job does not change the state of the newer one")
+        job2.cancel()
+    finally:
+        ui._sp.Popen = real
+
 # wiring
 src = open(os.path.join(HERE, "bin", "moe_cache_ui.py"), encoding="utf-8").read(); page = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
 for route in ("/api/suite/records", "/api/suite/compare", "/api/suite/status", "/api/suite/import", "/api/suite/publish", "/api/suite/run", "/api/suite/cancel"):
@@ -77,5 +110,7 @@ for route in ("/api/suite/records", "/api/suite/compare", "/api/suite/status", "
 check(not any(r.startswith("/api/suite") for r in ui.REMOTE_GET + ui.REMOTE_POST), "the suite routes are not allowed over the LAN (private)")
 check('id="cmpdlg"' in page and 'id="cmpopen"' in page and "askConfirm(\"Publish this record?" in page and "esc(" in page.split("async function cmpCards")[1].split("async function cmpPoll")[0], "the page: the Compare button and dialog, publish asks first, record fields go through esc()")
 check("run: stop the model" not in src and "stop the model that this page runs first" in src and "self.running()" in src.split('"/api/suite/run"')[1][:400], "running a suite is refused while the page's own model runs (memory)")
+check('"/api/start", "/api/servers/start", "/api/servers/group") and self.suite.running()' in src, "starting a model by hand (also further servers and groups) is refused while a suite runs")
+check("catch (e) { CMP.timer = setTimeout(cmpPoll" in page, "the page keeps polling after one failed status call")
 print("suite_ui_test: " + ("FAIL" if fails else "PASS"))
 sys.exit(1 if fails else 0)

@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """MODELS-1141: runs tools/hard_tasks.json against a llama-server and scores it: pass (objective check), thinking tokens, total tokens, loops, prompts that hit the cap.
 Standard library only (+ tools/quality_yardstick.py for the request helpers and the loop test).
-  hard_tasks_run.py run     --url http://127.0.0.1:8080 --out OUT.json [--label L] [--tasks tools/hard_tasks.json] [--cap 0] [--workers 1] [--only ID,ID] [--no-think]
+  hard_tasks_run.py run     --url http://127.0.0.1:8080 --out OUT.json [--label L] [--tasks tools/hard_tasks.json] [--cap 0] [--workers 1] [--only ID,ID] [--no-think] [--resume] [--task-seconds N]
   hard_tasks_run.py summary OUT.json [OUT2.json ...]         one table per run (pass, thinking tokens median/mean/p90/max, loops, cap hits, by category)
   hard_tasks_run.py compare A.json B.json                    per task: pass and thinking tokens of both runs, and the totals
 --cap 0 = no answer cap (the server's context is the only limit; a prompt that fills it stops with stop=limit and counts as a cap hit).
 Request: the same as quality_yardstick.py (apply-template + /completion, temperature 0, top_k 1, seed 1, no prompt cache, return_tokens); the chat template's own thinking default is used (no
---no-think), so a thinking model thinks. Use llama-server -np N with --workers N to run N tasks at once (the answers do not change; the wall time does)."""
+--no-think), so a thinking model thinks. Use llama-server -np N with --workers N to run N tasks at once (the wall time drops; greedy answers CAN differ from a one-at-a-time run because batched numerics differ, so compare runs made with the same --workers)."""
 import argparse, json, os, re, statistics, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import quality_yardstick as Y      # noqa: E402
 
+LOOP_RULE = "strict-32x4"      # a loop = a 32-token window seen 4 times (the old 12 tokens x 3 flagged long legitimate reasoning that re-prints grids and states: kept as `loop_weak`)
 
-def final_answer(text):
-    """The text after the last </think>, and in it the last `ANSWER: ...` line (None when there is none)."""
+
+def final_answer(text, stop=""):
+    """The last `ANSWER: ...` line after the last </think> (None when there is none). A text that was cut (stop=limit or timeout) before it closed an opened think block has no answer: a draft
+    inside unfinished thinking is not accepted. A text with no think tag at all (a model that does not think) is read whole."""
+    if stop in ("limit", "timeout") and "</think>" not in text and ("<think>" in text or stop == "limit"):
+        return None
     body = text.split("</think>")[-1]
     m = re.findall(r"ANSWER:\s*(.+)", body)
     return m[-1].strip().strip("`*. ") if m else None
@@ -37,9 +42,10 @@ def check(task, answer):
 
 
 def think_tokens(url, text, n_tokens, stop):
-    """Number of tokens before </think> (the template opens the think block in the prompt); all of them when the answer never got out of the thinking."""
+    """Number of tokens before </think> (the template opens the think block in the prompt); all of them when the text was cut before the think block closed; 0 when it ended without any think tag
+    (a model or template without that tag: nothing can be said about its thinking)."""
     if "</think>" not in text:
-        return n_tokens
+        return n_tokens if (stop in ("limit", "timeout") or "<think>" in text) else 0
     head = text.split("</think>")[0]
     try:
         return len(Y.post(url, "/tokenize", {"content": head, "add_special": False}, 600)["tokens"])
@@ -55,22 +61,49 @@ def cmd_run(a):
     out = {"label": a.label or "", "url": a.url, "cap": a.cap, "started": time.strftime("%Y-%m-%d %H:%M:%S"), "model": props.get("model_path", ""), "build": props.get("build_info", ""), "items": [None] * len(tasks)}
     lock = threading.Lock(); done = [0]; t0 = time.time()
 
+    prev = {}
+    if a.resume and os.path.exists(a.out + ".partial"):
+        try:
+            pr = json.load(open(a.out + ".partial", encoding="utf-8"))
+            if pr.get("cap") == a.cap and pr.get("loop_rule") == LOOP_RULE:
+                prev = {x["id"]: x for x in pr["items"] if x and not x.get("error")}
+        except (OSError, ValueError, KeyError):
+            prev = {}
+    out["loop_rule"] = LOOP_RULE; out["task_seconds"] = a.task_seconds
+
+    def save():
+        json.dump(out, open(a.out + ".partial", "w", encoding="utf-8"), ensure_ascii=False)
+
     def work(i):
-        t = tasks[i]; body = {"messages": [{"role": "user", "content": t["prompt"]}]}
+        t = tasks[i]
+        if t["id"] in prev:
+            with lock:
+                out["items"][i] = prev[t["id"]]; done[0] += 1
+                print(f"[{done[0]}/{len(tasks)}] {t['id']:15s} (resumed)", flush=True)
+            return
+        body = {"messages": [{"role": "user", "content": t["prompt"]}]}
         if a.no_think:
             body["chat_template_kwargs"] = {"enable_thinking": False}
-        prompt = Y.post(a.url, "/apply-template", body)["prompt"]
         s = time.time()
-        r = Y.post(a.url, "/completion", {"prompt": prompt, "n_predict": a.cap if a.cap > 0 else -1, "temperature": 0, "top_k": 1, "top_p": 1.0, "min_p": 0.0, "repeat_penalty": 1.0,
-                                           "presence_penalty": 0.0, "seed": 1, "cache_prompt": False, "return_tokens": True, "stream": False}, timeout=86400)
-        text = r.get("content", ""); toks = r.get("tokens", []); stop = r.get("stop_type", "")
-        ans = final_answer(text)
-        rec = {"id": t["id"], "category": t["category"], "n_tokens": len(toks), "stop": stop, "think_tokens": think_tokens(a.url, text, len(toks), stop), "loop": Y.has_loop(toks),
-               "answer": ans, "pass": check(t, ans), "cap_hit": stop == "limit", "seconds": round(time.time() - s), "text_tail": text[-300:]}
+        try:
+            prompt = Y.post(a.url, "/apply-template", body)["prompt"]
+            r = Y.post(a.url, "/completion", {"prompt": prompt, "n_predict": a.cap if a.cap > 0 else -1, "temperature": 0, "top_k": 1, "top_p": 1.0, "min_p": 0.0, "repeat_penalty": 1.0,
+                                               "presence_penalty": 0.0, "seed": 1, "cache_prompt": False, "return_tokens": True, "stream": False}, timeout=a.task_seconds or 86400)
+            text = r.get("content", ""); toks = r.get("tokens", []); stop = r.get("stop_type", "")
+        except Exception as ex:      # one failed request (HTTP error, a dropped connection, the time budget) is one task's error, not the end of the run
+            timed_out = "timed out" in str(ex).lower()
+            rec = {"id": t["id"], "category": t["category"], "error": f"{type(ex).__name__}: {str(ex)[:200]}", "stop": "timeout" if timed_out else "error", "seconds": round(time.time() - s), "pass": False, "loop": False,
+                   "cap_hit": False, "think_tokens": 0, "n_tokens": 0}
+            if timed_out:
+                rec["error"] = ""; rec["cap_hit"] = True            # over its time budget: counted like a cap hit (no answer), not as an error
+        else:
+            ans = final_answer(text, stop)
+            rec = {"id": t["id"], "category": t["category"], "n_tokens": len(toks), "stop": stop, "think_tokens": think_tokens(a.url, text, len(toks), stop), "think_tag": "</think>" in text or "<think>" in text,
+                   "loop": Y.has_loop(toks, 32, 4), "loop_weak": Y.has_loop(toks), "answer": ans, "pass": check(t, ans), "cap_hit": stop == "limit", "seconds": round(time.time() - s), "text_tail": text[-300:]}
         with lock:
             out["items"][i] = rec; done[0] += 1
-            print(f"[{done[0]}/{len(tasks)}] {t['id']:15s} {'PASS' if rec['pass'] else 'fail'} think {rec['think_tokens']:6d} total {rec['n_tokens']:6d} stop={stop} loop={rec['loop']} {rec['seconds']}s", flush=True)
-            json.dump(out, open(a.out + ".partial", "w"), ensure_ascii=False)
+            print(f"[{done[0]}/{len(tasks)}] {t['id']:15s} {'ERROR ' + rec['error'] if rec.get('error') else ('PASS' if rec['pass'] else 'fail')} think {rec['think_tokens']:6d} total {rec['n_tokens']:6d} stop={rec['stop']} loop={rec['loop']} {rec['seconds']}s", flush=True)
+            save()
 
     with ThreadPoolExecutor(a.workers) as ex:
         list(ex.map(work, range(len(tasks))))
@@ -84,8 +117,9 @@ def pct(v, p):
 
 
 def summary_text(run):
-    it = [x for x in run["items"] if x]; th = [x["think_tokens"] for x in it]; tot = [x["n_tokens"] for x in it]
-    lines = [f"run {run.get('label') or run.get('model','')}: {sum(x['pass'] for x in it)}/{len(it)} pass, loops {sum(x['loop'] for x in it)}, cap hits {sum(x['cap_hit'] for x in it)} (cap {run.get('cap') or 'none'}), {run.get('seconds', 0)} s",
+    errs = sum(1 for x in run["items"] if x and x.get("error"))
+    it = [x for x in run["items"] if x and not x.get("error")]; th = [x["think_tokens"] for x in it]; tot = [x["n_tokens"] for x in it]
+    lines = [f"run {run.get('label') or run.get('model','')}: {sum(x['pass'] for x in it)}/{len(it)} pass, loops {sum(x['loop'] for x in it)}, cap hits {sum(x['cap_hit'] for x in it)} (cap {run.get('cap') or 'none'}), errors {errs}, {run.get('seconds', 0)} s",
              f"  thinking tokens: median {int(statistics.median(th))} mean {int(statistics.mean(th))} p90 {pct(th, .9)} max {max(th)}; total tokens: median {int(statistics.median(tot))} max {max(tot)}; tasks over 8k thinking: {sum(1 for v in th if v > 8000)}"]
     cats = {}
     for x in it:
@@ -101,7 +135,7 @@ def cmd_summary(a):
 
 
 def cmd_compare(a):
-    A, B = (json.load(open(f)) for f in (a.a, a.b)); ia = {x["id"]: x for x in A["items"] if x}; ib = {x["id"]: x for x in B["items"] if x}
+    A, B = (json.load(open(f)) for f in (a.a, a.b)); ia = {x["id"]: x for x in A["items"] if x and not x.get('error')}; ib = {x["id"]: x for x in B["items"] if x and not x.get('error')}
     print(f"{'task':16s} | {'A pass':6s} {'A think':>8s} {'A loop':6s} | {'B pass':6s} {'B think':>8s} {'B loop':6s}")
     for k in ia:
         if k in ib:
@@ -114,6 +148,6 @@ def cmd_compare(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd", required=True)
     r = sp.add_parser("run"); r.add_argument("--url", required=True); r.add_argument("--out", required=True); r.add_argument("--label", default=""); r.add_argument("--tasks", default=os.path.join(HERE, "hard_tasks.json"))
-    r.add_argument("--cap", type=int, default=0); r.add_argument("--workers", type=int, default=1); r.add_argument("--only", default=""); r.add_argument("--no-think", action="store_true")
+    r.add_argument("--cap", type=int, default=0); r.add_argument("--workers", type=int, default=1); r.add_argument("--only", default=""); r.add_argument("--no-think", action="store_true"); r.add_argument("--resume", action="store_true", help="skip the tasks already finished in OUT.json.partial"); r.add_argument("--task-seconds", type=int, default=0, help="time budget per task (0 = none); a task over it counts as a cap hit")
     s = sp.add_parser("summary"); s.add_argument("files", nargs="+"); c = sp.add_parser("compare"); c.add_argument("a"); c.add_argument("b")
     a = ap.parse_args(); {"run": cmd_run, "summary": cmd_summary, "compare": cmd_compare}[a.cmd](a)

@@ -179,15 +179,98 @@ def tasks():
     return T
 
 
+def verify_all(T):
+    """Re-derive every task's answer FROM ITS PROMPT TEXT with code that does not share the generator's data (MODELS-1141/M4): a prompt that does not match its check fails here."""
+    import re as _re
+    for t in T:
+        p, ans, cat = t["prompt"], t["check"]["answer"], t["category"]
+        if cat == "sudoku":
+            g = [[int(ch) if ch.isdigit() else 0 for ch in t["check"]["grid"][r * 9:(r + 1) * 9]] for r in range(9)]
+            s_ = sudoku_solutions(g); assert len(s_) == 1 and "".join(str(v) for r in s_[0] for v in r) == ans, t["id"]
+            rows = [ln.split() for ln in p.split("\n\n")[1].splitlines()]; assert "".join(c if c != "." else "." for r in rows for c in r) == t["check"]["grid"], t["id"] + ": grid in prompt differs from the check"
+        elif cat == "cryptarithm":
+            m = _re.search(r"Solve ([A-Z]+(?: \+ [A-Z]+)*) = ([A-Z]+)", p); words, res = m.group(1).split(" + "), m.group(2)
+            sols = crypt_solutions(words, res, limit=3); assert len(sols) == 1, t["id"] + ": not unique"
+            mp = dict(kv.split("=") for kv in ans.split(",")); assert sum(int("".join(mp[c] for c in w)) for w in words) == int("".join(mp[c] for c in res)) and len(set(mp.values())) == len(mp), t["id"]
+        elif cat == "long arithmetic":
+            m = _re.search(r"exactly: (\d+) \* (\d+) \+ (\d+) \* (\d+)", p); x, y, z, w = map(int, m.groups()); assert str(x * y + z * w) == ans and z == w, t["id"]
+        elif cat == "modular arithmetic":
+            m = _re.search(r"Compute (\d+)\^(\d+) mod (\d+)", p); b_, e_, md = map(int, m.groups()); r_ = 1
+            for bit in bin(e_)[2:]: r_ = r_ * r_ % md; r_ = r_ * b_ % md if bit == "1" else r_
+            assert str(r_) == ans, t["id"]
+        elif cat == "graph":
+            m = _re.search(r"weighted edges \(u->v:weight\): (.*?)\.\nHow many", p, _re.S); E = [tuple(map(int, x)) for x in _re.findall(r"(\d+)->(\d+):(\d+)", m.group(1))]
+            n_ = int(_re.search(r"nodes 0\.\.(\d+)", p).group(1)) + 1; INF = 10 ** 9; D = [[INF] * n_ for _ in range(n_)]
+            for u, v, w in E: D[u][v] = min(D[u][v], w)
+            for i in range(n_): D[i][i] = 0
+            for k in range(n_):
+                for i in range(n_):
+                    for j in range(n_): D[i][j] = min(D[i][j], D[i][k] + D[k][j])
+            tgt = int(_re.search(r"from node 0 to node (\d+)", p).group(1)); cnt = {0: 1}
+            for v in sorted((x for x in range(n_) if D[0][x] < INF), key=lambda x: D[0][x]):
+                if v: cnt[v] = sum(cnt[u] for u, vv, w in E if vv == v and u in cnt and D[0][u] + w == D[0][v])
+            assert f"{D[0][tgt]},{cnt[tgt]}" == ans, t["id"]
+        elif cat == "combinatorics":
+            m = _re.search(r"length (\d+) contain none of the substrings ([01, ]+)\?", p); L = int(m.group(1)); forb = [x.strip() for x in m.group(2).split(",")]; k = max(map(len, forb)) - 1
+            st = {"": 1}
+            for _ in range(L):
+                nx = {}
+                for suf, c in st.items():
+                    for bit in "01":
+                        w = suf + bit
+                        if any(w.endswith(f) for f in forb): continue
+                        key = w[-k:] if k else ""; nx[key] = nx.get(key, 0) + c
+                st = nx
+            assert str(sum(st.values())) == ans, t["id"]
+        elif cat == "program tracing":
+            import io, contextlib
+            code = _re.search(r"```python\n(.*?)\n```", p, _re.S).group(1); buf = io.StringIO()
+            with contextlib.redirect_stdout(buf): exec(code, {})
+            assert buf.getvalue().strip() == ans, t["id"]
+        elif cat == "logic grid":
+            names = {"nationality": ["Brit", "Swede", "Dane", "Norwegian", "German"], "colour": ["red", "green", "white", "yellow", "blue"], "drink": ["tea", "coffee", "milk", "beer", "water"], "pet": ["dog", "bird", "cat", "horse", "fish"], "sport": ["tennis", "chess", "golf", "rugby", "squash"]}
+            cl = [ln[2:] for ln in p.splitlines() if ln.startswith("- ")]; cons = []
+            tk = lambda x: _re.findall(r"the (\w+) \((\w+)\)", x.lower())
+            for c in cl:
+                low = c.lower(); pr = [(v, k_) for v, k_ in tk(c)]
+                if "lives in house" in low: cons.append(("at", pr[0], int(_re.search(r"house (\d)", low).group(1)) - 1))
+                elif "same house" in low and "not" not in low: cons.append(("same", pr[0], pr[1]))
+                elif "not in the same house" in low: cons.append(("notsame", pr[0], pr[1]))
+                elif "directly to the left" in low: cons.append(("left", pr[0], pr[1]))
+                elif "neighbouring" in low: cons.append(("next", pr[0], pr[1]))
+                else: raise AssertionError(t["id"] + ": clue not understood: " + c)
+            keys = list(names)[:5]; sols = []
+            def ok(asg):
+                for c in cons:
+                    if c[0] == "at":
+                        v, k_ = c[1]
+                        if k_ in asg and asg[k_].index(v.capitalize() if v.capitalize() in names[k_] else v) != c[2]: return False
+                        continue
+                    (v1, k1), (v2, k2) = c[1], c[2]
+                    if k1 in asg and k2 in asg:
+                        f = lambda v, k_: asg[k_].index(next(x for x in names[k_] if x.lower() == v)); h1, h2 = f(v1, k1), f(v2, k2)
+                        if c[0] == "same" and h1 != h2 or c[0] == "notsame" and h1 == h2 or c[0] == "left" and h1 + 1 != h2 or c[0] == "next" and abs(h1 - h2) != 1: return False
+                return True
+            def go(i, asg):
+                if len(sols) > 1: return
+                if i == len(keys): sols.append(dict(asg)); return
+                for pm in itertools.permutations(names[keys[i]]):
+                    asg[keys[i]] = pm
+                    if ok(asg): go(i + 1, asg)
+                    del asg[keys[i]]
+            go(0, {}); assert len(sols) == 1, t["id"] + f": {len(sols)} solutions"
+            q = _re.search(r"Question: what is the (\w+) of the person whose (\w+) is (\w+)\?", p); assert q, t["id"] + ": question not understood"
+            ck, ck2, v = q.group(1), q.group(2), q.group(3); h = sols[0][ck2].index(next(x for x in names[ck2] if x.lower() == v)); assert sols[0][ck][h].lower() == ans, t["id"]
+        else:
+            raise AssertionError("no verifier for category " + cat)
+
+
 if __name__ == "__main__":
     out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else os.path.join(os.path.dirname(os.path.abspath(__file__)), "hard_tasks.json")
     T = tasks()
     if "--verify" in sys.argv:
-        for t in T:
-            if t["category"] == "sudoku":
-                g = [[int(ch) if ch.isdigit() else 0 for ch in t["check"]["grid"][r * 9:(r + 1) * 9]] for r in range(9)]
-                s = sudoku_solutions(g); assert len(s) == 1 and "".join(str(v) for r in s[0] for v in r) == t["check"]["answer"], t["id"]
-        print("verified", len(T))
+        verify_all(T)
+        print("verified", len(T), "tasks (every category re-solved from its own prompt text)")
     json.dump(T, open(out, "w"), indent=1, ensure_ascii=False)
     import collections
     print(len(T), "tasks:", dict(collections.Counter(t["category"] for t in T)), "->", out)

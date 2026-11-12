@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """TEST-1142: renders suite records as one self-contained HTML page: one card per model (columns), the first one is the reference, every tile shows the value and its change against the reference
-(green better, red worse, grey within noise); sections measured with another protocol show '-' and a note. No external files, no scripts; every field from a record is escaped.
+(green better, red worse, grey = no difference outside the noise of one run); sections measured with another protocol or on another server setup show '-' and a note. No external files, no scripts; every field from a record is escaped.
   moe_cache.py bench-suite card REC.json [REC2.json ...] --out card.html [--title TEXT]"""
 import argparse, html, os, sys
 
@@ -18,7 +18,7 @@ h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 16px;font-siz
 .sec{margin:10px 0 2px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mute);border-top:1px solid var(--line);padding-top:8px}
 .row{display:flex;justify-content:space-between;gap:8px;padding:2px 0}.row .v{font-variant-numeric:tabular-nums;text-align:right}
 .better{color:var(--good)}.worse{color:var(--bad)}.flat{color:var(--flat)}.d{font-size:12px;margin-left:6px}
-.note{margin-top:14px;color:var(--mute);font-size:12px}.priv{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px;color:var(--mute)}"""
+.tag{color:var(--mute);font-size:11px;margin-left:6px}.note{margin-top:14px;color:var(--mute);font-size:12px}.priv{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px;color:var(--mute)}"""
 
 
 def fmt(v, unit):
@@ -34,16 +34,19 @@ def render(records, title="Model comparison"):
         m = rec["model"]; rows_html = []; last = None
         for r in res["rows"]:
             if r["section"] != last:
-                rows_html.append(f'<div class="sec">{e({"speed": "speed", "memory": "memory", "quality": "quality vs f16 KV", "tasks": "tasks", "tasks_on": "tasks", "hard": "hard reasoning"}.get(r["section"], r["section"]))}</div>'); last = r["section"]
+                rows_html.append(f'<div class="sec">{e({"speed": "speed", "memory": "memory", "quality": "KV cache cost (KL vs the same model with f16 KV)", "tasks": "tasks", "tasks_on": "tasks", "hard": "hard reasoning"}.get(r["section"], r["section"]))}</div>'); last = r["section"]
             d, mk = r["deltas_pct"][i], r["marks"][i]
             chip = "" if d is None or not mk else f'<span class="d {"flat" if mk == "=" else mk}">{"=" if mk == "=" else f"{d:+.0f} %"}</span>'
-            rows_html.append(f'<div class="row"><span>{e(r["label"])}</span><span class="v">{e(fmt(r["values"][i], r["unit"]))}{chip}</span></div>')
-        meta = " · ".join(x for x in [m.get("quant", ""), f'{m["size_gb"]} GB' if m.get("size_gb") else "", rec.get("machine", {}).get("platform", "")[:40], rec.get("created_utc", "")] if x)
+            tag = "" if r["values"][i] is None else (f' <span class="tag">n={r["ns"][i]}</span>' if r["kind"] == "pass" and r["ns"][i] else (' <span class="tag">1 run</span>' if r["kind"] == "run" else ""))
+            rows_html.append(f'<div class="row"><span>{e(r["label"])}</span><span class="v">{e(fmt(r["values"][i], r["unit"]))}{chip}{tag}</span></div>')
+        sv = rec.get("served") or {}; mc = rec.get("machine") or {}
+        meta = " · ".join(x for x in [m.get("quant", ""), f'{m["size_gb"]} GB' if m.get("size_gb") else "", (mc.get("gpu_model") or mc.get("cpu_model") or mc.get("platform") or "")[:40], rec.get("created_utc", "")] if x)
+        served = " · ".join(x for x in [f'ctx {sv["ctx"]}' if sv.get("ctx") else "", f'KV {sv["ctk"]}/{sv["ctv"]}' if sv.get("ctk") else "", f'{sv["np"]} slots' if sv.get("np") else "", sv.get("build") or ""] if x) or "server settings not recorded"
         cols.append(f'<section class="card"><div class="ref">{"reference" if i == 0 else "vs " + e(res["records"][0])}</div><h2>{e(m.get("name", "?"))}</h2><div class="meta">{e(meta)}'
-                    f' <span class="priv">{"published" if rec.get("published") else "private"}</span></div>{"".join(rows_html)}</section>')
-    notes = "".join(f"<div>{e(s)}</div>" for s in res["skipped"])
+                    f' <span class="priv">{"published" if rec.get("published") else "private"}</span>{" <span class=priv>partial</span>" if rec.get("partial") else ""}</div><div class="meta">{e(served)}</div>{"".join(rows_html)}</section>')
+    notes = "".join(f"<div>{e(s)}</div>" for s in res["skipped"] + res["warnings"])
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(title)}</title><style>{CSS}</style></head><body>'
-            f'<h1>{e(title)}</h1><p class="sub">Same tasks, same settings; the first card is the reference. Green = better than the reference, red = worse, grey = within 2 %.</p><div class="grid">{"".join(cols)}</div>'
+            f'<h1>{e(title)}</h1><p class="sub">The first card is the reference. Every number is one run. Green or red only where the difference is outside the noise of one run: pass counts use a 95 % interval, speed and memory need 10 % or more. Where the server settings differ (see each card) the notes below say so.</p><div class="grid">{"".join(cols)}</div>'
             f'<div class="note">{notes}</div></body></html>')
 
 

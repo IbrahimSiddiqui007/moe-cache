@@ -59,6 +59,11 @@ chk("a cap of 512 is sent as n_predict 512", r2.returncode == 0 and SEEN == [512
 s = subprocess.run([sys.executable, "-I", os.path.join(HERE, "tools", "hard_tasks_run.py"), "summary", out], capture_output=True, text=True)
 chk("summary prints pass count and thinking tokens", "1/1 pass" in s.stdout and "thinking tokens" in s.stdout)
 ids = [t["id"] for t in TASKS]
+sys.path.insert(0, os.path.join(HERE, "tools")); import hard_tasks_run as HR, quality_yardstick as YY
+chk("an answer inside an unfinished think block (cut by the cap) is not accepted, a finished one is", HR.final_answer("ok ANSWER: 42", "limit") is None and HR.final_answer("t</think>\nANSWER: 42", "stop") == "42" and HR.final_answer("ANSWER: 42", "stop") == "42")
+chk("no think tag: 0 thinking tokens when it ended by itself, all of them when cut", HR.think_tokens("http://x", "plain", 10, "stop") == 0 and HR.think_tokens("http://x", "plain", 10, "limit") == 10)
+rep = list(range(100)) * 3; rnd = list(range(1000))
+chk("loop rule strict-32x4: a 32-token window 4 times is a loop; three repeats of a 100-token passage are not (the old 12x3 rule flagged them)", YY.has_loop((list(range(32)) * 4)) and HR.LOOP_RULE == "strict-32x4" and YY.has_loop(rep) and not YY.has_loop(rep, 32, 4) and not YY.has_loop(rnd, 32, 4))
 chk("the task file: 27 tasks, unique ids, known check kinds, an ANSWER instruction in every prompt", len(TASKS) == 27 and len(set(ids)) == 27 and all(t["check"]["kind"] in ("int", "word", "exact") and "ANSWER:" in t["prompt"] and t["why_hard"] for t in TASKS))
 print("hard_tasks_test: " + ("FAIL" if fails else "PASS"))
 sys.exit(1 if fails else 0)

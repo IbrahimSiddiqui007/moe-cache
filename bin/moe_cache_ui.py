@@ -2434,9 +2434,14 @@ import moe_cache_suite as suite      # noqa: E402
 
 
 class SuiteJob:
-    """One `bench-suite run` at a time, started from the page as a child process (the same command a user types); state idle | running | done | error, the last output lines as progress."""
+    """One `bench-suite run` at a time, started from the page as a child process (the same command a user types); state idle | running | done | error, the last output lines as progress.
+    The child gets its own process group; a cancel stops the whole tree (the run, the launcher and its llama-server), and a finished or cancelled job can never change the state of a newer one."""
     def __init__(self):
         self.lock = _th.Lock(); self.proc = None; self.state = "idle"; self.lines = []; self.started = None; self.what = ""
+
+    def running(self):
+        with self.lock:
+            return self.state == "running"
 
     def start(self, models, profile, out_dir):
         with self.lock:
@@ -2445,22 +2450,29 @@ class SuiteJob:
             if profile not in ("quick", "standard", "night"):
                 raise ValueError("profile: quick, standard or night")
             cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "moe_cache.py"), "bench-suite", "run", *models, "--profile", profile, "--out", out_dir]
-            self.proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, encoding="utf-8", errors="replace")
+            kw = {"start_new_session": True} if os.name != "nt" else {"creationflags": getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)}
+            self.proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, encoding="utf-8", errors="replace", **kw)
             self.state = "running"; self.lines = []; self.started = _time.time(); self.what = f"{profile}: " + ", ".join(os.path.basename(m) for m in models)
             _th.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
 
     def _pump(self, proc):
         for line in proc.stdout:
             with self.lock:
-                self.lines = (self.lines + [line.rstrip()])[-40:]
+                if self.proc is proc:
+                    self.lines = (self.lines + [line.rstrip()])[-40:]
         rc = proc.wait()
         with self.lock:
-            self.state = "done" if rc == 0 else "error"
+            if self.proc is proc and self.state == "running":
+                self.state = "done" if rc == 0 else "error"
 
     def cancel(self):
         with self.lock:
-            if self.proc is not None and self.state == "running":
-                self.proc.terminate(); self.state = "error"; self.lines.append("cancelled")
+            proc = self.proc if self.state == "running" else None
+            if proc is None:
+                return
+            self.state = "error"; self.lines.append("cancelled (finished sections are kept; run the same suite again to resume)")
+        import moe_cache_suite_run as _R
+        _R.kill_tree(proc.pid)             # the run, the launcher and the llama-server; the run's own handler writes the partial record first when it can
 
     def status(self):
         with self.lock:
@@ -2725,6 +2737,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/llama":                    # "llama.cpp not found": the path the user typed (checked with --version) is remembered
                 r, v = self.store.set_llama(body.get("path"))
                 return self.send(200, {"path": r, "version": v, "llama_found": True})
+            if self.path in ("/api/start", "/api/servers/start", "/api/servers/group") and self.suite.running():
+                raise ValueError("a suite is running: it starts and stops its own models; wait for it or cancel it first")
             if self.path == "/api/start":
                 if body.get("on_demand") and not ON_DEMAND:
                     raise ValueError("Start on first request is not in this version yet")
