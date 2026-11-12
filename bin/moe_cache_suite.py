@@ -14,7 +14,7 @@ import argparse, datetime, hashlib, json, os, re, statistics, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE_SCHEMA = 1
 SCHEMA_PATH = os.path.join(HERE, "..", "docs", "suite_record.schema.json")
-SECTIONS = ("speed", "memory", "quality", "tasks", "hard")
+SECTIONS = ("speed", "memory", "quality", "tasks", "tasks_on", "hard")      # tasks = thinking off, tasks_on = thinking on (the section's `think` says which)
 
 
 def protocol_hash(**parts):
@@ -83,8 +83,9 @@ def validate_record(rec):
     s = rec.get("sections", {})
     if "hard" in s and s["hard"].get("pass", 0) > s["hard"].get("n", 0):
         probs.append("hard: pass > n")
-    if "tasks" in s and s["tasks"].get("pass", 0) > s["tasks"].get("n", 0):
-        probs.append("tasks: pass > n")
+    for k in ("tasks", "tasks_on"):
+        if k in s and s[k].get("pass", 0) > s[k].get("n", 0):
+            probs.append(f"{k}: pass > n")
     if "quality" in s and not 0 <= s["quality"].get("top1_pct", 0) <= 100:
         probs.append("quality: top1_pct outside 0-100")
     return probs
@@ -100,6 +101,14 @@ def _band(depth, key):
     return g
 
 
+def _n(records, sec):
+    """The task count of the first record that has the section (the protocol hash makes it the same task set in every compared record)."""
+    for r in records:
+        if sec in r["sections"]:
+            return r["sections"][sec].get("n", "?")
+    return "?"
+
+
 def _metrics(records):
     rows = [("speed", "ttft", lambda s: s.get("ttft_ms"), "ms", -1), ("speed", "decode batch 1", lambda s: s.get("decode_b1"), "tok/s", 1), ("speed", "decode batch 4", lambda s: s.get("decode_b4"), "tok/s", 1)]
     depths = sorted({b["depth"] for r in records for b in r["sections"].get("speed", {}).get("bands", [])})
@@ -107,7 +116,7 @@ def _metrics(records):
         rows.insert(0, ("speed", f"decode at {d // 1024}k", _band(d, "decode_tps"), "tok/s", 1)); rows.insert(1, ("speed", f"prompt at {d // 1024}k", _band(d, "prompt_tps"), "tok/s", 1))
     rows += [("memory", "server RSS", lambda s: s.get("rss_gb"), "GB", -1), ("memory", "VRAM", lambda s: s.get("vram_gb"), "GB", -1),
              ("quality", "KL mean", lambda s: s.get("kl_mean"), "", -1), ("quality", "same top token", lambda s: s.get("top1_pct"), "%", 1),
-             ("tasks", "202 tasks passed", lambda s: s.get("pass"), "", 1),
+             ("tasks", f"tasks passed of {_n(records, 'tasks')}, thinking off", lambda s: s.get("pass"), "", 1), ("tasks_on", f"tasks passed of {_n(records, 'tasks_on')}, thinking on", lambda s: s.get("pass"), "", 1),
              ("hard", "hard tasks passed", lambda s: s.get("pass"), "", 1), ("hard", "thinking tokens, median", lambda s: s.get("think_median"), "", -1), ("hard", "thinking tokens, p90", lambda s: s.get("think_p90"), "", -1),
              ("hard", "loops", lambda s: s.get("loops"), "", -1), ("hard", "cap hits", lambda s: s.get("cap_hits"), "", -1)]
     return rows

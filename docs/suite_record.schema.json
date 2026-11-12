@@ -4,27 +4,267 @@
   "title": "moe-cache benchmark-suite record (TEST-1142)",
   "description": "One suite run: one model + quant + settings on one machine. Private by default (benchmarks/suites/); `published` is set only by `bench-suite publish`. Every section carries its own protocol hash so two records are compared only on sections measured the same way.",
   "type": "object",
-  "required": ["suite_record_schema", "created_utc", "id", "model", "machine", "software", "settings", "sections"],
+  "required": [
+    "suite_record_schema",
+    "created_utc",
+    "id",
+    "model",
+    "machine",
+    "software",
+    "settings",
+    "sections"
+  ],
   "properties": {
-    "suite_record_schema": {"const": 1},
-    "created_utc": {"type": "string"},
-    "id": {"type": "string"},
-    "published": {"type": "boolean"},
-    "profile": {"type": "string"},
-    "model": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "file": {"type": "string"}, "quant": {"type": "string"}, "size_gb": {"type": "number"}, "sha256": {"type": "string"}}},
-    "machine": {"type": "object"},
-    "software": {"type": "object"},
-    "settings": {"type": "object"},
+    "suite_record_schema": {
+      "const": 1
+    },
+    "created_utc": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "published": {
+      "type": "boolean"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "model": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "quant": {
+          "type": "string"
+        },
+        "size_gb": {
+          "type": "number"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "machine": {
+      "type": "object"
+    },
+    "software": {
+      "type": "object"
+    },
+    "settings": {
+      "type": "object"
+    },
     "sections": {
       "type": "object",
       "properties": {
-        "speed": {"type": "object", "required": ["protocol", "bands"], "properties": {"protocol": {"type": "string"}, "bands": {"type": "array", "items": {"type": "object", "required": ["depth"], "properties": {"depth": {"type": "integer"}, "prompt_tps": {"type": "number"}, "decode_tps": {"type": "number"}}}}, "ttft_ms": {"type": "number"}, "decode_b1": {"type": "number"}, "decode_b4": {"type": "number"}}},
-        "memory": {"type": "object", "required": ["protocol"], "properties": {"protocol": {"type": "string"}, "rss_gb": {"type": "number"}, "vram_gb": {"type": "number"}, "commit_gb": {"type": "number"}}},
-        "quality": {"type": "object", "required": ["protocol", "ref", "top1_pct"], "properties": {"protocol": {"type": "string"}, "ref": {"type": "string"}, "kl_mean": {"type": "number"}, "kl_median": {"type": "number"}, "kl_p90": {"type": "number"}, "top1_pct": {"type": "number"}, "windows": {"type": "integer"}, "tokens": {"type": "integer"}}},
-        "tasks": {"type": "object", "required": ["protocol", "n", "pass", "think"], "properties": {"protocol": {"type": "string"}, "n": {"type": "integer"}, "pass": {"type": "integer"}, "think": {"type": "string"}, "cap": {"type": "integer"}, "by_category": {"type": "object"}}},
-        "hard": {"type": "object", "required": ["protocol", "n", "pass"], "properties": {"protocol": {"type": "string"}, "n": {"type": "integer"}, "pass": {"type": "integer"}, "think_median": {"type": "number"}, "think_p90": {"type": "number"}, "think_max": {"type": "number"}, "loops": {"type": "integer"}, "cap_hits": {"type": "integer"}, "cap": {"type": "integer"}, "by_category": {"type": "object"}}}
+        "speed": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "bands"
+          ],
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "bands": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "depth"
+                ],
+                "properties": {
+                  "depth": {
+                    "type": "integer"
+                  },
+                  "prompt_tps": {
+                    "type": "number"
+                  },
+                  "decode_tps": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "ttft_ms": {
+              "type": "number"
+            },
+            "decode_b1": {
+              "type": "number"
+            },
+            "decode_b4": {
+              "type": "number"
+            }
+          }
+        },
+        "memory": {
+          "type": "object",
+          "required": [
+            "protocol"
+          ],
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "rss_gb": {
+              "type": "number"
+            },
+            "vram_gb": {
+              "type": "number"
+            },
+            "commit_gb": {
+              "type": "number"
+            }
+          }
+        },
+        "quality": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "ref",
+            "top1_pct"
+          ],
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "kl_mean": {
+              "type": "number"
+            },
+            "kl_median": {
+              "type": "number"
+            },
+            "kl_p90": {
+              "type": "number"
+            },
+            "top1_pct": {
+              "type": "number"
+            },
+            "windows": {
+              "type": "integer"
+            },
+            "tokens": {
+              "type": "integer"
+            }
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "n",
+            "pass",
+            "think"
+          ],
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "n": {
+              "type": "integer"
+            },
+            "pass": {
+              "type": "integer"
+            },
+            "think": {
+              "type": "string"
+            },
+            "cap": {
+              "type": "integer"
+            },
+            "by_category": {
+              "type": "object"
+            }
+          }
+        },
+        "hard": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "n",
+            "pass"
+          ],
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "n": {
+              "type": "integer"
+            },
+            "pass": {
+              "type": "integer"
+            },
+            "think_median": {
+              "type": "number"
+            },
+            "think_p90": {
+              "type": "number"
+            },
+            "think_max": {
+              "type": "number"
+            },
+            "loops": {
+              "type": "integer"
+            },
+            "cap_hits": {
+              "type": "integer"
+            },
+            "cap": {
+              "type": "integer"
+            },
+            "by_category": {
+              "type": "object"
+            }
+          }
+        },
+        "tasks_on": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "n",
+            "pass",
+            "think"
+          ],
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "n": {
+              "type": "integer"
+            },
+            "pass": {
+              "type": "integer"
+            },
+            "think": {
+              "type": "string"
+            },
+            "cap": {
+              "type": "integer"
+            },
+            "by_category": {
+              "type": "object"
+            }
+          }
+        }
       }
     },
-    "notes": {"type": "array", "items": {"type": "string"}}
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   }
 }

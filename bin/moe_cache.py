@@ -6372,6 +6372,9 @@ def main():
     if sys.argv[1:2] == ["bench-record"]:     # the benchmark record's tools: collect, monitor, assemble, validate, card (docs/BENCHMARK_TEMPLATE.md)
         from moe_cache_record import main as record_main
         return record_main(sys.argv[2:]) or 0
+    if sys.argv[1:2] == ["bench-suite"]:     # TEST-1142: the benchmark suite (run, compare, validate, show, new, publish; bin/moe_cache_suite_run.py)
+        from moe_cache_suite_run import main as suite_main
+        return suite_main(sys.argv[2:]) or 0
     if sys.argv[1:2] in (["--version"], ["-V"], ["version"]):
         say(f"moe-cache {VERSION}")
         return 0
