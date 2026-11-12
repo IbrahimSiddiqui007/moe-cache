@@ -210,7 +210,7 @@ def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, 
     base = base_url or env.get("MOE_CACHE_BASE_URL") or f"https://github.com/{REPO}/releases/download/{tag}"
     _u = urllib.parse.urlsplit(base)
     if _u.scheme.lower() == "http" and (_u.username is not None or (_u.hostname or "").lower() not in ("127.0.0.1", "localhost", "::1")):          # RELEASE-686: a mirror over plain http can be changed on the way; https, a local folder (file://) or this machine only
-        say(f"moe-cache: REFUSED: MOE_CACHE_BASE_URL {base} is not https. Nothing was changed.")
+        say(f"moe-cache: REFUSED: MOE_CACHE_BASE_URL {base} is not https (https, a file:// folder, or http only on this machine without a user@ part are accepted). Nothing was changed.")
         return 1
     name = "install.ps1" if layout["kind"] == "windows" else "install.sh"
     say(f"moe-cache {version} -> {tag}: download {base}/{name}, run it for {layout.get('prefix') or layout.get('root')}")

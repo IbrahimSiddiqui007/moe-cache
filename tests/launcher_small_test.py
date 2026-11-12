@@ -172,6 +172,9 @@ _k = _K(0x01F7); _r = mc.win_console_no_quickedit(_k)
 check(_r is True and _k.set is not None and not _k.set & 0x0040 and _k.set & 0x0080 and (_k.set & 0x0137) == (0x01F7 & 0x0137), f"WINDOWS-023: QuickEdit is cleared and EXTENDED_FLAGS set, the other bits stay ({hex(_k.set or 0)})")
 _u = mc._QE_UNDO.pop(); _u()
 check(_k.set == 0x01F7, f"WINDOWS-023: the old console mode is put back when moe-cache ends ({hex(_k.set or 0)})")
+_k = _K(0x01F7); os.environ["MOE_CACHE_QUICKEDIT"] = "1"
+check(mc.win_console_no_quickedit(_k) is False and _k.set is None, "WINDOWS-023: MOE_CACHE_QUICKEDIT=1 leaves the console mode alone")
+del os.environ["MOE_CACHE_QUICKEDIT"]
 _k = _K(0x0137); check(mc.win_console_no_quickedit(_k) is False and _k.set is None, "WINDOWS-023: already off: nothing written")
 _k = _K(0x01F7, console=False); check(mc.win_console_no_quickedit(_k) is False and _k.set is None, "WINDOWS-023: input is not a console (service, pipe): nothing written")
 sys.exit(1 if fails else 0)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.9 (unreleased)
+
+| Area | Change |
+|---|---|
+| Windows / launcher | **QuickEdit is switched off while a server runs** (WINDOWS-023): a stray click in the launcher's console window pauses the process writing to it and stalls the server pipe for seconds. `server` now clears the console's QuickEdit mode on a real start and restores it when the launcher ends normally (a killed launcher leaves it off). Mouse selection of log lines in conhost stops working meanwhile; set `MOE_CACHE_QUICKEDIT=1` to leave it alone (Windows Terminal is not affected). |
+| Updates / installer | **Stricter installer inputs** (RELEASE-686): `MOE_CACHE_BASE_URL` may be https, a `file://` folder or `http://` on this machine only (localhost, 127.0.0.1, [::1], no `user@` part); `MOE_CACHE_REF` must look like a release tag; a tarball member that is not a plain file, a folder or a symlink to a file name beside it is refused; an old `gh` without the `attestation` command is reported as "gh too old" (skipped, not failed); `update --apply --tag X` with a running version that is not a release number needs `--allow-downgrade`; a `+dirty` build counts as its release. |
+| Launcher / picker | **A card that reports 5.9 or 11.9 GiB is picked like a 6 or 12 GiB card** (DOCS-774): the picker's VRAM thresholds snap a figure within 0.2 GiB under a whole number up (the plan still checks the fit at start). |
+| On-demand listener | **Stopping during a model load no longer waits for the load** (SERVER-836): `stop()` ends the loading launcher (SIGTERM, then a kill after 15 s; never a kill on macOS) instead of waiting up to the start timeout, and a stale PID file whose number now belongs to another program is not trusted (Linux only: it needs `/proc`). |
+| Control page / benchmarks | **Small control-page and bench-driver fixes** (GUI-839, TEST-840, TEST-905, ENGINE-029): the page reads the status before the body (a proxy's HTML error page no longer shows a JSON error), copy says "Copied" only when it copied, a slow poll does not start a second one, the server list escapes hostile fields; the conversation bench without `/tokenize` sizes turns from the server's own prompt counts (3 % margin; its depths are not comparable with older runs that used the fixed guess); the plan module is loaded once under a lock. |
+
 ## 0.3.8 (2026-11-14)
 
 | Area | Change |
