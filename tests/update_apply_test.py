@@ -37,6 +37,7 @@ open(os.path.join(FAKEBIN, "gh"), "w").write('''#!/bin/sh
 case "$1 $2" in
   "auth status") exit ${FAKE_GH_AUTH_STATUS:-0};;   # exits 1 when ANY saved account is bad, whatever the active one can do: never the gate
   "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"
+    [ -z "${FAKE_GH_OLD:-}" ] || { echo 'unknown command "attestation" for "gh"' >&2; exit 1; }   # an old gh
     [ "${FAKE_GH_AUTH:-0}" = 0 ] || { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }   # no working login
     echo "Loaded digest sha256:abc for file (progress text on stderr, as the real gh prints)" >&2
     [ -z "${FAKE_GH_MSG:-}" ] || echo "$FAKE_GH_MSG" >&2; exit ${FAKE_GH_VERIFY:-0};;
@@ -132,6 +133,18 @@ rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, en
 check(rc == 0 and "build attestation of the installer verified" in out and "install.sh" in open(GH_LOG).read(), "a mirror with a working gh: verified, not skipped")
 subprocess.run(["ln", "-sfn", "versions/moe-cache-v9.9.1-ggml0.26-linux-x86_64", os.path.join(prefix, "current")], check=True)
 shutil.rmtree(os.path.join(prefix, "versions", "moe-cache-v9.9.2-ggml0.26-linux-x86_64"), ignore_errors=True)
+# RELEASE-686 (2026-11-12): an old gh (no `attestation` command) is a skipped check with its own words, not a failed one; a build of a release compares as that release;
+# an unparseable running version fails closed for an explicit --tag; a mirror over plain http is refused
+st, note = up.attestation(os.path.join(r2, [f for f in os.listdir(r2) if f.endswith(".tar.gz")][0]), env=dict(env, FAKE_GH_OLD="1"))
+check(st == "skipped" and "too old" in note, f"an old gh without `attestation` is skipped with 'too old', not 'FAILED' ({st}: {note})")
+check(up.version_key("0.3.6+dirty") == up.version_key("0.3.6") and up.version_key("0.3.6-5-gabc1234-dirty") == up.version_key("0.3.6") and up.version_key("0.3.6-beta2") != up.version_key("0.3.6"),
+      "a build of a release (+dirty, git describe) compares as that release; a real pre-release does not")
+rc, out = say_to_str(lambda: up.apply("local-build", here1, tag="v9.9.0", yes=True, dry=True, env=env, base_url="file://" + release("9.9.0")))
+check(rc == 1 and "not a release number" in out and "--allow-downgrade" in out, "a running version that is no release number refuses an explicit --tag (fails closed)")
+rc, out = say_to_str(lambda: up.apply("local-build", here1, tag="v9.9.0", yes=True, dry=True, allow_downgrade=True, env=env, base_url="file://" + release("9.9.0")))
+check(rc == 0 and "nothing was downloaded" in out, "--allow-downgrade lets it through")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, MOE_CACHE_BASE_URL="http://example.invalid/mirror")))
+check(rc == 1 and "not https" in out, "a plain-http MOE_CACHE_BASE_URL is refused")
 # RELEASE-691: a downgrade needs --allow-downgrade; roll_back never points `current` at a folder that is not there
 k = up.version_key
 check(k("v0.3.6") > k("0.3.6-beta2") > k("0.3.6-beta1") and k("0.3.10") > k("0.3.9") and k("0.3.6-beta10") > k("0.3.6-beta2") and k("1.0") == k("1.0.0") and k("junk") is None and k("0.3.7-beta1") > k("0.3.6"),
