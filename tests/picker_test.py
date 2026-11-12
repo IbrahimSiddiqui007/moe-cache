@@ -83,6 +83,11 @@ check(d and d["size"] == pk.MODELS["bolt"]["size"] and "huggingface.co/nvidia/" 
 check("ollama" in recs[("32 GB, no GPU", "chat")]["download"], "Qwen3.6: the Ollama alternative is printed too")
 
 # ---- memory with the context, and a model of the user's own choosing is warned about, never refused ----
+# DOCS-774: a card that reports a hair under 6 or 12 GiB (5.9, 11.9) is picked like the 6 / 12 GiB card, a real 5 / 11 GiB card is not
+for lo, hi in ((5.9, 6), (11.9, 12)):
+    a_, b_ = pk.recommend(machine(32, lo), "agents"), pk.recommend(machine(32, hi), "agents")
+    check(a_["id"] == b_["id"] and a_["ctx"] == b_["ctx"] and a_["args"] == b_["args"], f"DOCS-774: {lo} GiB is picked like {hi} GiB ({a_['id']} {a_['ctx']} vs {b_['id']} {b_['ctx']})")
+check(pk.snap_gib(5.0) == 5.0 and pk.snap_gib(5.7) == 5.7 and pk.snap_gib(11.9) == 12.0 and pk.snap_gib(0) == 0, "DOCS-774: only a rounding-size gap (up to 0.2 GiB) is snapped")
 r = pk.recommend(machine(32, 16), "agents")
 mem = r["memory"]
 check(mem["model"] == pk.MODELS["bolt"]["size"] and mem["kv"] > 0 and abs(mem["total"] - mem["model"] - mem["kv"]) < 1 and mem["available"] > mem["total"],
