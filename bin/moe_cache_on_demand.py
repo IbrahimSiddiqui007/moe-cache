@@ -198,6 +198,7 @@ class Backend:
         self.count = threading.Lock()
         self.p, self.port, self.state, self.active, self.last, self.t0 = None, None, "idle", 0, time.time(), 0.0
         self.profile = None
+        self.stop_asked = False                  # SERVER-836: set by stop() when it ended a model load
         self.alias = model_alias(choice["model"], choice.get("args", []))
         self.ctx = model_ctx(choice.get("args", []))
         self.seen = choice.get("seen") or {}     # the real /v1/models and /props answers, kept from the last start
@@ -234,6 +235,7 @@ class Backend:
 
     def _start_locked(self, why):
         port = free_port()
+        self.stop_asked = False
         self.state, self.t0, self.port, self.profile = "starting", time.time(), port, None
         self.log(f"starting {os.path.basename(self.c['model'])} (first request: {why}; idle stop after {self.idle / 60:g} min)")
         got, ready = {}, threading.Event()
@@ -247,6 +249,8 @@ class Backend:
         while time.time() - self.t0 < self.start_timeout:
             if p.poll() is not None:
                 self.state = "idle"
+                if self.stop_asked:          # SERVER-836: stop() ended the load: no second try
+                    raise RuntimeError("the model server was stopped while it was loading")
                 self.log(f"the server did not start (exit code {p.returncode}); its output is in {LOG_FILE}")
                 if self._log_tail_has("is already in use"):
                     raise PortTaken(f"port {port} was taken before the launcher bound it")
@@ -359,8 +363,21 @@ class Backend:
         self.log(f"stopped ({reason}) after {(time.time() - self.t0) / 60:.1f} min; the memory is free until the next request")
 
     def stop(self, reason):
-        with self.lock:
+        if not self.lock.acquire(timeout=5):
+            # SERVER-836: a model load holds the lock for up to start_timeout (minutes): end the loading process instead of waiting for it; the start loop sees it end
+            p = self.p
+            if p is not None and p.poll() is None:
+                self.stop_asked = True
+                try:
+                    p.kill()
+                except OSError:
+                    pass
+                self.log(f"stopped while the model was loading ({reason})")
+            return
+        try:
             self._stop_locked(reason)
+        finally:
+            self.lock.release()
 
     def watch(self, every=5):
         """Stop the server after `idle` seconds without a request (a request that streams for an hour counts as busy all along)."""
@@ -778,7 +795,20 @@ def running_pid():
         return None
     if mc.http(f"http://127.0.0.1:{port}/health", timeout=2)[1].find('"on_demand"') < 0:
         return None
+    if not _is_listener(pid):          # SERVER-836: a stale PID file whose number now belongs to another program is not ours to kill
+        return None
     return pid
+
+
+def _is_listener(pid):
+    """True when process `pid` is an on-demand listener (its command line says so). Where the command line cannot be read (Windows, no /proc) the PID file and the
+    health answer stand as before."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = f.read().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return not os.path.isdir("/proc")       # no /proc at all (Windows, macOS): unknown, trust; /proc exists but not this pid: it is gone
+    return "on-demand" in cmd or "moe_cache_on_demand" in cmd
 
 
 def stop_running():

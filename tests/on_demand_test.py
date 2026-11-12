@@ -485,5 +485,37 @@ post2({"messages": [{"role": "user", "content": "x"}], "stream": True, "n": 1})
 check("progress: switched off again, the stream request is sent as it came", "return_progress" not in json.load(open(LAST)))
 srv3.shutdown(); b3._stop_locked("test over") if hasattr(b3, "_stop_locked") else None
 
+# SERVER-836: stop() during a model load ends the load at once (it used to wait for the load's lock, up to start_timeout), and a stale PID file is not trusted
+SLOW = os.path.join(TMP, "slow_server.py"); open(SLOW, "w").write("import time\ntime.sleep(60)\n")
+b4 = od.Backend(dict(choice), launcher=[sys.executable, SLOW], idle_min=1, start_timeout=40, log=lambda m: None)
+res4 = {}
+def _ens():
+    try:
+        b4.ensure("slow load"); res4["r"] = "started"
+    except Exception as e:
+        res4["r"] = "error: " + str(e)[:80]
+th4 = threading.Thread(target=_ens, daemon=True); th4.start()
+for _ in range(100):
+    if b4.state == "starting" and b4.p is not None: break
+    time.sleep(0.1)
+t0 = time.time(); b4.stop("test"); dt4 = time.time() - t0
+th4.join(15)
+check("SERVER-836: stop() while a model loads returns at once and ends the load", dt4 < 10 and not th4.is_alive() and str(res4.get("r", "")).startswith("error") and b4.state == "idle", (round(dt4, 1), res4, b4.state))
+real_http = mc.http
+mc.http = lambda url, *a, **k: (200, '{"status": "ok", "on_demand": "idle"}')
+try:
+    open(od.PID_FILE, "w").write(f"{os.getpid()} 9\n")
+    stale = od.running_pid()
+    kid = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "on-demand"])
+    open(od.PID_FILE, "w").write(f"{kid.pid} 9\n")
+    live = od.running_pid(); kid.kill(); kid.wait()
+    open(od.PID_FILE, "w").write(f"{kid.pid} 9\n")
+    gone = od.running_pid()
+finally:
+    mc.http = real_http
+    try: os.unlink(od.PID_FILE)
+    except OSError: pass
+check("SERVER-836: running_pid() does not trust a PID file whose number is another program (or gone)", stale is None and live == kid.pid and gone is None, (stale, live, gone))
+
 print("FAILED: " + ", ".join(fails) if fails else "all on-demand tests passed")
 sys.exit(1 if fails else 0)
