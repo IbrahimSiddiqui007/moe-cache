@@ -519,9 +519,11 @@ ROOM_RESERVE_MIB = 300      # kept free below the card's size minus the other pr
 
 
 def counters_text(pid=None, timeout=8):
-    """One PowerShell read of '\\GPU Process Memory(*)' Dedicated Usage ('path|value;...', the format others_dedicated_mib reads). '' when it fails."""
+    """One PowerShell read of '\\GPU Process Memory(*)' Dedicated Usage and, in the same read, '\\GPU Adapter Memory(*)' Dedicated Usage ('path|value;...', the format others_dedicated_mib
+    reads; the adapter counter is the card's own total, the figure that caps the sum of the processes). '' when the process read fails."""
     pat = f"pid_{pid}_*" if pid else "*"
-    cmd = ("Get-Counter -Counter '\\GPU Process Memory(P)\\Dedicated Usage' -ErrorAction SilentlyContinue | "
+    cmd = ("$c = @('\\GPU Process Memory(P)\\Dedicated Usage', '\\GPU Adapter Memory(*)\\Dedicated Usage'); "
+           "Get-Counter -Counter $c -ErrorAction SilentlyContinue | "
            "ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';' }").replace("(P)", f"({pat})")
     try:
         return subprocess.run([_win_ps(), "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, errors="replace", timeout=timeout).stdout
@@ -529,19 +531,44 @@ def counters_text(pid=None, timeout=8):
         return ""
 
 
+def _luid(path):
+    m = re.search(r"luid_(0x[0-9a-f]+_0x[0-9a-f]+)", path)
+    return m.group(1) if m else None
+
+
 def others_dedicated_mib(text, exclude_pid=None):
-    """MiB of dedicated GPU memory held by all processes (except exclude_pid) in counters_text(); None when no counter matched. All adapters are added (an integrated GPU's few
-    hundred MiB make the room a little smaller than needed: the safe side)."""
-    tot = None
+    """MiB of dedicated GPU memory the OTHER programs hold on the card; None when no counter matched.
+    2026-11-12 (PC, RX 9070 XT): the plain sum of '\\GPU Process Memory(*)\\Dedicated Usage' over every process and every adapter read 3.9 GiB while the card's own '\\GPU Adapter Memory'
+    Dedicated Usage read 1.92 GiB (gputaskman 1.93): the process counters add up an allocation shared between processes once per process, and an integrated GPU's instances. So:
+      - with adapter counters in the text: only the card's instances (the adapter with the most dedicated use, as bin/moe_cache_record.py picks it), and never more than that adapter's own
+        figure minus our own share (exclude_pid);
+      - without them (older text, a failed second counter): the plain sum over all adapters, as before (the safe side)."""
+    proc, adapters = [], {}
     for item in text.replace("\n", ";").split(";"):
         path, _, val = item.rpartition("|")
         path = path.lower()
-        if "gpu process memory" not in path or not path.endswith("dedicated usage") or (exclude_pid is not None and f"pid_{exclude_pid}_" in path):
-            continue
         try:
-            tot = (tot or 0.0) + float(val) / 1048576
+            v = float(val) / 1048576
         except ValueError:
-            pass
+            continue
+        if "gpu adapter memory" in path and path.endswith("dedicated usage"):
+            lu = _luid(path)
+            if lu:
+                adapters[lu] = max(adapters.get(lu, 0.0), v)
+        elif "gpu process memory" in path and path.endswith("dedicated usage"):
+            proc.append((path, v))
+    target = max(adapters, key=adapters.get) if adapters else None
+    tot, own = None, 0.0
+    for path, v in proc:
+        mine = exclude_pid is not None and f"pid_{exclude_pid}_" in path
+        if target and _luid(path) not in (None, target):
+            continue                                      # another adapter (the iGPU)
+        if mine:
+            own += v
+            continue
+        tot = (tot or 0.0) + v
+    if tot is not None and target:
+        tot = min(tot, max(adapters[target] - own, 0.0))
     return tot
 
 

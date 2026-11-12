@@ -46,6 +46,26 @@ def line(pid, kind, mib):
 # --- pure helpers ---
 txt = ";".join([line(100, "dedicated", 1500), line(200, "dedicated", 900), line(300, "shared", 50), line(300, "dedicated", 13000), line(300, "shared", 1700)])
 check(abs(gp.others_dedicated_mib(txt, 300) - 2400) < 1e-6, "others_dedicated_mib: the other processes' dedicated use (2400 MiB), not ours, not shared")
+# 2026-11-12 PC (RX 9070 XT + the CPU's iGPU): the process counters summed to 3.9 GiB, the card's own adapter counter read 1.92 GiB
+def pl(pid, luid, mib, kind="dedicated"):
+    return f"\\\\pc\\gpu process memory(pid_{pid}_luid_{luid}_phys_0)\\{kind} usage|{mib * 1048576}"
+def al(luid, mib):
+    return f"\\\\pc\\gpu adapter memory(luid_{luid}_phys_0)\\dedicated usage|{mib * 1048576}"
+CARD, IGPU = "0x00000000_0x0000a1b2", "0x00000000_0x0000c3d4"
+pc = ";".join([pl(10, CARD, 700), pl(11, CARD, 500), pl(12, CARD, 400), pl(13, CARD, 380), pl(10, IGPU, 300), pl(14, IGPU, 250), pl(15, CARD, 800), pl(16, CARD, 600), pl(17, CARD, 20),
+               al(CARD, 1970), al(IGPU, 560)])
+plain = ";".join(x for x in pc.split(";") if "adapter" not in x)
+check(abs(gp.others_dedicated_mib(plain) - (700 + 500 + 400 + 380 + 300 + 250 + 800 + 600 + 20)) < 1e-6, "no adapter counters in the text: the plain sum over every adapter, as before (3950 MiB: the 3.9 GiB of the PC)")
+check(abs(gp.others_dedicated_mib(pc) - 1970) < 1e-6, f"the PC case: processes sum to 3400 MiB on the card, the card's own counter says 1970 MiB: the figure is capped to 1970 ({gp.others_dedicated_mib(pc)})")
+check(abs(gp.others_dedicated_mib(pc.replace(f"{1970 * 1048576}", f"{9000 * 1048576}")) - 3400) < 1e-6, "adapter figure above the processes' sum: the sum stays (the cap only lowers)")
+only_card = ";".join([pl(10, CARD, 700), pl(10, IGPU, 5000), al(CARD, 900), al(IGPU, 5200)])
+check(abs(gp.others_dedicated_mib(only_card) - 5000) < 1e-6, "the card is the adapter with the most dedicated use (a limit: an iGPU holding more than the card would win; the counters do not say which one llama.cpp uses)")
+two = ";".join([pl(10, CARD, 700), pl(10, IGPU, 100), al(CARD, 2000), al(IGPU, 300)])
+check(abs(gp.others_dedicated_mib(two) - 700) < 1e-6, "instances of the other adapter (the iGPU) are left out")
+mine = ";".join([pl(100, CARD, 9000), pl(10, CARD, 700), al(CARD, 9800)])
+check(abs(gp.others_dedicated_mib(mine, 100) - 700) < 1e-6, "our own process excluded; the cap is the adapter figure minus our share (9800 - 9000 = 800 >= 700)")
+mine2 = ";".join([pl(100, CARD, 9000), pl(10, CARD, 2500), al(CARD, 10500)])
+check(abs(gp.others_dedicated_mib(mine2, 100) - 1500) < 1e-6, "cap with our share taken off: min(2500, 10500 - 9000) = 1500")
 check(gp.others_dedicated_mib("") is None and gp.others_dedicated_mib("junk|x") is None, "others_dedicated_mib: no counter -> None")
 check(gp.real_room_mib(16304, 2400) == 16304 - 2400 - 300 and gp.real_room_mib(16304, None) is None and gp.real_room_mib(16304, 16304) is None and gp.real_room_mib(None, 100) is None and gp.real_room_mib(2000, 1500) is None,
       "real_room_mib: size - others - reserve; None without figures or when the result is implausible")
