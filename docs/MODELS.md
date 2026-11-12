@@ -32,6 +32,19 @@ Machines the numbers come from: **pc** = Windows PC: Ryzen 9 7950X, RX 9070 XT 1
 
 <!-- models:end -->
 
+## Agents: Nemotron Bolt or Flash-Next Q2_0, and thinking on or off
+
+Both run on the 32 GB RAM + 16 GB GPU test PC. Bolt (22 GB) fits in RAM and runs through stock llama.cpp; Flash-Next Q2_0 (66 GB) is bigger than the RAM and runs through moe-cache.
+
+| Question | What we measured | How far to trust it |
+|---|---|---|
+| Short agent requests (202 tasks, about 4 tokens each) | Flash-Next Q2_0 0.84 s per request, Bolt 1.34 s (the 701 s total for Bolt included one 431 s stall of the PC's graphics driver; Q2_0's total was 169 s) | one run each, llama.cpp b11966, the owner's programs were running, no benchmark record |
+| Why Bolt was slower per request | llama.cpp sends any batch of 32 or more tokens to the GPU, which copies every expert that lives on the CPU over PCIe (about 1 s) for each prompt. The launcher sets the threshold to 512 for stock runs that keep experts on the CPU: 0.6 s per request, answers identical in 60 of 60 prompts | one run, same conditions |
+| Thinking on or off for a tiny chat turn | Bolt's own template thinks by default: 3.36 s per tiny chat turn; with `-- --reasoning-budget 0` 0.87 s (no reasoning at all) | one run each |
+| Longer sessions | Bolt decodes 27.9 tok/s at 64k context (stock) on the PC; Flash-Next Q2_0 decodes 22 to 30 tok/s depending on depth and kit (see the table above) | different days and kits, so no ratio is claimed |
+
+**What to use:** for coding agents, Flash-Next IQ3_XXS (the default) or Q2_0 are the files we measured with agents; Bolt is the choice when you need a 128k context or the model must fit in RAM. For quick turns with Bolt, `-- --reasoning-budget 0` removes the thinking. We do not turn thinking off by default: NVIDIA's model card recommends thinking on for agent work, and an agent that needs to plan may do worse without it (not measured by us).
+
 ## Flash-Next files and the rules by machine
 
 
