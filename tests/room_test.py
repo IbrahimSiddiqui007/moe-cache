@@ -66,6 +66,16 @@ mine = ";".join([pl(100, CARD, 9000), pl(10, CARD, 700), al(CARD, 9800)])
 check(abs(gp.others_dedicated_mib(mine, 100) - 700) < 1e-6, "our own process excluded; the cap is the adapter figure minus our share (9800 - 9000 = 800 >= 700)")
 mine2 = ";".join([pl(100, CARD, 9000), pl(10, CARD, 2500), al(CARD, 10500)])
 check(abs(gp.others_dedicated_mib(mine2, 100) - 1500) < 1e-6, "cap with our share taken off: min(2500, 10500 - 9000) = 1500")
+# the REAL capture (PC 2026-11-12 22:54, RX 9070 XT, typeperf CSV turned into the 'path|value;' text counters_text returns): luids 0x145FA (card), 0x16A03 (iGPU), 0x16982
+import csv as _csv
+def _csv_text(name):
+    rows = list(r for r in _csv.reader(open(os.path.join(HERE, "tests", "data", name), encoding="utf-8-sig")) if r)
+    return ";".join(f"{h}|{v}" for h, v in zip(rows[0][1:], rows[1][1:]) if h and v.strip())
+_real_p, _real_a = _csv_text("gpu_counters_pc_20261112_process.csv"), _csv_text("gpu_counters_pc_20261112_adapter.csv")
+check(abs(gp.others_dedicated_mib(_real_p) - 3.89 * 1024) < 15, f"real capture, process counters only: the plain sum {gp.others_dedicated_mib(_real_p) / 1024:.2f} GiB (the planner's 3.9 GiB)")
+_real = gp.others_dedicated_mib(_real_p + ";" + _real_a)
+check(abs(_real - 2060398592 / 1048576) < 1, f"real capture with the adapter counter: capped to the card's {_real / 1024:.2f} GiB (adapter 1.92 GiB, gputaskman 1.93)")
+check(gp.real_room_mib(15.9 * 1024, _real) / 1024 > 13.5, f"the room with the real figure: {gp.real_room_mib(15.9 * 1024, _real) / 1024:.2f} GiB (was 11.75)")
 check(gp.others_dedicated_mib("") is None and gp.others_dedicated_mib("junk|x") is None, "others_dedicated_mib: no counter -> None")
 check(gp.real_room_mib(16304, 2400) == 16304 - 2400 - 300 and gp.real_room_mib(16304, None) is None and gp.real_room_mib(16304, 16304) is None and gp.real_room_mib(None, 100) is None and gp.real_room_mib(2000, 1500) is None,
       "real_room_mib: size - others - reserve; None without figures or when the result is implausible")

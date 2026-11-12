@@ -538,8 +538,9 @@ def _luid(path):
 
 def others_dedicated_mib(text, exclude_pid=None):
     """MiB of dedicated GPU memory the OTHER programs hold on the card; None when no counter matched.
-    2026-11-12 (PC, RX 9070 XT): the plain sum of '\\GPU Process Memory(*)\\Dedicated Usage' over every process and every adapter read 3.9 GiB while the card's own '\\GPU Adapter Memory'
-    Dedicated Usage read 1.92 GiB (gputaskman 1.93): the process counters add up an allocation shared between processes once per process, and an integrated GPU's instances. So:
+    2026-11-12 (PC, RX 9070 XT; real capture in tests/data/gpu_counters_pc_20261112_*.csv): the sum of '\\GPU Process Memory(*)\\Dedicated Usage' over the card's own instances was 3.89 GiB while the
+    card's '\\GPU Adapter Memory' Dedicated Usage read 1.92 GiB (gputaskman 1.93). It is NOT a cross-adapter or multi-phys double count (the other luids held ~0): the per-process figures
+    themselves add up ~2 GiB above what the adapter holds (cause not established). So:
       - with adapter counters in the text: only the card's instances (the adapter with the most dedicated use, as bin/moe_cache_record.py picks it), and never more than that adapter's own
         figure minus our own share (exclude_pid);
       - without them (older text, a failed second counter): the plain sum over all adapters, as before (the safe side)."""
