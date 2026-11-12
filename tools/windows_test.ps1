@@ -1,4 +1,4 @@
-# moe-cache on Windows: UNTESTED port. This script answers one question: does the plugin load into an official Windows llama-server and give the same tokens as stock?
+# moe-cache on Windows: identity test (run by the Windows CI on a CPU build, and by hand on a GPU PC). This script answers one question: does the plugin load into an official Windows llama-server and give the same tokens as stock?
 #   powershell -ExecutionPolicy Bypass -File windows_test.ps1 -LlamaDir C:\llama -Model D:\models\model.gguf -Dll C:\moe\ggml-moe-cache-api3.dll
 # -LlamaDir : folder with llama-server.exe (an official release zip, CUDA build if you have an NVIDIA GPU)
 # -Model    : a GGUF that FITS IN RAM for the first test. The script refuses a model bigger than the memory cap (below) unless -AllowBigModel is given
@@ -26,12 +26,17 @@ $ramBytes = [double](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $capBytes = $ramBytes - [math]::Max(4GB, 0.125 * $ramBytes)
 if ($env:MOE_CACHE_MAX_RAM_GB) { $parsedCap = 0.0; if ([double]::TryParse($env:MOE_CACHE_MAX_RAM_GB, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedCap) -and $parsedCap -ge 0) { $capBytes = $parsedCap * 1e9 } }
 if ($MemLimitGB -gt 0) { $capBytes = $MemLimitGB * 1e9 } elseif ($MemLimitGB -lt 0) { $capBytes = 0 }
+# WINDOWS-838: a job memory limit counts GPU memory too (Windows commits it) and broke Vulkan runs (README, "--ram is a sizing hint"): on a GPU build of llama.cpp
+# (a ggml-vulkan / cuda / hip / sycl dll next to llama-server.exe) NO job limit is set unless a cap was asked for (-MemLimitGB N or MOE_CACHE_MAX_RAM_GB). The "model bigger than the cap" refusal below stays.
+$explicitCap = ($MemLimitGB -ne 0) -or [bool]$env:MOE_CACHE_MAX_RAM_GB
+$gpuBuild = [bool](Get-ChildItem -Path $LlamaDir -Filter "ggml-*.dll" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "vulkan|cuda|hip|sycl" })
+$jobBytes = $capBytes; if ($gpuBuild -and -not $explicitCap) { $jobBytes = 0 }
 $modelBytes = (Get-Item $Model).Length
 if ($capBytes -gt 0 -and $modelBytes -gt $capBytes -and -not $AllowBigModel) {
   throw ("the model file is {0:N1} GB but the memory cap is {1:N1} GB (RAM {2:N1} GB minus max(4 GiB, 12.5 %)). A model bigger than the cap can freeze this PC: use a smaller model for this identity test, or pass -AllowBigModel (or -MemLimitGB N) if you accept that" -f ($modelBytes / 1e9), ($capBytes / 1e9), ($ramBytes / 1e9))
 }
-if ($capBytes -gt 0) { Write-Host ("memory cap for llama-server: {0:N1} GB (job object; RAM {1:N1} GB, model {2:N1} GB)" -f ($capBytes / 1e9), ($ramBytes / 1e9), ($modelBytes / 1e9)) } else { Write-Host "memory cap: none (-MemLimitGB -1 or MOE_CACHE_MAX_RAM_GB=0)" }
-if ($capBytes -gt 0) {
+if ($jobBytes -gt 0) { Write-Host ("memory cap for llama-server: {0:N1} GB (job object; RAM {1:N1} GB, model {2:N1} GB)" -f ($capBytes / 1e9), ($ramBytes / 1e9), ($modelBytes / 1e9)) } else { Write-Host "memory cap: no job limit (-MemLimitGB -1, MOE_CACHE_MAX_RAM_GB=0, or a GPU build of llama.cpp without an explicit cap)" }
+if ($jobBytes -gt 0) {
   # a Windows job object with JOB_OBJECT_LIMIT_JOB_MEMORY around each llama-server (the Python launcher does the same through ctypes, bin/moe_cache.py)
   if (-not ("MoeJob" -as [type])) {
     Add-Type -TypeDefinition @"
@@ -85,8 +90,8 @@ function Run-One([string]$label, [bool]$plugin) {
   if ($Extra) { $sargs += ($Extra -split " " | Where-Object { $_ }) }
   $p = Start-Process -FilePath $srv -ArgumentList $sargs -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
   $job = [IntPtr]::Zero
-  if ($capBytes -gt 0) {
-    $lim = [MoeJob]::Assign($p.Handle, [uint64]$capBytes, [ref]$job)
+  if ($jobBytes -gt 0) {
+    $lim = [MoeJob]::Assign($p.Handle, [uint64]$jobBytes, [ref]$job)
     if ($lim -eq 0) { Write-Host "warning: the memory cap could not be set on $label (another job object around this shell? the run continues without it)" }
     else { Write-Host ("  {0}: job memory limit {1:N1} GB read back" -f $label, ($lim / 1e9)) }
   }
