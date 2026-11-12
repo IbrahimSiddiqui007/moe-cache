@@ -1453,6 +1453,27 @@ def prune_jobs(jobs, close):
     return n
 
 
+def win_console_no_quickedit(k=None):
+    """WINDOWS-023: switch off the console's QuickEdit mode: a stray click (or a select) in the launcher's window pauses the process writing to it, so the server pipe
+    stalls until a key is pressed. True when the mode was changed; False when there is nothing to change (not a console, already off, no Windows)."""
+    if k is None:
+        if not WINDOWS:
+            return False
+        import ctypes
+        k = ctypes.windll.kernel32
+    import ctypes
+    try:
+        h = k.GetStdHandle(-10)                        # STD_INPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not h or not k.GetConsoleMode(h, ctypes.byref(mode)):
+            return False                               # input is not a console (redirected, service): nothing to do
+        if not mode.value & 0x0040:                    # ENABLE_QUICK_EDIT_MODE
+            return False
+        return bool(k.SetConsoleMode(h, (mode.value & ~0x0040) | 0x0080))      # 0x0080 = ENABLE_EXTENDED_FLAGS: without it the clear is ignored
+    except Exception:
+        return False
+
+
 def _kill_with_parent_windows(p, mem_limit=None):
     """Put the child in a job object that kills it when the launcher's handle closes (the launcher exits, is closed or killed).
     Found on the MSI Claw (2026-10-15): without it a killed launcher left llama-server running on its port.
@@ -2648,6 +2669,8 @@ def server(argv):
     if a.plan_json:
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
+    if WINDOWS and not a.dry_run:
+        win_console_no_quickedit()                    # WINDOWS-023: a stray click in this window must not freeze the server pipe
     if getattr(a, "approx_info", None) and not a.dry_run:
         final = approx_canary(plan)
         if final and final != a.approx:
