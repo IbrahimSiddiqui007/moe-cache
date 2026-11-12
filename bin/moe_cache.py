@@ -3219,6 +3219,29 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
     return "the model fits fully on the GPU: --load-mode none (no memory-mapped copy of the file in RAM while loading; --exact or --load-mode after -- keeps llama.cpp's default)"
 
 
+LOAD_MODE_RAM_MARGIN_GIB = 4.0
+
+
+def load_mode_low_ram(a, cmd, extra, machine, model):
+    """LAUNCHER-1133 follow-up (prepared, not merged; waits for rn038_mmapnone): a dense model that does NOT fit fully on the GPU keeps mmap (the spilled weights stay file-backed),
+    but when the RAM the server may use is under the model file plus LOAD_MODE_RAM_MARGIN_GIB the mmap load of the PC's 27B tripped the 26 GB guard (private 13 GB; chain 2026-11-12,
+    f5af74c, 64k, q4_0): then `--load-mode none`, which 29520bb and the first 0.3.8 plans used for the same model. Same exceptions as load_mode_fit_none (Linux, --exact / --stock, -ot,
+    CPU-only, a load flag of your own). Returns the plain note, or None (mmap stays)."""
+    if not machine.windows or a.exact or a.stock or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0":
+        return None
+    if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
+        return None
+    try:
+        size = os.path.getsize(model)
+        avail = machine.mem_for_server(a.ram)
+    except (OSError, TypeError):
+        return None
+    if not size or not avail or avail >= size + LOAD_MODE_RAM_MARGIN_GIB * 2**30:
+        return None
+    return (f"the model file is {size / 2**30:.1f} GiB and {avail / 2**30:.1f} GiB of RAM is available (less than the file plus {LOAD_MODE_RAM_MARGIN_GIB:.0f} GiB): --load-mode none "
+            "(the weights are read into memory as the GPU takes them, not mapped from the file first; --exact or --load-mode after -- keeps llama.cpp's default)")
+
+
 def gpu_fit_words(r, kv_name):
     """The numbers behind a fit estimate, plain: model + KV + compute (+ margin) = need of free."""
     return (f"model {r['model_gib']:.1f} + {kv_name} KV {r['kv_gib']:.1f} + compute {r['fixed_gib']:.1f}" + (f" + margin {r['margin_gib']:.2f}" if r['margin_gib'] else "")
@@ -3918,6 +3941,11 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
     if dense and not cpu_only and not expect and "--load-mode" in cmd:
         why = load_mode_fit_none(a, cmd, extra, machine, ctx, dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True), arg_after(extra, "-ctk", "--cache-type-k") or "f16",
                                  arg_after(extra, "-ctv", "--cache-type-v"))
+        if why:
+            cmd[cmd.index("--load-mode") + 1] = "none"
+            say("moe-cache: " + why)
+    elif dense and not cpu_only and "--load-mode" in cmd:
+        why = load_mode_low_ram(a, cmd, extra, machine, model)
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
             say("moe-cache: " + why)
