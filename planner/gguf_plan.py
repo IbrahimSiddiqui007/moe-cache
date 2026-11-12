@@ -250,12 +250,13 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
     return out
 
 
-def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0.0, fixed_gib=None):
+def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0.0, fixed_gib=None, measured_gib=None):
     """LAUNCHER-982: does a model WITHOUT experts (dense, including the hybrid recurrent Qwen3.5/3.6/3.8 layouts) fit the GPU together with its KV cache?
     -> dict(model_gib, kv_gib, fixed_gib, margin_gib, need_gib, free_gib, fits, over_gib, ctx_fit) or None (unknown KV layout: sliding window, MLA; no GPU memory figure).
     model = file minus the token embedding (it stays on the CPU, laptop-measured); kv = kv_bytes() as llama-server sizes it (attention layers + recurrent state); fixed = CUDA/Vulkan
     context + compute buffer (DENSE_FIXED_GIB, measured on an 8 GB CUDA card at -ub 512; the PC's Vulkan figure is checked by the 27B 64k item); gap_gib = what the free-memory source
-    overstates (nvidia-smi: SMI_GAP_GIB; llama-server's own --list-devices: 0). ctx_fit = the largest context (multiple of 1024, at most ctx) that fits all on the GPU with this KV type, 0 if none."""
+    overstates (nvidia-smi: SMI_GAP_GIB; llama-server's own --list-devices: 0). measured_gib (LAUNCHER-1131, planner/real_room.py): what an earlier load of this exact plan needed on the GPU
+    (model + KV + recurrent state + compute buffers from llama-server's own log): it replaces the table's model + KV + fixed sum; the result says "measured": True. ctx_fit = the largest context (multiple of 1024, at most ctx) that fits all on the GPU with this KV type, 0 if none."""
     GiB = 2**30
     fixed = DENSE_FIXED_GIB if fixed_gib is None else fixed_gib
     if not free_bytes:
@@ -271,10 +272,10 @@ def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0
             return None
         model = (total - emb) / GiB
         free = free_bytes / GiB - gap_gib
-        need = model + kv / GiB + fixed + margin_gib
+        need = (measured_gib if measured_gib else model + kv / GiB + fixed) + margin_gib
         kv1 = kv_bytes(path, ctx, kv_q8=kv_q8, n_seq=1)
         out = {"np1_saves_gib": ((kv - kv1) / GiB if kv1 is not None else 0.0), "model_gib": model, "kv_gib": kv / GiB, "fixed_gib": fixed, "margin_gib": margin_gib, "need_gib": need, "free_gib": free,
-               "fits": need <= free, "over_gib": max(need - free, 0.0), "ctx_fit": ctx if need <= free else 0}
+               "fits": need <= free, "over_gib": max(need - free, 0.0), "ctx_fit": ctx if need <= free else 0, "measured": bool(measured_gib)}
         if need > free:
             lo, hi = 0, ctx // 1024
             while lo < hi:                      # largest multiple of 1024 that fits (the KV bytes grow with the context)
