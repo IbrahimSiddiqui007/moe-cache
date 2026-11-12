@@ -159,4 +159,17 @@ try:
 finally:
     mc.HERE = _oh; mc._PLAN_MODULE[:] = _om
 check(_loads == 1, f"ENGINE-029: six threads asking for a plan at once load plan.py once (loads {_loads})")
+# WINDOWS-023: QuickEdit off (a fake kernel32: the mode word is read, QuickEdit cleared, EXTENDED_FLAGS set)
+import ctypes
+class _K:
+    def __init__(self, mode, console=True): self.mode, self.console, self.set = mode, console, None
+    def GetStdHandle(self, n): return 7
+    def GetConsoleMode(self, h, ref):
+        if not self.console: return 0
+        ctypes.cast(ref, ctypes.POINTER(ctypes.c_uint32))[0] = self.mode; return 1
+    def SetConsoleMode(self, h, m): self.set = m; return 1
+_k = _K(0x01F7); _r = mc.win_console_no_quickedit(_k)
+check(_r is True and _k.set is not None and not _k.set & 0x0040 and _k.set & 0x0080 and (_k.set & 0x0137) == (0x01F7 & 0x0137), f"WINDOWS-023: QuickEdit is cleared and EXTENDED_FLAGS set, the other bits stay ({hex(_k.set or 0)})")
+_k = _K(0x0137); check(mc.win_console_no_quickedit(_k) is False and _k.set is None, "WINDOWS-023: already off: nothing written")
+_k = _K(0x01F7, console=False); check(mc.win_console_no_quickedit(_k) is False and _k.set is None, "WINDOWS-023: input is not a console (service, pipe): nothing written")
 sys.exit(1 if fails else 0)
