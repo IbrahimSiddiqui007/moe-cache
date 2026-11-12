@@ -62,6 +62,13 @@ def cpu_flags():
     return None, None
 
 
+def snap_gib(v):
+    """DOCS-774: a '6 GB' card reports 5.9 GiB and a '12 GB' card 11.9: a size within 0.2 GiB under a whole number counts as that number, so the thresholds
+    (6, 12, 16, 24 GiB ...) do not switch on a rounding of the driver's figure."""
+    r = round(v)
+    return float(r) if 0 < r - v <= 0.2 else v
+
+
 def dedicated_vram():
     """(name, bytes) of the biggest GPU with its own memory: nvidia-smi, AMD sysfs on Linux, the registry on Windows; (None, None) when none."""
     try:
@@ -365,7 +372,7 @@ def fit(spec, k, ctx, use, local=None):
     f = e["fit"]
     local = spec.get("local") if local is None else local
     cap = (spec.get("ram_cap") or 0) / 1e9
-    vram = (spec.get("vram") or 0) / GIB
+    vram = snap_gib((spec.get("vram") or 0) / GIB)
     size = size_of(k, local or {})
     stock = size + mc.STOCK_HEADROOM <= cap * 1e9
     no, tight = [], []
@@ -424,7 +431,7 @@ def recommend(spec, use, model=None):
     if use not in USES:
         raise ValueError(f"use: one of {', '.join(USES)}")
     cap = (spec.get("ram_cap") or 0) / 1e9                       # what the whole server may use (RAM minus max(4 GiB, 12.5 %)), GB
-    vram = (spec.get("vram") or 0) / GIB
+    vram = snap_gib((spec.get("vram") or 0) / GIB)
     local = spec.get("local") or {}
     hdd = spec.get("disk_kind") == "HDD"
     build = spec.get("llama_build")
