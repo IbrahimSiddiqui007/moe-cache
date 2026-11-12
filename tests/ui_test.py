@@ -1207,6 +1207,23 @@ check(si["gpu"] == "AMD Radeon RX 7900 XT" and si["vram_free"] == 15 * 2**30 and
 # warnings: llama-server's "no usable GPU found" only repeats the plan; real warnings still show
 check(not ui.is_warning("warning: no usable GPU found, --gpu-layers option will be ignored") and ui.is_warning("moe-cache: WARNING: the plugin did not load: test")
       and ui.is_warning("error: invalid argument: --foo"), "warnings: 'no usable GPU found' left out, real warnings kept")
+# LAUNCHER-1145: the RAM note is a 'moe-cache: warning:' line, so the page and the Monitor (top) lift it; the probes and the thread on this machine
+import commit_guard as _cgd
+import moe_cache_monitor as _mon
+_note = _cgd.ram_note_line(13.1e9, 1.2e9, 31.2e9)
+check(ui.is_warning(_note) and _mon.classify(_note, False)[1] == "warn", f"RAM note: the control page and the Monitor lift it as a warning ({_note[:60]}...)")
+_r = ui.mc.proc_resident_bytes(os.getpid())
+check(_r and _r > 1e6, f"RAM note probe: this process's resident memory is readable ({_r})")
+_pr = ui.mc.ram_note_probe(os.getpid())
+check(_pr and _pr[0] > 1e6 and 0 < _pr[1] <= _pr[2], f"RAM note probe: (resident, available, total) on this machine ({[round(x / 1e9, 2) for x in _pr] if _pr else _pr})")
+_said = []; _alive = [True]
+_n = ui.mc.start_ram_note(types.SimpleNamespace(pid=os.getpid(), poll=lambda: None if _alive[0] else 0), {}, say_fn=_said.append, probe=lambda: (13.1e9, 1.2e9, 31.2e9))
+for _i in range(40):
+    if _said: break
+    time.sleep(0.05)
+_alive[0] = False
+check(_n is not None and len(_said) == 1 and _said[0] == _note, f"RAM note: the thread says the line once for a squeezed machine ({len(_said)} lines)")
+check(ui.mc.start_ram_note(types.SimpleNamespace(pid=1, poll=lambda: 0), {"MOE_CACHE_RAM_NOTE": "0"}, say_fn=_said.append) is None, "RAM note: MOE_CACHE_RAM_NOTE=0 turns it off")
 
 # benchmark comparison: stock and moe-cache runs of one model side by side
 R0 = {"model": "Q.gguf", "ram_gb": "12", "ctx": "8192", "start": "warm", "gpu": "G", "os": "Linux", "hit_rate": ""}

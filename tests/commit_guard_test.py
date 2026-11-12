@@ -387,5 +387,30 @@ try:
 finally:
     mc.say, mc.WINDOWS, mc.win_commit, mc.meminfo_available = saved_say, saved_w, saved_win, saved_mi
 
+# --- LAUNCHER-1145: the RAM note (read-only, rate limited) ---
+GB = 1e9
+check(cg.ram_note_state(13.1 * GB, 1.8 * GB, 31.2 * GB) and cg.ram_note_state(13.2 * GB, 2.8 * GB, 31.2 * GB), "ram note: t845 (13.1 GB held, 1.8 GB available of 31.2) and the 27B at 128k (2.8 GB available) both trip it")
+check(not cg.ram_note_state(13.1 * GB, 9.0 * GB, 31.2 * GB) and not cg.ram_note_state(2.0 * GB, 1.0 * GB, 31.2 * GB) and not cg.ram_note_state(None, 1.0 * GB, 31.2 * GB) and not cg.ram_note_state(13 * GB, None, 31.2 * GB),
+      "ram note: plenty available, a small server (it is not the one holding the RAM) or a missing figure: no note")
+check(cg.ram_note_state(8 * GB, 1.5 * GB, 16 * GB) and not cg.ram_note_state(8 * GB, 3.5 * GB, 16 * GB), "ram note: a 16 GB machine: the line is max(3 GiB, 10 %)")
+check("holds 13.1 GB of RAM" in cg.ram_note_line(13.1 * GB, 1.2 * GB, 31.2 * GB) and "available 1.2 GB" in cg.ram_note_line(13.1 * GB, 1.2 * GB, 31.2 * GB) and cg.ram_note_line(1, 1, 2).startswith("moe-cache: warning: ")
+      and "nothing was stopped" in cg.ram_note_line(1, 1, 2), "ram note: one plain line, a 'moe-cache: warning:' line (the Monitor and the page lift those)")
+clock = [0.0]; said = []; samples = [(13.1 * GB, 1.8 * GB, 31.2 * GB)]
+rn = cg.RamNote(lambda: samples[0], said.append, repeat=600.0, clock=lambda: clock[0])
+check(rn.poll() is True and len(said) == 1, "ram note: the first sample over the line says it")
+for t in (10, 20, 300, 599):
+    clock[0] = t
+    check(rn.poll() is False, f"ram note: rate limit, nothing at {t} s")
+clock[0] = 601
+check(rn.poll() is True and len(said) == 2, "ram note: again after 10 minutes while it still holds")
+samples[0] = (13.1 * GB, 3.4 * GB, 31.2 * GB); clock[0] = 2000
+check(rn.poll() is False and len(said) == 2, "ram note: eased a little (not 1 GB over the line): still quiet and not re-armed")
+samples[0] = (13.1 * GB, 5.0 * GB, 31.2 * GB); clock[0] = 2010
+rn.poll()
+samples[0] = (13.1 * GB, 1.5 * GB, 31.2 * GB); clock[0] = 2020
+check(rn.poll() is True and len(said) == 3, "ram note: recovered (1 GB over the line) and squeezed again: says it again at once")
+rn2 = cg.RamNote(lambda: 1 / 0, said.append)
+check(rn2.poll() is False and cg.RamNote(lambda: None, said.append).poll() is False, "ram note: a failing or empty probe says nothing and never raises")
+check(not hasattr(rn, "stop_fn") and not hasattr(rn, "stop"), "ram note: read-only: the note has no stop function, it only says a line")
 print("FAIL" if fails else "all ok")
 sys.exit(1 if fails else 0)

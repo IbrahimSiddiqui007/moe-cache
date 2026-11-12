@@ -2041,6 +2041,58 @@ def start_commit_guard(p, env, say_fn=None, probe=None, loading=None):
     return g
 
 
+def proc_resident_bytes(pid):
+    """Resident memory of one process in bytes (mapped model pages + private): Windows GetProcessMemoryInfo WorkingSetSize, Linux /proc/PID/status VmRSS; None when unreadable."""
+    try:
+        if WINDOWS:
+            import ctypes
+            from ctypes import wintypes
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t), ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaNonPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+            k = ctypes.WinDLL("kernel32", use_last_error=True); ps = ctypes.WinDLL("psapi", use_last_error=True)      # own instances: the types set here do not touch ctypes.windll
+            k.OpenProcess.restype, k.OpenProcess.argtypes = wintypes.HANDLE, [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k.CloseHandle.restype, k.CloseHandle.argtypes = wintypes.BOOL, [wintypes.HANDLE]
+            ps.GetProcessMemoryInfo.restype, ps.GetProcessMemoryInfo.argtypes = wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+            h = k.OpenProcess(0x1000, False, int(pid))          # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                c = PMC(); c.cb = ctypes.sizeof(PMC)
+                return float(c.WorkingSetSize) if ps.GetProcessMemoryInfo(h, ctypes.byref(c), c.cb) else None
+            finally:
+                k.CloseHandle(h)
+        for line in open(f"/proc/{int(pid)}/status"):
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024.0
+    except Exception:
+        pass
+    return None
+
+
+def ram_note_probe(pid):
+    """(server resident, available physical RAM, total RAM) in bytes for the RAM note; Windows: GetProcessMemoryInfo + GlobalMemoryStatusEx, Linux: /proc/PID/status + MemAvailable."""
+    srv = proc_resident_bytes(pid)
+    if WINDOWS:
+        tot, av = win_memory()
+    else:
+        tot, av = mem_total(), meminfo_available()
+    return None if srv is None or not tot or av is None else (srv, float(av), float(tot))
+
+
+def start_ram_note(p, env, say_fn=None, probe=None):
+    """LAUNCHER-1145: while llama-server (process p) runs, ONE plain line (planner/commit_guard.py RamNote) when it holds a big part of the RAM and what is left is low, so the owner knows
+    why the desktop got slow (other programs paged out). Read-only, rate limited (10 min), MOE_CACHE_RAM_NOTE=0 turns it off. Returns the note or None."""
+    if env.get("MOE_CACHE_RAM_NOTE", os.environ.get("MOE_CACHE_RAM_NOTE", "")) == "0":
+        return None
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import commit_guard as cgd
+    n = cgd.RamNote(probe or (lambda: ram_note_probe(p.pid)), say_fn or (lambda m: say(m, err=True)))
+    n.start(lambda: p.poll() is None)
+    return n
+
+
 def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, final=False):
     """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code.
     The child dies with the launcher. Its log is passed through; when the plugin was meant to load and the server becomes ready without a single
@@ -2079,6 +2131,10 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
         seen["guard"] = start_commit_guard(p, env, loading=lambda: not seen["ready"])       # LAUNCHER-991
     except Exception as e:
         say(f"moe-cache: warning: the memory guard did not start ({e})", err=True)
+    try:
+        start_ram_note(p, env)       # LAUNCHER-1145: read-only note when this server squeezes the RAM
+    except Exception:
+        pass
     def pump():
         out = getattr(sys.stderr, "buffer", None)
         for line in iter(p.stderr.readline, b""):

@@ -394,3 +394,65 @@ class CommitGuard:
         t = threading.Thread(target=self.run, args=(alive,), daemon=True)
         t.start()
         return t
+
+
+# ---------------------------------------------------------------- LAUNCHER-1145: the "RAM is squeezed by this server" note (read-only: it never stops or changes anything)
+# Evidence: t845 (PC, 2026-11-12), Qwen3.6-35B mmap load, 13.2 GB model held in RAM by the plugin: used RAM 18.8 -> 29.4 GB of 31.2 GB (about 1.8 GB available) while 18.5 GB of commit was
+# free; the 27B at 128k reached 28.4 GB used (about 2.8 GB available). Windows and Linux trim and page out other programs' memory when what is available gets that low, with no log line
+# from anybody. The line is said when BOTH hold: this server holds a big part of the RAM (at least max(4 GiB, 15 % of it): 13.1 GB of 31.2 GB is 42 %) and available RAM is under
+# max(3 GiB, 10 % of it) (both measured runs were under 3 GB and about 6-9 % of the RAM; 10 % leaves a little room before the point where it hurts and stays rare on a machine that is just busy).
+RAM_NOTE_AVAIL_MIN, RAM_NOTE_AVAIL_FRAC = 3 * GiB, 0.10
+RAM_NOTE_SERVER_MIN, RAM_NOTE_SERVER_FRAC = 4 * GiB, 0.15
+RAM_NOTE_REPEAT_S = 600.0           # rate limit: the same line again only after 10 minutes of it still being true
+RAM_NOTE_RECOVER = 1 * GiB          # re-armed only when available is this far over the line again (no flapping around it)
+
+
+def ram_note_state(server, avail, total):
+    """True when the note applies: this server holds a big part of the RAM and what is available is low. All figures in bytes; any missing figure -> False."""
+    if not server or avail is None or not total:
+        return False
+    return server >= max(RAM_NOTE_SERVER_MIN, RAM_NOTE_SERVER_FRAC * total) and avail < max(RAM_NOTE_AVAIL_MIN, RAM_NOTE_AVAIL_FRAC * total)
+
+
+def ram_note_line(server, avail, total):
+    return (f"moe-cache: warning: moe-cache holds {server / 1e9:.1f} GB of RAM; other programs are likely being paged out (available {avail / 1e9:.1f} GB of {total / 1e9:.1f} GB). "
+            "Close programs you do not need, or start with a smaller --ctx or --ram. This is only a note: nothing was stopped or changed")
+
+
+class RamNote:
+    """Polls probe() -> (server resident bytes, available bytes, total bytes) or None; says ram_note_line once when ram_note_state holds, again at most every `repeat` seconds while it
+    lasts, and not again after it eased until available is RAM_NOTE_RECOVER over the line. Never raises, never stops anything. clock is injectable (tests)."""
+    def __init__(self, probe, say, repeat=RAM_NOTE_REPEAT_S, clock=time.monotonic):
+        self.probe, self.say, self.repeat, self.clock = probe, say, float(repeat), clock
+        self.armed, self.last = True, None
+
+    def poll(self):
+        """One sample; returns True when a line was said."""
+        try:
+            r = self.probe()
+        except Exception:
+            return False
+        if not r:
+            return False
+        server, avail, total = r
+        low = ram_note_state(server, avail, total)
+        if not low:
+            if avail is not None and total and avail >= max(RAM_NOTE_AVAIL_MIN, RAM_NOTE_AVAIL_FRAC * total) + RAM_NOTE_RECOVER:
+                self.armed, self.last = True, None
+            return False
+        now = self.clock()
+        if self.armed or (self.last is not None and now - self.last >= self.repeat):
+            self.say(ram_note_line(server, avail, total))
+            self.armed, self.last = False, now
+            return True
+        return False
+
+    def run(self, alive, sleep=time.sleep, interval=10.0):
+        while alive():
+            self.poll()
+            sleep(interval)
+
+    def start(self, alive):
+        t = threading.Thread(target=self.run, args=(alive,), daemon=True)
+        t.start()
+        return t
