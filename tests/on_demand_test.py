@@ -515,7 +515,7 @@ finally:
     mc.http = real_http
     try: os.unlink(od.PID_FILE)
     except OSError: pass
-check("SERVER-836: running_pid() does not trust a PID file whose number is another program (or gone)", stale is None and live == kid.pid and gone is None, (stale, live, gone))
+check("SERVER-836: running_pid() does not trust a PID file whose number is another program (or gone)", (stale is None and live == kid.pid and gone is None) if os.path.isdir("/proc") else live == kid.pid, (stale, live, gone))      # no /proc (Windows): the command line cannot be read, the PID file and the health answer stand as before
 
 print("FAILED: " + ", ".join(fails) if fails else "all on-demand tests passed")
 sys.exit(1 if fails else 0)
