@@ -320,6 +320,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "env block test failed" }
           python tests/load_mode_test.py          # LAUNCHER-1133 follow-up: low RAM keeps --load-mode none for a dense model that spills
           if ($LASTEXITCODE -ne 0) { throw "load mode test failed" }
+          python tests/avail_reserve_test.py      # the plugin's cache plans with the RAM available now minus the reserve (Windows)
+          if ($LASTEXITCODE -ne 0) { throw "avail reserve test failed" }
           $env:REQUIRE_JINJA2 = "1"               # the rendering checks fail instead of skipping when jinja2 is missing
           python tests/model_folders_test.py      # GUI-1052: model folders on every fixed drive (the real drive query runs here)
           if ($LASTEXITCODE -ne 0) { throw "model_folders test failed" }

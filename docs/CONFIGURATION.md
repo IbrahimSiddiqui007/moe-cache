@@ -8,7 +8,7 @@
 | Variable | Meaning |
 |---|---|
 | `MOE_CACHE_SIZE_GIB` | cache size in GiB, or `auto` (size from the memory limit) |
-| `MOE_CACHE_RAM_GIB`, `MOE_CACHE_MARGIN_GIB` | override the detected memory limit; memory to keep free (default 1 GiB). The launcher's `--ram` sets `MOE_CACHE_RAM_GIB`: **it is a sizing hint for the cache, not a RAM cap** (Windows: no limit is set on the default path, see [WINDOWS.md](WINDOWS.md); Linux: the launcher sets no limit either, only a cgroup you set yourself, such as `systemd-run -p MemoryMax=` or a unit file, is a hard limit) |
+| `MOE_CACHE_RAM_GIB`, `MOE_CACHE_MARGIN_GIB` | override the detected memory limit; memory to keep free (default 1 GiB). On Windows the launcher also sets `MOE_CACHE_RAM_GIB` itself (the RAM available at the start minus max(4 GiB, 12.5 % of the RAM), at least 4 GiB; fixed for the run: with the variable set the plugin does not read the available RAM again after the upload) unless you give `--ram` or set it. The launcher's `--ram` sets `MOE_CACHE_RAM_GIB`: **it is a sizing hint for the cache, not a RAM cap** (Windows: no limit is set on the default path, see [WINDOWS.md](WINDOWS.md); Linux: the launcher sets no limit either, only a cgroup you set yourself, such as `systemd-run -p MemoryMax=` or a unit file, is a hard limit) |
 | `MOE_CACHE_GGUF` | model file (split models: the first part) |
 | `MOE_CACHE_PROFILE` / `MOE_CACHE_WARM` | learn expert usage here and warm-start from it / warm start only |
 | `MOE_CACHE_STATS=1` | print hit rate, reads and evictions at exit |
