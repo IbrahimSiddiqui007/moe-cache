@@ -137,14 +137,16 @@ shutil.rmtree(os.path.join(prefix, "versions", "moe-cache-v9.9.2-ggml0.26-linux-
 # an unparseable running version fails closed for an explicit --tag; a mirror over plain http is refused
 st, note = up.attestation(os.path.join(r2, [f for f in os.listdir(r2) if f.endswith(".tar.gz")][0]), env=dict(env, FAKE_GH_OLD="1"))
 check(st == "skipped" and "too old" in note, f"an old gh without `attestation` is skipped with 'too old', not 'FAILED' ({st}: {note})")
-check(up.version_key("0.3.6+dirty") == up.version_key("0.3.6") and up.version_key("0.3.6-5-gabc1234-dirty") == up.version_key("0.3.6") and up.version_key("0.3.6-beta2") != up.version_key("0.3.6"),
-      "a build of a release (+dirty, git describe) compares as that release; a real pre-release does not")
+check(up.version_key("0.3.6+dirty") == up.version_key("0.3.6") and up.version_key("0.3.6-5-gabc1234-dirty") is None and up.version_key("0.3.6-beta2") != up.version_key("0.3.6"),
+      "a +dirty build compares as its release; a git-describe form (commits after the release) stays unparseable; a real pre-release is not the release")
 rc, out = say_to_str(lambda: up.apply("local-build", here1, tag="v9.9.0", yes=True, dry=True, env=env, base_url="file://" + release("9.9.0")))
 check(rc == 1 and "not a release number" in out and "--allow-downgrade" in out, "a running version that is no release number refuses an explicit --tag (fails closed)")
 rc, out = say_to_str(lambda: up.apply("local-build", here1, tag="v9.9.0", yes=True, dry=True, allow_downgrade=True, env=env, base_url="file://" + release("9.9.0")))
 check(rc == 0 and "nothing was downloaded" in out, "--allow-downgrade lets it through")
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, MOE_CACHE_BASE_URL="http://example.invalid/mirror")))
 check(rc == 1 and "not https" in out, "a plain-http MOE_CACHE_BASE_URL is refused")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, MOE_CACHE_BASE_URL="http://localhost:80@example.invalid/m")))
+check(rc == 1 and "not https" in out, "...also with a user part that makes localhost look like the host")
 # RELEASE-691: a downgrade needs --allow-downgrade; roll_back never points `current` at a folder that is not there
 k = up.version_key
 check(k("v0.3.6") > k("0.3.6-beta2") > k("0.3.6-beta1") and k("0.3.10") > k("0.3.9") and k("0.3.6-beta10") > k("0.3.6-beta2") and k("1.0") == k("1.0.0") and k("junk") is None and k("0.3.7-beta1") > k("0.3.6"),

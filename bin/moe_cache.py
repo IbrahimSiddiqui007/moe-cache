@@ -1453,6 +1453,9 @@ def prune_jobs(jobs, close):
     return n
 
 
+_QE_UNDO = []
+
+
 def win_console_no_quickedit(k=None):
     """WINDOWS-023: switch off the console's QuickEdit mode: a stray click (or a select) in the launcher's window pauses the process writing to it, so the server pipe
     stalls until a key is pressed. True when the mode was changed; False when there is nothing to change (not a console, already off, no Windows)."""
@@ -1469,7 +1472,13 @@ def win_console_no_quickedit(k=None):
             return False                               # input is not a console (redirected, service): nothing to do
         if not mode.value & 0x0040:                    # ENABLE_QUICK_EDIT_MODE
             return False
-        return bool(k.SetConsoleMode(h, (mode.value & ~0x0040) | 0x0080))      # 0x0080 = ENABLE_EXTENDED_FLAGS: without it the clear is ignored
+        old = mode.value
+        if not k.SetConsoleMode(h, (old & ~0x0040) | 0x0080):      # 0x0080 = ENABLE_EXTENDED_FLAGS: without it the clear is ignored
+            return False
+        import atexit
+        atexit.register(lambda: k.SetConsoleMode(h, old))          # the user's own shell keeps QuickEdit when moe-cache ends
+        _QE_UNDO.append(lambda: k.SetConsoleMode(h, old))
+        return True
     except Exception:
         return False
 

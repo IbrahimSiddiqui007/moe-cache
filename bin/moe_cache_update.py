@@ -33,7 +33,7 @@ def newest_stable_tag(fetch_json):
 def version_key(v):
     """Sortable key of a release version or tag ('v0.3.6', '0.3.6-beta2'): numbers first, a final release sorts after its own pre-releases.
     None when it is not a version (then nothing is compared)."""
-    v = re.sub(r"(-\d+-g[0-9a-f]+)?(-dirty)?(\+.*)?$", "", str(v).strip())      # RELEASE-686: a build of a release ('0.3.6+dirty', '0.3.6-5-gabc1234-dirty') compares as that release
+    v = re.sub(r"(\+.*)$", "", str(v).strip())      # RELEASE-686: '0.3.6+dirty' (build metadata) compares as that release; a git-describe form ('0.3.6-5-gabc', 5 commits AFTER it) stays unparseable: fail closed
     m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:[.-]([A-Za-z0-9.]+))?", v)
     if not m:
         return None
@@ -208,7 +208,8 @@ def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, 
         return 1
     default_base = base_url is None and not env.get("MOE_CACHE_BASE_URL")
     base = base_url or env.get("MOE_CACHE_BASE_URL") or f"https://github.com/{REPO}/releases/download/{tag}"
-    if re.match(r"http://(?!(127\.0\.0\.1|localhost|\[::1\])([:/]|$))", base, re.I):          # RELEASE-686: a mirror over plain http can be changed on the way; https, a local folder (file://) or this machine only
+    _u = urllib.parse.urlsplit(base)
+    if _u.scheme.lower() == "http" and (_u.username is not None or (_u.hostname or "").lower() not in ("127.0.0.1", "localhost", "::1")):          # RELEASE-686: a mirror over plain http can be changed on the way; https, a local folder (file://) or this machine only
         say(f"moe-cache: REFUSED: MOE_CACHE_BASE_URL {base} is not https. Nothing was changed.")
         return 1
     name = "install.ps1" if layout["kind"] == "windows" else "install.sh"

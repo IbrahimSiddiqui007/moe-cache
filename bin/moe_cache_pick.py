@@ -372,7 +372,7 @@ def fit(spec, k, ctx, use, local=None):
     f = e["fit"]
     local = spec.get("local") if local is None else local
     cap = (spec.get("ram_cap") or 0) / 1e9
-    vram = snap_gib((spec.get("vram") or 0) / GIB)
+    vram = (spec.get("vram") or 0) / GIB
     size = size_of(k, local or {})
     stock = size + mc.STOCK_HEADROOM <= cap * 1e9
     no, tight = [], []
