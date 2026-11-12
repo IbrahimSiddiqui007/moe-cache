@@ -632,12 +632,15 @@ async function loadBusy() {      // never blocks: the page server answers with i
 /* The per-run token: handed over once inside this page (a <meta> the server fills in), kept in memory only (no cookie, no storage), sent in a header
    with every request. The address (?t=...) is replaced at once so the token stays out of the history; reloading needs the launcher's address again. */
 const TOKEN = (() => { const m = document.querySelector('meta[name="moe-token"]'); const t = m ? m.content : ""; if (m) m.remove();
-  try { if (location.search) history.replaceState(null, "", location.pathname); } catch (e) {} return t; })();
+  try { if (location.search) history.replaceState(null, "", location.pathname + location.hash); } catch (e) {} return t; })();
+// GUI-839: navigator.clipboard does not exist on a LAN http address (not a secure context) and a refusal is a rejected promise: true only when the text was copied
+async function copyText(t) { try { if (!navigator.clipboard) return false; await navigator.clipboard.writeText(t); return true; } catch (e) { return false; } }
 const authHeaders = h => Object.assign({ "X-MoeCache-Token": TOKEN }, h);
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? { headers: authHeaders() } : { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || r.status);
+  let j = null; try { j = await r.json(); } catch (e) {}            // GUI-839: a proxy's HTML error page is not JSON: say the status, not a parse error
+  if (!r.ok) throw new Error((j && j.error) || r.status);
+  if (j === null) throw new Error("the answer was not JSON (" + r.status + ")");
   return j;
 }
 
@@ -955,7 +958,12 @@ async function rowMenuDo(id) {
   else if (id == "stop") $("stop").click();
   else if (id == "plan") { $("planbox").open = true; $("planbox").scrollIntoView({ block: "nearest" }); }
 }
-async function poll() {
+let pollBusy = false;
+async function poll() {       // GUI-839: a slow answer must not start a second poll on top of the first (duplicate log lines)
+  if (pollBusy) return; pollBusy = true;
+  try { await pollOnce(); } finally { pollBusy = false; }
+}
+async function pollOnce() {
   let st;
   try { st = await api("/api/status"); } catch (e) { $("state").textContent = "page server not reachable"; $("statedot").className = "dot bad"; return; }
   S.status = st;
@@ -1034,7 +1042,7 @@ function paintSessions(j) {
   h += j.files.map(f => { const busy = f.this_server && live.some(x => x.id == f.slot && x.processing);
     return `<div class="item" title="${esc(f.model)} · ctx ${esc(f.ctx ?? "?")}, KV ${esc(f.kv)} · ${f.size >= 1e9 ? fmtGB(f.size) : (f.size / 1e6).toFixed(0) + " MB"}">
       <span class="dot ${busy ? "ok" : ""}" style="margin-top:6px"></span><div><span class="t">${esc(f.agent || (f.this_server && st.state == "ready" ? "unknown agent" : "agent"))} · ${esc(shortName(f.model))}</span>
-      <span class="s">slot ${f.slot} · ${f.tokens != null ? f.tokens.toLocaleString() : "?"} tokens · ${state(f)}${busy ? " · working" : ""}</span></div>
+      <span class="s">slot ${f.slot} · ${Number.isFinite(Number(f.tokens)) && f.tokens != null ? Number(f.tokens).toLocaleString() : "?"} tokens · ${state(f)}${busy ? " · working" : ""}</span></div>
       <button class="x" data-trash="${esc(f.name)}" title="Move to the Trash">✕</button></div>`; }).join("");
   if (!j.files.length) h += `<div class="small" style="margin:0 8px">No saved agent conversations${live.length ? "" : " (Agent mode saves them)"}.</div>`;
   if (live.length) h += `<div class="small" style="margin:4px 8px">Live slots: ${live.map(x => `${esc(x.id)}: ${Number.isFinite(Number(x.tokens)) ? Number(x.tokens) : 0} tok${x.processing ? " (working)" : ""}`).join(" · ")}</div>`;
@@ -1076,14 +1084,14 @@ let shareKey = "", shareUrl = "", readyKey = "", shareRec = null, readyMinutes =
 async function paintReady(force) {
   const box = $("ready"), card = $("c-bench");
   if (!S.sel || !card.open) { box.hidden = true; return; }
-  if (!force && readyKey == S.sel) return; readyKey = S.sel;
+  if (!force && readyKey == S.sel) return;
   try {
     const j = await api("/api/ready?model=" + encodeURIComponent(S.sel) + "&pairs=2&chat=" + ($("sharechat").checked ? 1 : 0) + "&limit=" + encodeURIComponent($("sharelimit").value));
     const dot = { ok: "ok", warn: "warn", bad: "bad", info: "" };
     readyMinutes = j.minutes || 0;
     const pr = j.preset;
     box.innerHTML = (pr ? `<div><b>Your machine:</b> ${esc(pr.text)} <button class="small" id="usepreset">Use</button></div>` : "") + `<b>Ready to measure?</b>` + j.checks.map(c => `<div><span class="dot ${dot[c.level]}"></span>${esc(c.text)}${c.fix ? ` <span class="${c.level == "bad" ? "err" : ""}">${esc(c.fix)}</span>` : ""}</div>`).join("");
-    box.hidden = false;
+    box.hidden = false; readyKey = S.sel;           // GUI-839: remembered only after the answer arrived, so a failed fetch is tried again
     if (pr && $("usepreset")) $("usepreset").onclick = () => { $("sharechat").checked = pr.chat; if (pr.emulate_gb && [...$("sharelimit").options].some(o => +o.value == pr.emulate_gb)) $("sharelimit").value = pr.emulate_gb; paintReady(true); };
   } catch (e) { box.hidden = true; }
 }
@@ -1304,7 +1312,7 @@ async function paintShare(st) {
   if (sh.state == "failed") { box.innerHTML = `<span class="err">${esc(sh.error || "failed")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "cancelled") { box.textContent = "cancelled. The server is stopped: press Start to run a model again."; $("shareout").hidden = true; return; }
   if (sh.state == "done") {
-    const j = await api("/api/share");
+    let j; try { j = await api("/api/share"); } catch (e) { shareKey = null; return; }          // GUI-839: a failed fetch is tried again at the next poll
     shareUrl = j.issue_url || "";
     $("sharemd").value = j.markdown || "";
     const vd = verdictOf(j.markdown);
@@ -1392,12 +1400,12 @@ async function loadServers() {
 function paintServers() {
   const { managed, other } = S.servers, can = S.status.state == "ready" && S.sel && managed.length <= S.servers.max;
   $("c-servers").hidden = !(managed.length > 1 || other.length || S.models.length > 1);
-  const chatBtn = (port, why) => `<button class="rowbtn" data-chat="${port}" ${why ? `disabled title="${esc(why)}"` : ""}>${(S.chatPort || (managed.find(x => x.main) || {}).port) == port ? "chatting here" : "Chat here"}</button>`;
-  $("servers").innerHTML = managed.map(x => `<div class="line"><span class="dot ${x.state == "ready" ? "ok" : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
-    <br><span class="small">${x.main ? "main server of this page" : "started here"} · ${esc(x.state)}${x.mode ? " · " + esc(x.mode) : ""}${x.live_tps ? ` · ${x.live_tps.toFixed(1)} tok/s` : ""}${x.vision ? " · images" : ""}</span></span>
-    ${x.state == "ready" || x.state == "waiting" ? chatBtn(x.port) : ""}${x.main ? "" : `<button class="rowbtn" data-stop="${x.port}">Stop</button>`}</div>`).join("") +
-    other.map(x => `<div class="line"><span class="dot ${x.health == "ready" ? (x.busy ? "ok" : "") : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
-    <br><span class="small">started elsewhere · ${x.health == "ready" ? "ready" : "loading"}${x.ctx ? " · ctx " + x.ctx.toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span>
+  const chatBtn = (port, why) => `<button class="rowbtn" data-chat="${esc(port)}" ${why ? `disabled title="${esc(why)}"` : ""}>${(S.chatPort || (managed.find(x => x.main) || {}).port) == port ? "chatting here" : "Chat here"}</button>`;
+  $("servers").innerHTML = managed.map(x => `<div class="line"><span class="dot ${x.state == "ready" ? "ok" : "warn"}"></span><span class="n"><b>:${esc(x.port)}</b> ${esc(shortName(x.model || "") || "?")}
+    <br><span class="small">${x.main ? "main server of this page" : "started here"} · ${esc(x.state)}${x.mode ? " · " + esc(x.mode) : ""}${Number(x.live_tps) > 0 ? ` · ${Number(x.live_tps).toFixed(1)} tok/s` : ""}${x.vision ? " · images" : ""}</span></span>
+    ${x.state == "ready" || x.state == "waiting" ? chatBtn(x.port) : ""}${x.main ? "" : `<button class="rowbtn" data-stop="${esc(x.port)}">Stop</button>`}</div>`).join("") +
+    other.map(x => `<div class="line"><span class="dot ${x.health == "ready" ? (x.busy ? "ok" : "") : "warn"}"></span><span class="n"><b>:${esc(x.port)}</b> ${esc(shortName(x.model || "") || "?")}
+    <br><span class="small">started elsewhere · ${x.health == "ready" ? "ready" : "loading"}${Number(x.ctx) > 0 ? " · ctx " + Number(x.ctx).toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span>
     ${x.health == "ready" ? chatBtn(x.port, x.key ? "this server wants an API key; the page sends its key only to servers it started" : "") : ""}</div>`).join("") +
     (other.length ? `<div class="hint">Servers started outside this page (a script, the terminal, another page) can be chatted with here when they need no key; Start and Stop act on this page's own servers only.</div>` : "") +
     (S.servers.groupError ? `<div class="pwarn small">${esc(S.servers.groupError)}</div>` : "") +
@@ -1612,7 +1620,7 @@ $("inner").onclick = e => {
   const rc = e.target.closest("[data-risk]");
   if (rc) { const m = C.chat.messages[+rc.dataset.risk]; if (m) { m.showRisk = !m.showRisk; paintChat(); } return; }
   const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.copy != null) { navigator.clipboard && navigator.clipboard.writeText(splitThink(C.chat.messages[+b.dataset.copy])[1]); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); }
+  if (b.dataset.copy != null) { copyText(splitThink(C.chat.messages[+b.dataset.copy])[1]).then(ok => { b.textContent = ok ? "Copied" : "Copy not available here"; setTimeout(() => b.textContent = "Copy", 1500); }); }
   if (b.dataset.regen != null && !C.busy) { C.chat.messages.pop(); paintChat(); ask(); }
 };
 function paintChatState(st, running) {

@@ -1728,7 +1728,7 @@ if node:
     fn = re.search(r"const TOKEN = .*?async function api\(path, body\) \{.*?\n\}\n", page, re.S).group(0)
     harness = ("let removed = false, replaced = null, calls = [];\n"
                "const document = { querySelector: s => s == 'meta[name=\"moe-token\"]' ? { content: 'tok-xyz', remove() { removed = true; } } : null };\n"
-               "const location = { search: '?t=tok-xyz', pathname: '/' }, history = { replaceState: (a, b, u) => { replaced = u; } };\n"
+               "const location = { search: '?t=tok-xyz', pathname: '/', hash: '' }, history = { replaceState: (a, b, u) => { replaced = u; } };\n"
                "const localStorage = { setItem() { throw new Error('storage used'); }, getItem() { throw new Error('storage used'); } };\n"
                "const fetch = async (p, o) => { calls.push([p, o]); return { ok: true, json: async () => ({}) }; };\n" + fn +
                "(async () => { await api('/api/status'); await api('/api/stop', {}); console.log(JSON.stringify([TOKEN, removed, replaced, calls.map(c => [c[1].headers['X-MoeCache-Token'], c[1].method || 'GET', c[1].headers['Content-Type'] || null])])); })();\n")
@@ -1739,6 +1739,63 @@ if node:
     except Exception:
         r_ = None; print(o.stdout[-300:], o.stderr[-500:])
     check(r_ == ["tok-xyz", True, "/", [["tok-xyz", "GET", None], ["tok-xyz", "POST", "application/json"]]], f"SERVER-011: the page keeps the token in memory, clears the address and sends the header on GET and POST ({r_})")
+
+# GUI-839 / TEST-840 (2026-11-12): small control-page fixes run on the page's own code under node, and hostile payloads for the chat message and the server list
+if node:
+    def fnsrc(pat): return re.search(pat, page, re.S).group(0)
+    fn = "".join(fnsrc(p_) for p_ in (r"const esc = [^\n]*\n", r"async function copyText\(t\) \{[^\n]*\n", r"const authHeaders = [^\n]*\n", r"async function api\(path, body\) \{.*?\n\}\n"))
+    harness = ("const TOKEN = 't';\n" + fn + """
+const resp = (ok, status, json) => ({ ok, status, json: async () => { if (json === undefined) throw new SyntaxError("Unexpected token <"); return json; } });
+const run = async (r) => { global.fetch = async () => r; try { return "ok:" + JSON.stringify(await api("/x")); } catch (e) { return "err:" + e.message; } };
+(async () => {
+  const out = {};
+  out.html502 = await run(resp(false, 502));                   // a proxy's HTML error page
+  out.html200 = await run(resp(true, 200));
+  out.json = await run(resp(true, 200, { a: 1 }));
+  out.jsonErr = await run(resp(false, 400, { error: "bad" }));
+  Object.defineProperty(globalThis, "navigator", { value: undefined, configurable: true, writable: true }); out.noClip = await copyText("x");
+  Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => { throw new Error("denied"); } } }, configurable: true, writable: true }); out.denied = await copyText("x");
+  let got = null; Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async t => { got = t; } } }, configurable: true, writable: true }); out.fine = [await copyText("hello"), got];
+  console.log(JSON.stringify(out));
+})();
+""")
+    hf = os.path.join(TMP, "gui839.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and r_["html502"] == "err:502" and r_["html200"].startswith("err:the answer was not JSON") and r_["json"] == 'ok:{"a":1}' and r_["jsonErr"] == "err:bad",
+          f"GUI-839: api() reads the status before the body: a proxy's HTML error page says 502, not a JSON parse error ({r_ and (r_['html502'], r_['html200'])})")
+    check(r_ is not None and r_["noClip"] is False and r_["denied"] is False and r_["fine"] == [True, "hello"],
+          f"GUI-839: copyText is false without navigator.clipboard (LAN http) and when the browser refuses, true only when the text was copied ({r_ and (r_['noClip'], r_['denied'], r_['fine'])})")
+    check("history.replaceState(null, \"\", location.pathname + location.hash)" in page, "GUI-839: stripping the token from the address keeps the #hash")
+    check(re.search(r"async function poll\(\) \{[^}]*pollBusy[^}]*pollOnce\(\)", page, re.S) is not None, "GUI-839: poll() does not start a second poll while one is running")
+    check(re.search(r"box\.hidden = false; readyKey = S\.sel;", page) is not None and "readyKey == S.sel) return; readyKey" not in page, "GUI-839: the ready-check key is remembered only after the answer arrived")
+    check("Number(f.tokens).toLocaleString()" in page, "GUI-839: a saved slot's token count goes through Number()")
+    # TEST-840: hostile chat message and server list
+    X = '"><img src=x onerror=alert(1)>'
+    fn = "".join(fnsrc(p_) for p_ in (r"const esc = [^\n]*\n", r"function splitThink\(m\) \{.*?\n\}\n", r"function md\(src\) \{.*?\n\}\n", r"function inline\(t\) \{.*?\n\}\n", r"function block\(.*?\n\}\n",
+                                                                 r"function chips\(m, i, live\) \{.*?\n\}\n", r"function msgHTML\(m, i, live\) \{.*?\n\}\n", r"function paintServers\(\) \{.*?\n\}\n"))
+    harness = ("const els = {}; const $ = id => els[id] || (els[id] = { hidden: false, innerHTML: '', checked: true, value: '' });\n"
+               "const nextPort = () => 8090, pairPanel = () => '', shortName = s => s, C = { chat: { messages: [1, 2] } }; const S = { servers: null, status: { state: 'ready' }, sel: 'm', models: [1, 2], chatPort: null };\n" + fn +
+               "const X = " + json.dumps(X) + ";\n"
+               "const msg = { role: 'assistant', content: X + '<script>alert(2)</script>', error: X, meta: { predicted_per_second: X }, think: X, shown: X, images: [X] };\n"
+               "const user = { role: 'user', content: X, shown: X, images: [X] };\n"
+               "S.servers = { managed: [{ port: X, model: X, state: X, mode: X, main: false, live_tps: 1.5 }], other: [{ port: X, model: X, health: 'ready', ctx: 8192, slots: 2, busy: 1, key: false }], max: 3, groupError: X };\n"
+               "const bad = { managed: [{ port: 80, model: 1, state: 'ready', live_tps: 'x' }], other: [{ port: 81, model: 2, health: 'ready', ctx: 'x', slots: 1 }], max: 3 };\n"
+               "let ps; try { paintServers(); ps = els.servers.innerHTML; S.servers = bad; paintServers(); ps += '|' + els.servers.innerHTML; } catch (e) { ps = 'THROW ' + e.message; }\n"
+               "console.log(JSON.stringify({ ai: msgHTML(msg, 1, false), live: msgHTML(msg, 1, true), user: msgHTML(user, 0, false), ps }));\n")
+    hf = os.path.join(TMP, "hostile2.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    bad_markup = lambda h: "<img src=x" in h or "<script" in h or 'onerror=alert' in h.replace("&quot;", '"').replace("onerror=alert(1)&gt;", "")
+    check(r_ is not None and not any(("<img src=x" in r_[k] or "<script>" in r_[k]) for k in ("ai", "live", "user")), f"TEST-840: a hostile chat message (text, error, shown text, image address) never becomes markup ({r_ and r_['ai'][:160]})")
+    check(r_ is not None and not r_["ps"].startswith("THROW") and "<img src=x" not in r_["ps"] and 'data-chat="\"' not in r_["ps"],
+          f"TEST-840: a hostile server list (port, model, state, mode, group error) never becomes markup, and odd counters (a string tok/s or ctx) do not throw ({r_ and r_['ps'][:200]})")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)
