@@ -40,9 +40,9 @@ It prints what it found. The same is shown in the page's header when you hold th
 
 ![The control page: chats and models on the left, the chat in the middle, live numbers on the right](img/gui-3pane-desktop.png)
 
-*(Granite 1B on the test laptop, Linux, RTX 4060 8 GB, 2026-10-27; VRAM 0.5 GiB and Run as moe-cache so the plugin has work to do.)*
+*(Granite 1B on the test laptop, Linux, RTX 4060 8 GB. The model fits in RAM and on the card, so Auto runs plain llama-server, as the top bar says.)*
 
-*Note (2026-11-03): all screenshots in this guide were taken on 2026-10-27. The page has changed since (for example the "Other programs" list of 2026-11-01 and the Share my numbers Cancel fix); the text of this guide is current, the pictures do not show the newer panels.*
+*The pictures of the page at a glance, the model list, the settings, the live numbers and the Agents card were retaken for v0.3.8 on the test laptop; the phone-width picture is older, and the page has small differences from it.*
 
 The page is laid out like a chat app, in three panes:
 
@@ -60,9 +60,7 @@ stays and both side panes slide in:
 
 Add `#agents`, `#log`, `#status` or `#bench` to the page's address to open that card directly, or `#chat=ID` for a saved chat (handy as bookmarks).
 
-The pictures in sections 3-9 were taken before the three-pane layout: the parts look the same, they only moved. Model list → left pane; Settings
-panel → the Settings drawer; Status panel → the Live, Benchmark, Warnings and decision cards on the right; Agents tab → the Agents card and the left
-pane's Agent sessions; Log tab → the Log card.
+In the sections below, "panel" means: model list → left pane; Settings panel → the Settings drawer; Status panel → the Live, Benchmark, Warnings and decision cards on the right; Agents tab → the Agents card and the left pane's Agent sessions; Log tab → the Log card.
 
 ## 3. Models and the plan
 
@@ -95,7 +93,7 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 
 ## 4. Settings
 
-<img src="img/gui-settings.png" alt="Settings panel" width="520">
+<img src="img/gui-settings.png" alt="Settings drawer: memory, context, mode, run as, MTP, agents, long-prompt mode, port" width="440">
 
 | Setting | What it does | Default |
 |---|---|---|
@@ -123,10 +121,9 @@ Ollama's downloaded models are found and listed as local (agents see them under 
 
 ## 5. Start, stop and the live numbers
 
-<img src="img/gui-status.png" alt="Status panel: live numbers, the command, benchmark runs and the stock vs moe-cache table" width="600">
+<img src="img/gui-status.png" alt="The Live, Context, Files and Agents cards: live numbers, the command that was started" width="600">
 
-*(Granite fits in RAM, so stock llama-server is faster here, 0.80× and 0.46× in red: as the launcher's Auto choice says. The gain is for models
-bigger than RAM.)*
+*(Granite fits in RAM, so the launcher's Auto choice runs plain llama-server and there is no cache hit rate. The gain of moe-cache is for models bigger than RAM; the stock-against-moe-cache table is in the Benchmark card.)*
 
 **Start** starts the selected model with your settings, through the launcher (`moe_cache.py server`). **Stop** stops it. The model loads in a
 few seconds to a few minutes; the state shows *starting…* until it is ready.
