@@ -522,9 +522,10 @@ def counters_text(pid=None, timeout=8):
     """One PowerShell read of '\\GPU Process Memory(*)' Dedicated Usage and, in the same read, '\\GPU Adapter Memory(*)' Dedicated Usage ('path|value;...', the format others_dedicated_mib
     reads; the adapter counter is the card's own total, the figure that caps the sum of the processes). '' when the process read fails."""
     pat = f"pid_{pid}_*" if pid else "*"
-    cmd = ("$c = @('\\GPU Process Memory(P)\\Dedicated Usage', '\\GPU Adapter Memory(*)\\Dedicated Usage'); "
-           "Get-Counter -Counter $c -ErrorAction SilentlyContinue | "
-           "ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';' }").replace("(P)", f"({pat})")
+    cmd = ("$e = 'SilentlyContinue'; "         # two separate reads: if one counter set is missing the other still answers (critic R5)
+           "foreach ($c in @('\\GPU Process Memory(P)\\Dedicated Usage', '\\GPU Adapter Memory(*)\\Dedicated Usage')) { "
+           "Get-Counter -Counter $c -ErrorAction $e | "
+           "ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';' } }").replace("(P)", f"({pat})")
     try:
         return subprocess.run([_win_ps(), "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, errors="replace", timeout=timeout).stdout
     except Exception:

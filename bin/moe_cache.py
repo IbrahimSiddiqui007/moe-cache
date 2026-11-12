@@ -3104,11 +3104,13 @@ def real_room_stage(a, g, machine):
             return
         a.room_used_gib = others / 1024
         room = real_room_mib(total, others)
-        if room is None or room >= driver - 256:
+        if room is not None and driver > others:
+            room = min(room, driver - others)         # critic R1: the card's size minus the others can sit above what a process was seen to keep (13.1-13.5 of a 15.4 budget on 2026-11-11 with ~2 GiB used by others): the smaller of the two readings
+        if room is None or room >= driver - 512:
             return
         a.room_gib = room / 1024
         say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB (the desktop and other programs hold {others / 1024:.1f} GiB of the card's "
-            f"{total / 1024:.1f} GiB, and a reserve of {ROOM_RESERVE_MIB} MiB stays free); --vram GiB sets it by hand")
+            f"{total / 1024:.1f} GiB; the smaller of the card's size minus that and its own free figure minus that, minus {ROOM_RESERVE_MIB} MiB reserve at most); --vram GiB sets it by hand")
     except Exception:
         pass
 

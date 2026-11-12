@@ -99,8 +99,14 @@ def stage(vram=None, m=None):
         mc.say = sv
     return a, said
 a, said = stage()
-check(a.vram == "15.04" and abs(a.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and any("GPU room: planning with 13.29 GiB" in x for x in said), f"gpu_stage: a.vram {a.vram}, room {getattr(a, 'room_gib', None)}, line: {[x for x in said if 'room' in x]}")
+check(a.vram == "15.04" and abs(a.room_gib - (15400 - 2400) / 1024) < 0.01 and any("GPU room: planning with 12.70 GiB" in x for x in said), f"gpu_stage: a.vram {a.vram}, room {getattr(a, 'room_gib', None)}, line: {[x for x in said if 'room' in x]}")
 check(abs(a.room_used_gib - 2400 / 1024) < 1e-6, "gpu_stage: the other programs' use is kept for the desk reserve")
+# critic R1: the room is the smaller of (card - others - reserve) and (llama-server's free figure - others): 16304 - 2400 - 300 = 13604 vs 15400 - 2400 = 13000 -> 13000
+check(abs(a.room_gib * 1024 - 13000) < 1, "room = the smaller of the two readings (13000 MiB, not 13604)")
+m4 = M(); m4.gpu_process_text = lambda: _real_p + ";" + _real_a
+m4.total_mib = 16304
+c4, said4 = stage(m=m4)
+check(abs(c4.room_gib - (15.04 * 1024 - 2060398592 / 1048576) / 1024) < 0.01, f"the real PC capture through gpu_stage: room {c4.room_gib:.2f} GiB (driver 15.04 minus the adapter's 1.92), not 11.75 and not 13.69")
 f, gap = mc.dense_fit_free(a, M())
 check(abs(f / GIB - a.room_gib) < 1e-6 and gap == 0.0, "dense_fit_free: min(driver figure, real room)")
 b, said = stage(vram="15.4")
