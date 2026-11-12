@@ -99,21 +99,27 @@ def stage(vram=None, m=None):
         mc.say = sv
     return a, said
 a, said = stage()
-check(a.vram == "15.04" and abs(a.room_gib - (15400 - 2400) / 1024) < 0.01 and any("GPU room: planning with 12.70 GiB" in x for x in said), f"gpu_stage: a.vram {a.vram}, room {getattr(a, 'room_gib', None)}, line: {[x for x in said if 'room' in x]}")
+check(a.vram == "15.04" and abs(a.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and any("GPU room: planning with 12.40 GiB" in x and "free figure minus that" in x for x in said), f"gpu_stage: a.vram {a.vram}, room {getattr(a, 'room_gib', None)}, line: {[x for x in said if 'room' in x]}")
 check(abs(a.room_used_gib - 2400 / 1024) < 1e-6, "gpu_stage: the other programs' use is kept for the desk reserve")
 # critic R1: the room is the smaller of (card - others - reserve) and (llama-server's free figure - others): 16304 - 2400 - 300 = 13604 vs 15400 - 2400 = 13000 -> 13000
-check(abs(a.room_gib * 1024 - 13000) < 1, "room = the smaller of the two readings (13000 MiB, not 13604)")
+check(abs(a.room_gib * 1024 - 12700) < 1, "room = the smaller of the two readings (13000 MiB, not 13604) minus the 300 MiB reserve (critic N1)")
 m4 = M(); m4.gpu_process_text = lambda: _real_p + ";" + _real_a
 m4.total_mib = 16304
 c4, said4 = stage(m=m4)
-check(abs(c4.room_gib - (15.04 * 1024 - 2060398592 / 1048576) / 1024) < 0.01, f"the real PC capture through gpu_stage: room {c4.room_gib:.2f} GiB (driver 15.04 minus the adapter's 1.92), not 11.75 and not 13.69")
+check(abs(c4.room_gib - (15.04 * 1024 - 2060398592 / 1048576 - 300) / 1024) < 0.01, f"the real PC capture through gpu_stage: room {c4.room_gib:.2f} GiB (driver 15.04 minus the adapter's 1.92 minus the 300 MiB reserve), not 11.75 and not 13.69")
 f, gap = mc.dense_fit_free(a, M())
 check(abs(f / GIB - a.room_gib) < 1e-6 and gap == 0.0, "dense_fit_free: min(driver figure, real room)")
 b, said = stage(vram="15.4")
 check(not hasattr(b, "room_gib") and mc.dense_fit_free(b, M())[0] == 15.4 * GIB and not any("GPU room" in x for x in said), "the user's own --vram is taken as given: no room line, no cap")
 m2 = M(); m2.others = 300
 c, said = stage(m=m2)
-check(getattr(c, "room_gib", None) is None and not any("GPU room" in x for x in said), "a nearly empty card: the driver figure stands, nothing is said")
+check(abs(c.room_gib - (15400 - 300) / 1024) < 0.01 and not any("GPU room" in x for x in said), f"a nearly empty card: the room is applied (critic N3: {c.room_gib:.2f} GiB), nothing is said")
+# critic N2: a driver figure that already counts the others (here 12000 MiB free of 16304 with others 2400: below card - others = 13904) is taken as it is, not reduced again
+class M5(M):
+    def list_devices(self, ls): return "Available devices:\n  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 12000 MiB free)\n"
+    def pick_gpu_full(self, listing): return ("Vulkan0", "AMD Radeon RX 9070 XT", 12000, 16304)
+c5, said5 = stage(m=M5())
+check(abs(c5.room_gib - (12000 - 300) / 1024) < 0.01, f"N2: the driver's figure already below card - others: room = driver - reserve ({c5.room_gib:.2f} GiB), the others are not subtracted twice")
 m3 = M(); m3.gpu_process_text = lambda: ""
 c, said = stage(m=m3)
 check(getattr(c, "room_gib", None) is None and sum("GPU room: the other programs' GPU memory use could not be read" in x and "free figure as before" in x for x in said) == 1,

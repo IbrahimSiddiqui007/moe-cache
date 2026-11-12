@@ -3103,14 +3103,18 @@ def real_room_stage(a, g, machine):
             say("moe-cache: GPU room: the other programs' GPU memory use could not be read (Windows counters): planning with llama-server's free figure as before")
             return
         a.room_used_gib = others / 1024
-        room = real_room_mib(total, others)
-        if room is not None and driver > others:
-            room = min(room, driver - others)         # critic R1: the card's size minus the others can sit above what a process was seen to keep (13.1-13.5 of a 15.4 budget on 2026-11-11 with ~2 GiB used by others): the smaller of the two readings
-        if room is None or room >= driver - 512:
+        # critic N1-N3: the room is the smaller of (a) the card's size minus the others and (b) llama-server's free figure minus the others, then the growth reserve comes off the result.
+        # (b) only when that figure does not already count the others (driver >= card - others); otherwise the driver's figure is taken as it is.
+        by_card = total - others
+        by_driver = driver - others if driver >= by_card else driver
+        which = "the card's size minus that" if by_card <= by_driver else "llama-server's own free figure minus that"
+        room = real_room_mib(min(by_card, by_driver), 0.0)     # the reserve off the smaller term; None when implausible (< 1 GiB)
+        if room is None or room >= driver:
             return
         a.room_gib = room / 1024
-        say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB (the desktop and other programs hold {others / 1024:.1f} GiB of the card's "
-            f"{total / 1024:.1f} GiB; the smaller of the card's size minus that and its own free figure minus that, minus {ROOM_RESERVE_MIB} MiB reserve at most); --vram GiB sets it by hand")
+        if others >= 1024:                         # a card nearly empty of other programs: planned with the room, nothing worth saying
+            say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB (the desktop and other programs hold {others / 1024:.1f} GiB of the card's "
+                f"{total / 1024:.1f} GiB: {which}, minus a {ROOM_RESERVE_MIB} MiB reserve for their growth); --vram GiB sets it by hand")
     except Exception:
         pass
 
