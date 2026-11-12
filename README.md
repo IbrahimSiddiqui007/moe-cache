@@ -107,6 +107,8 @@ Step by step for each agent, the desktop apps and the context limit to set: [doc
 
 Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), a real 65k conversation, stock llama.cpp against moe-cache with the same command line. This is the one headline table; the whole benchmark card, the per-depth tables, the method, the commands and the memory-budget table are in [docs/RESULTS_CURRENT.md](docs/RESULTS_CURRENT.md), and every older measurement is in [docs/results-archive/](docs/results-archive/RESULTS.md).
 
+**Prompt reading is at stock speed or faster in every row below** (prompt ratios 1.04x to 5.00x, none under 1.0x) <!-- claim:v038-conv-iq3xxs --><!-- claim:v038-conv-q2_0 --><!-- claim:v038-fits-qwen36 -->; decode is at or above stock except one depth band of the Q2_0 row (0.98x).
+
 | Model (file size) | Prompt tok/s by depth band, stock → moe-cache (0-16k / 16-32k / 32-48k / 48-64k) | Prompt ratio | Decode tok/s by depth band, stock → moe-cache | Decode ratio |
 |---|---|---|---|---|
 | **Flash-Next IQ3_XXS** (the default)<br><sub>75.8 GB, drive D:, two runs each, ABBA</sub> | 49.8→212.8 / 66.0→215.0 / 54.9→201.4 / 44.0→142.8 | 4.27x / 3.26x / 3.67x / 3.24x | 16.5→22.0 / 13.1→19.4 / 12.6→20.5 / 14.5→18.2 | 1.33x / 1.48x / 1.63x / 1.25x <!-- claim:v038-conv-iq3xxs --> |
