@@ -149,7 +149,7 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 ```
 `--ram 12` tells the launcher to size the cache and the GPU/CPU plan for 12 GB (a sizing hint, not a limit; the hard cap is `--max-ram`); leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
 
-**The first start is slow.** The server is ready after about 20 seconds (RESULTS 64: 14-19 s); the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens took 186 s on our laptop, [docs/AGENTS.md](AGENTS.md); a 63k-token prompt about 5 minutes on our Windows PC, RESULTS 64). The chat page shows progress. Later turns are much faster because the conversation is kept.
+**The first start is slow.** The server is ready after about 20 seconds (14-19 s measured); the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens took 186 s on our laptop, [docs/AGENTS.md](AGENTS.md); a 63k-token prompt about 5 minutes on our Windows PC, RESULTS 64). The chat page shows progress. Later turns are much faster because the conversation is kept.
 
 **Speed options that change the answers a little (all off by default; the launcher suggests `--fast` when it would help):**
 
