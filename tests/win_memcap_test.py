@@ -23,5 +23,9 @@ check("QueryInformationJobObject" in ps and "read back" in ps, "the limit is rea
 check(re.search(r"\$modelBytes -gt \$capBytes -and -not \$AllowBigModel", ps) is not None and "throw" in ps, "a model bigger than the cap is refused unless -AllowBigModel")
 check("[double]$MemLimitGB = 0" in ps and "[switch]$AllowBigModel" in ps, "parameters -MemLimitGB and -AllowBigModel exist")
 check(ps.count("@\"") == 1 and re.search(r'^"@', ps, re.M) is not None, "the C# here-string is closed at the start of a line")
+# WINDOWS-838: the header no longer calls the script an untested port; on a GPU build of llama.cpp the job limit (it counts GPU memory and broke Vulkan) is off unless asked for
+check("UNTESTED" not in ps.splitlines()[0], "WINDOWS-838: the header does not call the script an UNTESTED port")
+check("$jobBytes = $capBytes; if ($gpuBuild -and -not $explicitCap) { $jobBytes = 0 }" in ps and "vulkan|cuda|hip|sycl" in ps, "WINDOWS-838: a GPU build gets no job limit unless a cap was asked for")
+check("[MoeJob]::Assign($p.Handle, [uint64]$jobBytes" in ps and ps.count("$capBytes -gt 0") == 1, "WINDOWS-838: the job object uses the job figure; the oversize-model refusal keeps the cap")
 print("win_memcap_test:", "all passed" if not bad else f"{bad} FAILED")
 sys.exit(1 if bad else 0)
