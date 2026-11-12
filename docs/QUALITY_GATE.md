@@ -35,4 +35,4 @@ Rules that apply to every level:
 - A speed gain only counts if the level passes. A level that is faster in every ABBA pair at 4k, 64k and 128k **and** passes is kept.
 - The default stays exact until the owner decides with these numbers.
 - Where the q8_0 KV cache (`kv`) is the default (from 32k context with a GPU that has room, and from 128k), `--exact` and `--no-long-prompt` keep f16 at any context.
-- The opt-in `--approx safe|careful|aggressive` tiers (QUALITY-970, [CONFIGURATION](CONFIGURATION.md)) use these levels as their gates: safe = `kv`, careful = `fast`, aggressive = `fewer`. `tests/approx_test.py` fails if the numbers in `bin/moe_cache_approx.py` and this table drift apart. The startup canary (about 256 tokens) is a guard only; it never replaces a gate run.
+- The opt-in `--approx safe|careful|aggressive` tiers ([CONFIGURATION](CONFIGURATION.md)) use these levels as their gates: safe = `kv`, careful = `fast`, aggressive = `fewer`. `tests/approx_test.py` fails if the numbers in `bin/moe_cache_approx.py` and this table drift apart. The startup canary (about 256 tokens) is a guard only; it never replaces a gate run.

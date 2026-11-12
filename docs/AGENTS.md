@@ -7,7 +7,7 @@ bin/moe-cache-server MODEL.gguf --agent            # context 65536, tool calls, 
 python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write   (add --url http://127.0.0.1:PORT for another port)
 ```
 
-## Connecting Hermes Agent and OpenCode (moved here from the README, 2026-11-06)
+## Connecting Hermes Agent and OpenCode
 
 Start the server in agent mode (or let on-demand start it when an agent asks), then point the agent at it. One command writes the agent's config; the old config is kept as `.bak`.
 
@@ -77,7 +77,7 @@ Not covered yet: Oh My Pi (its `~/.omp/agent/models.yml` is YAML, only third-par
 
 | What `--agent` does | Why |
 |---|---|
-| a log line about the prompt cache | `moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); ... slots, 8 checkpoints per slot`. Two agents on one server reuse a shared prompt only while this cache holds it; below 16 GB of server memory it is off (the RAM is worth more to the expert cache, RESULTS 44). The control page lists the line under "What the launcher decided". Change it with `-- --cache-ram MiB` |
+| a log line about the prompt cache | `moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); ... slots, 8 checkpoints per slot`. Two agents on one server reuse a shared prompt only while this cache holds it; below 16 GB of server memory it is off (the RAM is worth more to the expert cache). The control page lists the line under "What the launcher decided". Change it with `-- --cache-ram MiB` |
 | context 65536 (unless `--ctx`) | agents send 5-20k tokens of tools and instructions before the conversation starts; Hermes Agent refuses less than 64,000 |
 | `--jinja` | tool calls use the model's own chat template (already the default in current llama.cpp) |
 | `--alias NAME` (the file name) | the name agents see in `/v1/models`; pass `-- --alias other` to choose it |
@@ -85,18 +85,18 @@ Not covered yet: Oh My Pi (its `~/.omp/agent/models.yml` is YAML, only third-par
 | warm sessions (`--no-warm` turns them off) | every idle conversation of 2k+ tokens is saved to disk (with its checkpoints) once it has been idle for 20 s + 20 s per GB of the file; a conversation that grew by less than a quarter (and less than 4,096 tokens) since its last save waits 3 min + 30 s per GB (at most 10 min), because a save rewrites the whole file and llama-server answers nothing while it writes; one file per slot; the two longest are restored at the next start, so each agent finds its own |
 | prints the base URL and both config blocks once the server is ready | |
 | an API key (made for you) | `--agent` always sets one: a stable random key kept in `~/.cache/moe-cache/api.key` (mode 0600; Windows: your profile), created on first use and given to llama-server through the environment, never on its command line. Why: agent mode saves conversations to disk and llama-server answers any web page's request on 127.0.0.1 by default, so a page in your browser could erase or read them. `python3 bin/moe_cache.py key` prints it; `connect hermes\|opencode --write` finds it by itself (it uses the stored key when the server answers 401) and writes it into the agent's config. Your own `--api-key KEY` (or `LLAMA_API_KEY`) replaces it |
-| (Windows + AMD GPU with a driver older than 32.0.32015.7029 + Flash-Next only) `--ctx-checkpoints 0` instead of 8 | saving a checkpoint crashes AMD's older Windows Vulkan driver (RESULTS 54; 32.0.32015.7029 does not); the cost is that edited history is processed again instead of resuming from a checkpoint; Qwen3.6 keeps its checkpoints. Not yet measured with an agent on Windows |
+| (Windows + AMD GPU with a driver older than 32.0.32015.7029 + Flash-Next only) `--ctx-checkpoints 0` instead of 8 | saving a checkpoint crashes AMD's older Windows Vulkan driver (32.0.32015.7029 does not); the cost is that edited history is processed again instead of resuming from a checkpoint; Qwen3.6 keeps its checkpoints. Not yet measured with an agent on Windows |
 
 ## Which model
 
-| Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin; RESULTS 60, 63) |
+| Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin) |
 |---|---|---|
-| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default (0.3.2 to 0.3.6, and again since v0.3.8, owner 2026-11-07) | decode 19.9 tok/s (2026-10-27), 193/202 tasks (the most), reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
-| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (owner 2026-11-05; IQ3_XXS is the default again since v0.3.8, owner 2026-11-07) | decode 22.2 tok/s on 2026-10-28, 191/202 tasks; in a real 65k conversation (fixed driver, RAM at 6000 MT/s) moe-cache reads new prompt tokens 1.9x as fast as stock (5.0x falling to 1.3x by depth) and decodes 26.9 against 25.4 tok/s (1.06x; equal to stock at 48k-64k depth), claim v038-conv-q2_0 |
+| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default (0.3.2 to 0.3.6, and again since v0.3.8) | decode 19.9 tok/s (2026-10-27), 193/202 tasks (the most), reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
+| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (owner 2026-11-05; IQ3_XXS is the default again since v0.3.8) | decode 22.2 tok/s on 2026-10-28, 191/202 tasks; in a real 65k conversation (fixed driver, RAM at 6000 MT/s) moe-cache reads new prompt tokens 1.9x as fast as stock (5.0x falling to 1.3x by depth) and decodes 26.9 against 25.4 tok/s (1.06x; equal to stock at 48k-64k depth), claim v038-conv-q2_0 |
 | coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
 
 No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
-IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC (RESULTS 60).
+IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC.
 
 ## Without starting a server by hand (on-demand)
 

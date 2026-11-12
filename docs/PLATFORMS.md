@@ -1,7 +1,5 @@
 # Hardware, operating systems and limits
 
-Moved here from the README on 2026-10-30, unchanged.
-
 ## Hardware and OS support
 
 | Platform | Status |

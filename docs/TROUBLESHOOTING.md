@@ -73,7 +73,7 @@ Windows promises memory to programs out of its **commit** budget (RAM + page fil
 used up, new allocations fail even though RAM still shows as free, and llama-server can stop mid-request. The launcher prints the budget at start
 (`moe-cache: Windows memory: RAM ... GB free; commit ... GB free of ... GB`), shrinks its own prompt cache to fit, and warns when it is still too tight.
 
-**LAUNCHER-991 (v0.3.8).** On some Windows drivers (the AMD RX 9070 XT with Vulkan, measured) the GPU's memory is charged to commit too, so a 27B model at 64k or 128k context
+**Commit guard (v0.3.8).** On some Windows drivers (the AMD RX 9070 XT with Vulkan, measured) the GPU's memory is charged to commit too, so a 27B model at 64k or 128k context
 took llama-server to 15.7 / 17.6 GB of commit and Windows closed other programs (event log "low virtual memory"). The launcher now:
 
 | Step | What it does |

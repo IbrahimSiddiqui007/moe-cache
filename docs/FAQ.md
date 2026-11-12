@@ -29,11 +29,11 @@ We measure it; we do not promise equal meaning on arbitrary prompts. How, in one
 
 ### What cache policy does it use?
 
-LRU at expert granularity; the experts of the operation that is running are protected. We replayed 13,464 real decode layer-steps of gpt-oss-120b at the real cache size: LRU 84.2 % hits, 2Q 83.6 %, LFU 84.1-84.2 %, LRU with the hottest experts pinned from a profile 84.3-84.8 %, the offline optimum 92.5 %. No policy beat LRU by more than 0.6 points, so LRU stayed (RESULTS 12, "Smarter eviction").
+LRU at expert granularity; the experts of the operation that is running are protected. We replayed 13,464 real decode layer-steps of gpt-oss-120b at the real cache size: LRU 84.2 % hits, 2Q 83.6 %, LFU 84.1-84.2 %, LRU with the hottest experts pinned from a profile 84.3-84.8 %, the offline optimum 92.5 %. No policy beat LRU by more than 0.6 points, so LRU stayed ("Smarter eviction").
 
 ### Is a very long prompt still slow?
 
-Less than before, but a long prompt is still a wait. Prompt reading runs on the GPU. On our Windows PC (Flash-Next Q2_0) v0.3.5 reads a 64k-token prompt at about 440 tok/s (441 / 436, official llama-server, 2026-11-03), so about 2.5 minutes; v0.3.4 read it at 312-334 tok/s and the first measurement (agent mode, 2026-10-28) took about 290 s (RESULTS 64, §78). A 222k-token prompt at 256k context runs at about 334 tok/s, roughly 11 minutes (launcher default `-ub 2048`, 2026-11-03).
+Less than before, but a long prompt is still a wait. Prompt reading runs on the GPU. On our Windows PC (Flash-Next Q2_0) v0.3.5 reads a 64k-token prompt at about 440 tok/s (441 / 436, official llama-server, 2026-11-03), so about 2.5 minutes; v0.3.4 read it at 312-334 tok/s and the first measurement (agent mode, 2026-10-28) took about 290 s (§78). A 222k-token prompt at 256k context runs at about 334 tok/s, roughly 11 minutes (launcher default `-ub 2048`, 2026-11-03).
 
 ### Why is it not faster when my model already fits in RAM?
 
