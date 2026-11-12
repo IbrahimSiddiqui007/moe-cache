@@ -24,6 +24,16 @@ int main() {
     }
     // some other word: on (a default-off switch set to a word was always on, a default-on one stays on)
     CHECK(flag_value("enabled", false) && flag_value("enabled", true));
+    // DECODE-104: MOE_CACHE_GPU_MIN_TOKENS=1 repeats a token on the GPU: 1 becomes 2 (and says so), other values pass, unset keeps the default
+    {
+        bool cl = false;
+        CHECK(mcenv::gpu_min_tokens_value("1", 8, &cl) == 2 && cl);
+        CHECK(mcenv::gpu_min_tokens_value("2", 8, &cl) == 2 && !cl);
+        CHECK(mcenv::gpu_min_tokens_value("16", 8, &cl) == 16 && !cl);
+        CHECK(mcenv::gpu_min_tokens_value("0", 8, &cl) == 0 && !cl);
+        CHECK(mcenv::gpu_min_tokens_value(nullptr, 8, &cl) == 8 && !cl);
+        CHECK(mcenv::gpu_min_tokens_value("1", 8) == 2);
+    }
     // through the environment
     setenv("MOE_CACHE_LOOKAHEAD", "", 1);
     CHECK(!mcenv::env_on("MOE_CACHE_LOOKAHEAD"));                  // MOE_CACHE_LOOKAHEAD= used to switch the lookahead on (and the executor off)

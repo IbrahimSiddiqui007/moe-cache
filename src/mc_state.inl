@@ -372,12 +372,12 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         const char * direct_env = getenv("MOE_CACHE_DIRECT");   // 1 / 0 forces it; unset = on when the model does not fit (decided below)
         direct_ok = direct_env && strcmp(direct_env, "0") != 0;
         if (const char * v = getenv("MOE_CACHE_GPU_MIN_TOKENS")) {
-            gpu_min_tokens = atoi(v);
-            if (gpu_min_tokens == 1) {
+            bool clamped = false;
+            gpu_min_tokens = mcenv::gpu_min_tokens_value(v, gpu_min_tokens, &clamped);      // DECODE-104: 1 is not allowed (see mc_env.h)
+            if (clamped) {
                 // 1-token batches on the GPU produce one repeated token (Granite 3.1, T25; 2+ tokens are fine) and would upload whole layers for every
                 // decoded token anyway: the executor handles single tokens
                 fprintf(stderr, "moe-cache: MOE_CACHE_GPU_MIN_TOKENS=1 is not supported (wrong output for single-token batches): using 2\n");
-                gpu_min_tokens = 2;
             }
         }
         // the GPU llama.cpp offloads to: --device none means none; --device A,B the first GPU of that list; else its default choice below
