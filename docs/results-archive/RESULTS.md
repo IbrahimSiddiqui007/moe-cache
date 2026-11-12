@@ -682,7 +682,7 @@ and Qwen3.6 at 128k; peak **30.86 GiB** (hip_plugin run 1). Never past 28 GiB: N
 
 <sub>Old heading: 65. New models on the Windows PC (pc-glm, 2026-10-28 evening): Nemotron 3.5 Bolt 74B-A9B; DeepSeek V4-Flash (desk only)</sub>
 
-Picks from quant-research (handover/parts/model-research.md); owner: "see what's the realistic performance we can get with these", minimal
+Picks from quant-research (handover/archived/parts_research/scouts/model-research.md); owner: "see what's the realistic performance we can get with these", minimal
 testing, one cold run per point. Same PC (7950X, RX 9070 XT 16 GB, 32 GB). Nemotron needs a llama.cpp newer than the PC's 620d2225c (tokenizer
 fix #30960): official release **b11966** (ff0d396e3, Vulkan x64 zip, sha256 977dc456... = the release digest) in C:\llama-new. The moe-cache
 DLL 681f3bc loads into b11966's ggml (backend API 3; 100 % cache hits when forced). Text checked: normal English and working code.
@@ -779,7 +779,7 @@ Whole 63.5k prompt: Flash-Next moe-cache ~289 s vs stock ~525 s (**1.8x**); deco
 | 6 | No load abort, no KV that did not fit, no checkpoint crash on the AMD driver at any point | - |
 Not run tonight (time; owner's stop 23:30): Qwen3.6 and the 122B at 256k, the 122B stock at 64k (its C: copy was gone, the D: one was queued
 too late). Coder IQ1_M and GLM: removed from the PC by the owner. Queued for the next PC session: N29 256k ABBA (fixes), N15 (shader), N22
-(laptop-h1-s9), N30 (fixes), with ready scripts (handover/parts/pc-bench.md).
+(laptop-h1-s9), N30 (fixes), with ready scripts (handover/archived/parts_research/engine_notes/pc-bench.md).
 **Update 2026-10-29 (overnight chain, RESULTS 67):** Flash-Next Q2_0, the 122B and Qwen3.6 at 128k and Qwen3.6 at 256k are in the tables above.
 Finding 5 reproduced on Qwen3.6 at 256k: after the 138k save and the slot-1 request, the next chunk processed all 157,806 tokens again (625 s);
 the 122B at 256k reached 138k in ~23 min and then timed out at the chain's 35-min limit, most likely in the same re-processing. GLM at 64k timed
@@ -787,7 +787,7 @@ out too (35 tok/s prompts; 15 of its 35 min went to a cool-down break). **T4 (20
 too little: the 122B at 256k fills ~254k tokens at 82-100 tok/s = ~50 min of prefill alone, and GLM's 63.5k prompt at 35 tok/s = ~30 min plus a
 2 tok/s decode; neither was a stall (the 122B's last stretch is the known re-processing, finding 5). Hold 1 of the 122B (cap 21 GiB because the owner's
 own work used 6.9 GiB of RAM: not clean) reached 135k in 27.1 min, slot save 4.4 s / 4.73 GB. Still open, queued on the PC for the afternoon runner
-(items 70-72, results in C:\dl\afternoon\ and C:\dl\t4\t4.log; method and commands: handover/parts/longctx_20261029.md): 122B 256k holds 2-3, GLM 64k, Flash-Next Q2_0 256k on the current build.
+(items 70-72, results in C:\dl\afternoon\ and C:\dl\t4\t4.log; method and commands: handover/archived/parts_research/engine_notes/longctx_20261029.md): 122B 256k holds 2-3, GLM 64k, Flash-Next Q2_0 256k on the current build.
 
 **Addendum: N25 executor chunk size** (MOE_CACHE_EXEC_CHUNK, DLL 31ac159, Flash-Next Q2_0 on D:, launcher defaults, cold, ABBA 32 / 128 / 512 / 512 / 128 / 32,
 256-token water and code decodes, a 3.5k-token prompt; C:\dl\pcb_chunk.ps1)
@@ -896,7 +896,7 @@ plugin DLL 681f3bc (file view). Script C:\dl\glm\glmrun.ps1: cold (win_flush_cac
 with stats deltas per request: **water** = the usual 256-token "Describe the water cycle step by step for a ten-year-old.", **code** =
 192 tokens of "Write a Python function that reads a CSV file and prints the average of every numeric column, then explain ...".
 
-**Desk estimate first** (handover/parts/pc-glm.md): reads were ~half of a token at 90 % hits, so the D: drive was expected to give +15-20 %,
+**Desk estimate first** (handover/archived/parts_research/engine_notes/pc-glm.md): reads were ~half of a token at 90 % hits, so the D: drive was expected to give +15-20 %,
 +2 GPU layers +8 %, MTP +25 % on predictable text and ~0 below ~65 % draft acceptance; ceiling ~10 tok/s if every read were free.
 
 **Memory confound found and removed.** With the owner's desktop apps open (Steam, Discord, Claude) the auto memory limit moved between runs
@@ -1052,7 +1052,7 @@ Not run (wrap-up): MOE_CACHE_GPU_MIN_TOKENS 8 / 16 / 32 for short follow-up prom
 | N5 serve before the warm start ends | measured cost only | the warm start runs inside llama.cpp's load (a graph before "model loaded"), 3.9-4.0 s for 13-15 GiB here. Measure first: `C:\dl\pc_n5.ps1 -Tag a` vs `-EnvList "MOE_CACHE_PRELOAD_FRAC=0"` (ready + first answer). Build only on a gain: preload in a background thread per chunk with loading flags (shared Linux/Windows) |
 
 **pc-bench: the list-A left-overs and more PC checks** (2026-10-28 afternoon; same PC, llama.cpp Vulkan 620d2225c, plugin DLL 681f3bc unless a row says
-otherwise; one job at a time under the PC lock, every run cold; scripts C:\dl\pcb_*.ps1 and C:\dl\pcb\, logs C:\dl\pcb_*.log; part handover/parts/pc-bench.md)
+otherwise; one job at a time under the PC lock, every run cold; scripts C:\dl\pcb_*.ps1 and C:\dl\pcb\, logs C:\dl\pcb_*.log; part handover/archived/parts_research/engine_notes/pc-bench.md)
 
 **N13 rest: `MOE_CACHE_GPU_MIN_TOKENS` 8 / 16 / 32 for short follow-up turns** (Flash-Next IQ2_XS, launcher 65facd1 defaults; C:\dl\pc_mintok.ps1: an
 ~3k-token context cached in slot 0, then 10 cumulative turns; ABBA 32, 16, 8, 8, 16, 32). Prompt ms of each new turn, both runs per value:
@@ -1115,7 +1115,7 @@ stock was 13 % slower too. The Flash-Next IQ2_XS pair a few minutes earlier in t
 cause of that slowdown is not in the logs (nothing else of ours wrote files in that window). **Correction to RESULTS 59**: the 122B is **+24 %**
 over stock on this PC (today's ABBA: stock 15.95, plugin 19.73), not +16 %.
 
-**Exit hang (found by R11): llama-perplexity with the plugin never exited on Windows; fixed** (claude/pc-bench 570d351; details handover/parts/pc-bench.md)
+**Exit hang (found by R11): llama-perplexity with the plugin never exited on Windows; fixed** (claude/pc-bench 570d351; details handover/archived/parts_research/engine_notes/pc-bench.md)
 R11's first run (DLL 681f3bc) finished its work at 15:22 and then stayed inside ExitProcess for good: one thread left in a user-mode wait, 23.5 GB
 working set, the process could not be killed (Stop-Process, taskkill /F); only a reboot cleared it. ExitProcess ends every other thread before the
 DLL detach runs the static state_t destructor, which then locked mutexes, notified condition variables and joined threads that were already gone
