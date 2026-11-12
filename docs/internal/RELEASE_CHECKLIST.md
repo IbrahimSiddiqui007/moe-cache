@@ -47,22 +47,23 @@ Do this on the files of the **draft** release (`gh release download vX.Y.Z -R Ib
 
 | # | Where | Check |
 |---|---|---|
-| 9 | Linux | on the **draft's own files**: `gh release download vX.Y.Z -R IbrahimSiddiqui007/moe-cache -D <new empty folder>`, unpack the tarball: `moe-cache --version` names the new version; `pick` runs; `check` passes with the bundled llama-server **while a different `llama-server` is on the PATH**; the control page starts; a server starts with the small test model (no big model needed). `install.sh` itself cannot be tested on a draft: it is step 14, after publishing |
+| 9 | Linux | on the **draft's own files**: `gh release download vX.Y.Z -R IbrahimSiddiqui007/moe-cache -D <new empty folder>`, unpack the tarball: `moe-cache --version` names the new version; `pick` runs; `check` passes with the bundled llama-server **while a different `llama-server` is on the PATH**; the control page starts; a server starts with the small test model (no big model needed). `install.sh` itself cannot be tested on a draft: it is tested after publishing (section 4) |
 | 10 | Linux | in the download folder: `sha256sum -c SHA256SUMS`, and `gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache --signer-workflow IbrahimSiddiqui007/moe-cache/.github/workflows/release.yml` for **each** release file except the two checksum lists (tarball, `install.sh`, `install.ps1`; the Windows zip with `SHA256SUMS-windows`). `SHA256SUMS` and `SHA256SUMS-windows` carry no attestation by design: they are checked by `sha256sum -c`, and the files they list are the attested ones |
 | 11 | Windows | download the draft's zip into a **new** folder (`C:\dl\...`; never delete on the test PC: move old folders to `D:\to_delete`), check its sha256 against `SHA256SUMS-windows`, unzip (Properties > Unblock first), double-click `moe-cache.bat`: the control page opens; import a model; press Start; send one chat message (with no big model: `--version`, `check`, `pick` and the control page) |
 | 12 | Windows | `python bin\moe_cache.py pick` runs; `python bin\moe_cache.py check D:\models\model.gguf --run` passes |
 | 13 | both | every `bin/*.py` of the unpacked kit or tarball imports from there alone (`tools/make_windows_kit.sh` checks the kit's launcher modules itself) |
-| 14 | Linux, Windows | **after publishing** (they need the published release; `MOE_CACHE_BASE_URL` is refused by the attestation rule): `install.sh` into a temporary prefix, and on a copy installed by `install.sh` / `install.ps1` from the **previous release that has an installer** (`install.sh` / `install.ps1`; v0.3.5 had none, so v0.3.6 was tested from its beta2): `moe-cache update --apply --dry-run` names the new tag; after `update --apply --yes` the new version runs, the old one is still there (Linux: `versions/`, roll back with `ln -sfn versions/<old folder> <prefix>/current`; Windows: the folder `kit.prev`) |
 
-README "Known issues" must name anything from steps 9-14 that was **not** done (for example "a full model run from the final zip was not tested").
+If a smoke test in steps 9-13 fails: **do not publish**. The draft stays private; the owner deletes it (`gh release delete vX.Y.Z -R IbrahimSiddiqui007/moe-cache`), fixes the cause on the release branch, and tags the next version (a pushed tag is not moved; `main` has not moved either, so nothing needs undoing there). Only the owner decides to delete a tag.
+
+README "Known issues" must name anything from steps 9-13 and the section 4 installer checks that was **not** done (for example "a full model run from the final zip was not tested").
 
 ## 4. After publishing
 
 | Step | Check |
 |---|---|
-| The release page | pre-release or latest as intended; the six file names the `publish` job checks are all there; the title is `moe-cache vX.Y.Z` with no "(beta)" (owner decision from v0.3.7 on; before it the workflow wrote "(beta)" on every title) |
+| The release page | pre-release or latest as intended; the seven file names the `publish` job checks (both Linux tarballs, `SHA256SUMS`, `install.sh`, `install.ps1`, the Windows zip, `SHA256SUMS-windows`) are all there; the title is `moe-cache vX.Y.Z` with no "(beta)" (owner decision from v0.3.7 on; before it the workflow wrote "(beta)" on every title) |
 | `main` follows the tag (RELEASE-700) | after the release is published, and only for a stable tag: `git fetch origin --tags && git merge-base --is-ancestor origin/main vX.Y.Z^{commit}` must succeed (exit 0), then fast-forward `main` to the **tagged commit** with `git push origin vX.Y.Z^{commit}:refs/heads/main`. Never `experimental`'s head (it may be ahead of the tag), never `--force`. When `merge-base` fails, `main` has a commit the tag lacks: stop and tell the owner |
-| The published release's installers | `install.sh` into a temporary prefix, then `update --apply` from a copy of the previous release, both against the **published** release (they cannot use a draft) |
+| The published release's installers (was step 14; Linux and Windows) | (they need the published release; `MOE_CACHE_BASE_URL` is refused by the attestation rule): `install.sh` into a temporary prefix, and on a copy installed by `install.sh` / `install.ps1` from the **previous release that has an installer** (`install.sh` / `install.ps1`; v0.3.5 had none, so v0.3.6 was tested from its beta2): `moe-cache update --apply --dry-run` names the new tag; after `update --apply --yes` the new version runs, the old one is still there (Linux: `versions/`, roll back with `ln -sfn versions/<old folder> <prefix>/current`; Windows: the folder `kit.prev`) |
 | `packages` | ran for a stable tag, did not run for a suffix tag |
 | The one-line installs | `releases/latest/download/install.sh` and `install.ps1` are the new versions |
 | Ledger and README | the "Known issues in vX.Y.Z" heading and the benchmark lines name the released version |
@@ -77,5 +78,5 @@ Small releases are safer than big ones, because each one has fewer changes to bl
 | Idea | Why it is not in yet |
 |---|---|
 | Build the release text from `CHANGELOG.md` instead of a hand-written notes file | the notes file carries measured tables that the changelog does not; a generated text would need a check that every number comes from `docs/results-archive/RESULTS.md` |
-| Run the `update --apply` test (step 14) in the workflow against the draft release | needs the draft's files to be reachable without a login; try it on a `-beta` tag first |
+| Run the `update --apply` test (section 4) in the workflow against the draft release | needs the draft's files to be reachable without a login; try it on a `-beta` tag first |
 | A scheduled run of step 9 on the newest published release (install, `--version`, `check --run` on the small test model) | nightly cost is small, but it needs a runner that can fetch the test model; today `identity` only tests the checkout |
