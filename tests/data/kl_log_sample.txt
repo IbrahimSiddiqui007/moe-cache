@@ -1,0 +1,9 @@
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS 
+Mean PPL(Q)                   :  12.807241 ±   0.286404
+Mean PPL(base)                :  11.653414 ±   0.234281
+Mean PPL(Q)/PPL(base)         :   1.099012 ±   0.006053
+Mean PPL(Q)-PPL(base)         :   1.153828 ±   0.080520
+Mean    KLD:   0.109258 ±   0.006066
+90.0%   KLD:   0.019866
+Median  KLD:   0.001916
+Same top p: 94.643 ± 0.124 %
