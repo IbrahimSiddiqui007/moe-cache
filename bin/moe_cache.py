@@ -3226,6 +3226,7 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
 
 
 LOAD_MODE_RAM_MARGIN_GIB = 4.0
+LOAD_MODE_SMALL_SPILL_GIB = 3.0      # the part of a dense model that stays in RAM (planner) up to which the GPU takes "almost all" of it
 
 
 def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
@@ -3250,6 +3251,11 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     if not size or not avail:
         return None
     margin = max(LOAD_MODE_RAM_MARGIN_GIB, (total - cap) / 2**30 if total and cap and total > cap else 0.0)
+    # chain's real load of 28b80a9 (27B, 64k, q4_0, plan "0.7 GiB over", 19 GB available, apps open): mmap staged ~11.5 GB through RAM, available fell 16.0 -> 4.4 GB in 3 s and the RAM guard
+    # stopped it; `--load-mode none` on the same plan peaks at 3.8 GB. When the GPU takes almost all of the model (the planner's spill is small), mmap only adds that staging spike.
+    if spill_gib <= min(LOAD_MODE_SMALL_SPILL_GIB, 0.25 * size / 2**30):
+        return (f"the GPU takes almost all of the {size / 2**30:.1f} GiB model (about {spill_gib:.1f} GiB stays in RAM): --load-mode none (a memory-mapped load would stage the file "
+                "through RAM first, ~11 GB at once on the 27B; --exact or --load-mode after -- keeps llama.cpp's default)")
     if avail >= size + margin * 2**30 or spill_gib + margin > avail / 2**30:
         return None
     return (f"the model file is {size / 2**30:.1f} GiB, {avail / 2**30:.1f} GiB of RAM is available to the server (less than the file plus {margin:.1f} GiB the machine keeps free) "
