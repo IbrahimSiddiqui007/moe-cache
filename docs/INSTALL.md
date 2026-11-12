@@ -88,7 +88,7 @@ Running at http://127.0.0.1:8080. Ctrl+C stops it.
 
 ---
 
-The README has the short path; this page keeps every option. Moved here from the README on 2026-10-30, unchanged.
+The README has the short path; this page keeps every option.
 
 ## Get started
 

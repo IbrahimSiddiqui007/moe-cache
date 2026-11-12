@@ -2,7 +2,7 @@
 
 **The first table is the list of common options; the second part ("Settings not listed above") covers every other `MOE_CACHE_*` name the code reads (175 in all).** `tools/env_names_check.py` checks that every name the code reads is mentioned in the docs. Defaults below are those of the code on 2026-11-03.
 
-`moe-cache-server` and the control page set these for you. Launcher options are not environment variables and are listed by `moe-cache-server --help`; one of them is new in v0.3.8 and on by default from 32k context: the long-prompt mode (`--long-prompt` asks for it at any context, `--no-long-prompt` turns it off; page: **Long-prompt mode**) sets `-ub 4096` and the q8_0 KV cache when the card has room for it, see [INSTALL.md](INSTALL.md) (speed options). The Windows scheduling tuning of the first v0.3.8 builds is gone; `--no-sched-tuning` is still accepted and does nothing. Moved here from the README on 2026-10-30, unchanged.
+`moe-cache-server` and the control page set these for you. Launcher options are not environment variables and are listed by `moe-cache-server --help`; one of them is new in v0.3.8 and on by default from 32k context: the long-prompt mode (`--long-prompt` asks for it at any context, `--no-long-prompt` turns it off; page: **Long-prompt mode**) sets `-ub 4096` and the q8_0 KV cache when the card has room for it, see [INSTALL.md](INSTALL.md) (speed options). The Windows scheduling tuning of the first v0.3.8 builds is gone; `--no-sched-tuning` is still accepted and does nothing.
 
 
 | Variable | Meaning |
@@ -44,7 +44,7 @@
 | `MOE_CACHE_COMMIT_CHECK=0` | Windows: skip the pre-load commit estimate (same as `--no-commit-check`): see TROUBLESHOOTING.md, "Crashes on Windows with other programs open" |
 | `MOE_CACHE_COMMIT_GUARD=stop\|warn\|off` | the run-time memory guard of the launcher: warns under the soft line and stops llama-server under the hard line (2 GB free commit on Windows, 1 GB MemAvailable on Linux). Default `stop` on Windows, `warn` on Linux (not measured there yet); `warn` never stops it |
 | `MOE_CACHE_RAM_NOTE=0` | turns off the RAM note: one plain line (`moe-cache: warning: moe-cache holds 13.1 GB of RAM; other programs are likely being paged out (available 1.2 GB of 31.2 GB) ...`) when llama-server holds a big part of the RAM (at least 4 GiB and 15 % of it) and what is available is under 3 GiB or 10 % of it; at most every 30 minutes; read-only, nothing is stopped or changed |
-| `MOE_CACHE_GTM=PATH` | the gputaskman program the benchmark tools read for the environment block of a published number (RAM and VRAM of the whole machine, BENCH-1150). Default: `gputaskman` or `gtm` on the PATH, on Windows `C:\tools\gputaskman\*\gputaskman.exe`; without it the block uses our own counters and says so |
+| `MOE_CACHE_GTM=PATH` | the gputaskman program the benchmark tools read for the environment block of a published number (RAM and VRAM of the whole machine). Default: `gputaskman` or `gtm` on the PATH, on Windows `C:\tools\gputaskman\*\gputaskman.exe`; without it the block uses our own counters and says so |
 | `MOE_CACHE_HOST_RESERVE_MIB` | memory kept free for llama-server's prompt cache (`--cache-ram`); the launcher sets it |
 | `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
 
@@ -57,7 +57,7 @@ Owner rule 2026-11-09: there is no opt-in for a speed-up that changes tokens but
 |---|---|---|---|
 | q8_0 KV cache from 128k context | `--fast=kv` (default from 128k) | won | about 2x prompt speed at 256k on a 16 GB card; gate level `kv` passed, KL 0.0045-0.015 |
 | Long-prompt mode from 32k context | `--long-prompt` (default from 32k) | won | Flash-Next IQ3_XXS, 65k, A C C A: prompts +77.0 %, answers +1.8 %; meaning kept 10 of 10 at 55k |
-| MTP draft head (agent mode, MoE model has the head; a dense model only with `--mtp`: slower there, LAUNCHER-1133) | `--mtp` | won | Qwen3.6 on the PC: decode 45.6 to 70.3 tok/s; prompt processing 5-8 % slower |
+| MTP draft head (agent mode, MoE model has the head; a dense model only with `--mtp`: slower there) | `--mtp` | won | Qwen3.6 on the PC: decode 45.6 to 70.3 tok/s; prompt processing 5-8 % slower |
 | Skip rarely picked experts | `--fast` | unmeasured | about +10 % where memory is far below the model; no paired run with a quality check at 64k on the PC yet |
 | Skip up to 4 experts | `--fast=2` | unmeasured | laptop 12 GB +43 %, no gain at 24 GB; not measured on the PC |
 | Drop the 2 lowest experts on CPU layers | `--fast=fewer` | unmeasured | nothing measured |
@@ -179,7 +179,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*` 
 | `MOE_CACHE_LEAVE_ROOM` | `1` turns on `--leave-room` for good: your own programs come first. Smoother PC, slower model. | 0 (off) | everyone |
 | `MOE_CACHE_MONITOR` | `0` turns off the control page's Monitor sampling (the extra `/metrics` request and memory reading every 2 seconds); the view then shows only the log. | 1 (on) | everyone |
 | `MOE_CACHE_LIB` | Windows `moe-cache-ui.bat` only: the plugin DLL to use. Unset: the .bat looks for the plugin DLL itself (see the comment at the top of the file). | unset | advanced |
-| `MOE_CACHE_PACK` | Experimental: `1` uses the pack file made by `moe_cache.py pack` (next to the model), or a path to one. The plugin reads packed experts only when asked. Only the header and 16 sampled pages of the pack are checked at load (CACHE-695), not every byte: remake the pack with `moe_cache.py pack` whenever the model file or the pack file may have been damaged or changed. | off | advanced |
+| `MOE_CACHE_PACK` | Experimental: `1` uses the pack file made by `moe_cache.py pack` (next to the model), or a path to one. The plugin reads packed experts only when asked. Only the header and 16 sampled pages of the pack are checked at load, not every byte: remake the pack with `moe_cache.py pack` whenever the model file or the pack file may have been damaged or changed. | off | advanced |
 | `MOE_CACHE_PEERS` | Folder where servers started with `--peers` (prototype) write their memory use once a second and read the others' files. Set by the launcher. | set by --peers | set by the launcher |
 | `MOE_CACHE_PEER_CAP_GIB` | The memory, in GiB, that the servers of one `--peers` folder share. Set by the launcher. | set by --peers | set by the launcher |
 | `MOE_CACHE_PLAN_RULE` | `1`: the planner reserve is measured by `llama-fit-params` or taken from the formula, and grows monotonically with `-ub` (plan rule). Off by default. | off | advanced |
@@ -214,9 +214,9 @@ These appear in the code but setting them in the environment does nothing (build
 | `MOE_CACHE_TEST_MUTANT_NO_TILED_WAIT` | Not a runtime variable: a compile-time flag (`-D`) used only by CI. It removes a wait in the tiled compute path so the delayed-read batch-8 test is proven able to fail. Never set it. |
 | `MOE_CACHE_TEST_MUTANT_PACK_OFFSET` | Not a runtime variable: a compile-time flag (`-D`) used only by CI. It copies expert slices from a wrong offset so the pack identity test is proven able to fail. Never set it. |
 | `MOE_CACHE_TEST_NO_POPULATE` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI to test the guarded page-touch that a kernel without `MADV_POPULATE_READ` takes. Never set it. |
-| `MOE_CACHE_TEST_INPAGE_ERROR` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI (`windows.yml`). It makes the Windows file-view page touch raise the in-page read error a dropped disk would, on the second page of a range, to test that `file_view_load` returns false instead of crashing (CACHE-685). |
+| `MOE_CACHE_TEST_INPAGE_ERROR` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI (`windows.yml`). It makes the Windows file-view page touch raise the in-page read error a dropped disk would, on the second page of a range, to test that `file_view_load` returns false instead of crashing. |
 
-## Measured auto-tune (LAUNCHER-994)
+## Measured auto-tune
 
 | What | How |
 |---|---|
@@ -225,7 +225,7 @@ These appear in the code but setting them in the environment does nothing (build
 | Budget and probe | At most 180 s in total, loads included. Per plan: a ~1.5k-token prompt (prompt tok/s) and 512 generated tokens (decode tok/s); when the time left is short the decode is shorter and the line says "short probe". The probe ranks plans; it is not a 64k figure |
 | Pick | The lowest time for a 4,000-token prompt (16,000 in agent mode) plus 512 generated tokens; a plan must beat the plan as it is by 5 % and by more than twice the plan's own spread between its two runs, else that one stays |
 | Not tuned | A model bigger than 40 % of this computer's RAM, or bigger than the memory the server may use (the default 75 GB model): one line says so and nothing is loaded. A stored pick is still used |
-| Windows commit check | Every command that is loaded to measure has passed the LAUNCHER-991 commit check first; a plan it would refuse or shrink is not loaded (`--no-commit-check` is respected). If the memory guard stops a probe, the whole tuning is aborted, nothing is stored, the plan as it is runs and the next start tries again |
+| Windows commit check | Every command that is loaded to measure has passed the commit check first; a plan it would refuse or shrink is not loaded (`--no-commit-check` is respected). If the memory guard stops a probe, the whole tuning is aborted, nothing is stored, the plan as it is runs and the next start tries again |
 | Where | `<cache dir>/autotune/<key>.json` (`~/.cache/moe-cache` on Linux). The key covers the model, context, machine, user-flag set, tuner version, the memory caps, the modes (`--fast`, `--mtp`, `--approx`, long-prompt, `--hybrid`), `--cache-ram` and the KV type of the plan; the expert-layer change is stored as a delta, so a changed GPU memory later cannot carry a stale layer count over |
 | Lock | One tuning at a time: `<cache dir>/autotune/tuning.lock` (the launcher's pid and time; a dead holder's or older than 10 min is taken over). A second start while one is measuring runs untuned this time, says so, and looks the pick up again at its next start |
 | A pick that does not load | The stored pick is applied at every start, so one that stops llama-server before it is ready is marked bad in its file and the plan as the planner made it starts once. The next starts run that plan and say the pick is bad; `--retune` measures again. A server that was ready and died later is not a bad pick |
