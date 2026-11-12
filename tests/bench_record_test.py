@@ -365,7 +365,7 @@ check(all(__import__("re").fullmatch(r"\d{4}-\d{2}-\d{2}_[a-z0-9-]+_[0-9a-f]{6}"
 
 # ---- 7. the real probe on this machine: own process, no GPU or model needed
 real = rr.probe()
-sm = rr.Sampler(os.getpid(), pr=real, interval=0.05, vram_interval=0.2)
+sm = rr.Sampler(os.getpid(), pr=real, interval=0.05, vram_interval=0.2, env_every=None)
 sm.start()
 t_end = time.time() + 2.0
 while time.time() < t_end:

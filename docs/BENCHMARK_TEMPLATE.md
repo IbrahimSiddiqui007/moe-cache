@@ -80,6 +80,22 @@ The drive that holds the model matters more than the CPU for the cache's misses:
 | CPU busy before, free RAM before, VRAM in use before | optional | sampled for one second before the run (system-wide) |
 | temperatures (`cpu_temp_c`, `gpu_temp_c`) | optional | Linux: hwmon k10temp/coretemp, `nvidia-smi`; **Windows: not collected** (no standard source without a vendor tool); write it by hand if you have one |
 
+### Environment block (`runs[].environment`, `conditions.environment`; optional, schema 1 unchanged)
+
+A published number is **real-use: measured on a working desktop**, so it says what else was running. The samplers of `bench-report` and `conversation_bench` (the `Sampler` of `bin/moe_cache_record.py`) take a snapshot at the start of each run, one every 30 s, and one at the end; the block holds the snapshot with the highest RAM in use (`basis`) and all three in `sampled_at` (`start`, `peak`, `end`). `conditions.environment` is the block of the busiest run. GB are GiB.
+
+| Field | Meaning |
+|---|---|
+| `ram_total_gb`, `ram_used_total_gb` | installed RAM; total minus available (Windows: available includes standby; Linux: `MemAvailable` counts clean page cache as available) |
+| `ram_moe_cache_gb` | llama-server and its launcher: working set (Windows) or `VmRSS` (Linux), i.e. private plus the mapped model pages it holds |
+| `ram_rest_of_system_gb`, `top_programs` | used minus moe-cache; the five biggest programs as `[name, GB]` (one program's processes added up; the list is from the top processes gputaskman or `/proc` report, so it can be a lower bound) |
+| `vram_total_gb`, `vram_per_process` | card size; `[name, GB, spill GB]` with moe-cache first, then the biggest others. Spill is the shared (system RAM) memory of that process; `not recorded` when the source gives none |
+| `commit_free_gb` | Windows: commit limit minus commit charge; Linux: `CommitLimit - Committed_AS` (advisory when overcommit is on) |
+| `source` | `gputaskman --json` (Windows PC `C:\tools\gputaskman\...`, laptop `gtm`), or `own counters (no gputaskman)`: then `top_programs` is `not recorded` on Windows and the VRAM list is moe-cache and "other programs" |
+
+Rendering: `bench-record card RECORD --as env` prints the one-line text, the card's detail lines, the RESULTS section, `claim show` and the board's *Working desktop* column carry it:
+`working desktop (at peak): 31 GB RAM, moe-cache 9.0 GB, other programs 8.4 GB (Claude 0.8, Dia 0.4, Code 0.3...), GPU: moe-cache 10.9 GB, desktop 1.8 GB`. A run without the block prints `Environment: not recorded` in `claim show` and no line elsewhere. For runs the chain harness makes outside `Sampler`, `bench-record env-from-gtm FILE.gtm.jsonl --start T --end T [--line]` builds the same block from chain's `gtm_sampler.ps1` lines for one run's time window.
+
 ## 6. Protocol (`protocol`)
 
 | Field | Req | How |

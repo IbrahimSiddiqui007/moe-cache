@@ -6,7 +6,8 @@
   assemble  build the full record from the facts, the runs a harness measured and the protocol
   validate  check a record against the schema (required fields present, every value a number / text or "not recorded")
   ingest, claim, board, lint, replay   runs, claims and the board of benchmarks/ (bin/moe_cache_claims.py)
-  card      print the record as the benchmark card's four detail lines, a table row, a RESULTS section or an issue body
+  card      print the record as the benchmark card's four detail lines, a table row, a RESULTS section or an issue body (--as env: the working-desktop line)
+  env-from-gtm   the environment block (BENCH-1150: RAM and VRAM of the whole machine) from chain's .gtm.jsonl
 
 A value that could not be read is written "not recorded" (NR), never guessed. bench-report (bin/moe_cache_bench.py) uses the Sampler and the record
 builder, so its report carries the same fields. The OS-specific readers are small probes (LinuxProbe, WindowsProbe) that tests drive with fake files
@@ -303,6 +304,11 @@ class LinuxProbe:
     def mem(self):
         return parse_meminfo(READ("/proc/meminfo"))
 
+    def commit_free(self):
+        """CommitLimit - Committed_AS in bytes (/proc/meminfo); the kernel's own number, advisory when overcommit is on."""
+        d = {m.group(1): int(m.group(2)) * 1024 for m in re.finditer(r"(CommitLimit|Committed_AS):\s+(\d+) kB", READ("/proc/meminfo"))}
+        return d["CommitLimit"] - d["Committed_AS"] if len(d) == 2 else None
+
     def uptime_s(self):
         t = READ("/proc/uptime").split()
         return float(t[0]) if t else None
@@ -478,6 +484,19 @@ class WindowsProbe:
             pass
         return {"total": None, "available": None}
 
+    def commit_free(self):
+        """Free commit in bytes: ullAvailPageFile of GlobalMemoryStatusEx (commit limit minus commit charge)."""
+        try:
+            import ctypes
+            class MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32), ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64), ("ullTotalVirtual", ctypes.c_uint64),
+                            ("ullAvailVirtual", ctypes.c_uint64), ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+            m = MS(); m.dwLength = ctypes.sizeof(MS)
+            return int(m.ullAvailPageFile) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else None
+        except Exception:
+            return None
+
     def uptime_s(self):
         try:
             import ctypes
@@ -546,6 +565,260 @@ def probe():
     return WindowsProbe() if IS_WIN else LinuxProbe()
 
 
+# ---------------------------------------------------------------- the environment block (BENCH-1150)
+# A published number is real-use: it was measured on a working desktop. The block says what else was running: RAM (total, in use, moe-cache, the rest, the
+# five biggest programs), VRAM per process with the spill, free commit. Sampled at the start, at the peak (highest RAM in use) and at the end of a run.
+# Source: gputaskman --json (Windows PC: C:\tools\gputaskman\...; laptop: gtm) and our own counters where it is missing; the block names which it used.
+# GB in this block are GiB (2^30), the way the launcher prints them.
+
+GIB = 2 ** 30
+ENV_EVERY_S = 30.0      # one gputaskman call every 30 s (chain's own sampler did the same); a speed run is never disturbed more often
+ENV_TOP = 5
+
+
+def gb(x):
+    return round(x / GIB, 2) if isinstance(x, (int, float)) and not isinstance(x, bool) else NR
+
+
+def find_gtm():
+    """Path of gputaskman: MOE_CACHE_GTM, then `gputaskman` / `gtm` on PATH, then the Windows install folder; None when there is none."""
+    p = os.environ.get("MOE_CACHE_GTM")
+    if p:
+        return shutil.which(p) or (p if os.path.exists(p) else None)
+    for n in ("gputaskman", "gtm"):
+        w = shutil.which(n)
+        if w:
+            return w
+    if IS_WIN:
+        hits = GLOB(r"C:\tools\gputaskman\*\gputaskman.exe")
+        return hits[-1] if hits else None
+    return None
+
+
+def read_gtm(exe, timeout=25):
+    """One `gputaskman --json` snapshot as a dict, or None (missing, failed, not JSON)."""
+    if not exe:
+        return None
+    try:
+        d = json.loads(RUN([exe, "--json"], timeout=timeout) or "null")
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def prog_name(n):
+    n = str(n or "?")
+    return n[:-4] if n.lower().endswith(".exe") else n
+
+
+def top_by_name(rows, skip_pids=(), n=ENV_TOP):
+    """[(name, bytes)] of the n biggest programs; one program's processes (a browser's helpers) are added up. rows: dicts with pid, name, bytes."""
+    tot = {}
+    for r in rows:
+        if r.get("pid") in skip_pids or not isinstance(r.get("bytes"), (int, float)):
+            continue
+        k = prog_name(r.get("name"))
+        tot[k] = tot.get(k, 0) + r["bytes"]
+    return sorted(tot.items(), key=lambda kv: -kv[1])[:n]
+
+
+def linux_top_ram():
+    """Fallback for the program list without gputaskman: every /proc/PID/status (VmRSS) and /proc/PID/comm."""
+    rows = []
+    for p in GLOB("/proc/[0-9]*/status"):
+        pid = int(p.split("/")[2])
+        st = LinuxProbe.parse_status(READ(p))
+        if st["rss"]:
+            rows.append({"pid": pid, "name": READ(f"/proc/{pid}/comm").strip() or "?", "bytes": st["rss"]})
+    return rows
+
+
+def env_snapshot(pr, pids, g=None, t_s=None):
+    """The block's fields at this moment. pr: probe, pids: the server's process tree (moe-cache), g: a gputaskman dict or None."""
+    pids = set(pids)
+    sysd = (g or {}).get("system") or {}
+    ram = sysd.get("ram") or {}
+    total, avail = ram.get("total"), ram.get("available")
+    if total is None or avail is None:
+        m = pr.mem()
+        total, avail = m.get("total"), m.get("available")
+    used = total - avail if total is not None and avail is not None else None
+    own = pr.proc(list(pids))
+    mine = own["rss"] if own else None                    # working set (Windows) / VmRSS (Linux): private plus the mapped model pages it holds
+    rows = [{"pid": r.get("pid"), "name": r.get("name"), "bytes": r.get("rss")} for r in sysd.get("top_ram") or []]
+    top_src = "gputaskman"
+    if not rows and not g and getattr(pr, "os_name", "") == "linux":
+        rows, top_src = linux_top_ram(), "/proc"
+    top = top_by_name(rows, pids)
+    snap = {"t_s": None if t_s is None else round(t_s, 1), "ram_total_gb": gb(total), "ram_used_total_gb": gb(used), "ram_moe_cache_gb": gb(mine),
+            "ram_rest_of_system_gb": gb(max(used - mine, 0)) if used is not None and mine is not None else NR,
+            "top_programs": [[n, gb(b)] for n, b in top] if top else NR}
+    # VRAM: per process from gputaskman; without it the counters give this server and the card, the rest is "other programs"
+    vt, per = NR, NR
+    procs = (g or {}).get("processes")
+    if procs:
+        vt = gb((g or {}).get("vram_total"))
+        spill = bool((g or {}).get("shared_is_spill"))
+        rows_v = []
+        for p in procs:
+            b = p.get("vram_bytes") if p.get("vram_bytes") is not None else p.get("vram_inferred_bytes")
+            if isinstance(b, (int, float)):
+                rows_v.append((p.get("pid"), prog_name(p.get("name")), b, p.get("shared_bytes") if spill and isinstance(p.get("shared_bytes"), (int, float)) else None))
+        add = lambda x, y: x if y is None else (y if x is None else x + y)          # None = unknown: stays unknown until some process gives a figure
+        mv = sum(b for pid, _, b, _ in rows_v if pid in pids)
+        ms = None
+        for pid, _, _, sp in rows_v:
+            if pid in pids:
+                ms = add(ms, sp)
+        agg = {}
+        for pid, name, b, sp in rows_v:
+            if pid in pids:
+                continue
+            a = agg.setdefault(name, [0, None])
+            a[0] += b; a[1] = add(a[1], sp)
+        oth = sorted(agg.items(), key=lambda kv: -kv[1][0])[:ENV_TOP]
+        per = [["moe-cache", gb(mv), gb(ms)]] + [[n, gb(v[0]), gb(v[1])] for n, v in oth]
+    else:
+        try:
+            sysv, procv, _src = pr.vram(pids)
+        except Exception:
+            sysv = procv = None
+        if procv is not None:
+            per = [["moe-cache", round(procv / 1024, 2), NR]] + ([["other programs", round(max(sysv - procv, 0) / 1024, 2), NR]] if sysv is not None else [])
+    cf = getattr(pr, "commit_free", None)
+    cfree = cf() if cf else None
+    snap.update({"vram_total_gb": vt, "vram_per_process": per, "commit_free_gb": gb(cfree)})
+    snap["source"] = "gputaskman --json" if g else "own counters (no gputaskman)" + (" + /proc for the programs" if top_src == "/proc" else "")
+    return snap
+
+
+class EnvTrack:
+    """Keeps the first, the peak (highest RAM in use) and the last snapshot of a run; add() takes the dicts env_snapshot returns."""
+
+    def __init__(self):
+        self.start = self.peak = self.end = None
+        self.n = 0
+
+    def add(self, snap):
+        self.n += 1
+        self.start = self.start or snap
+        self.end = snap
+        key = lambda x: x["ram_used_total_gb"] if isinstance(x.get("ram_used_total_gb"), (int, float)) else -1
+        if self.peak is None or key(snap) > key(self.peak):
+            self.peak = snap
+
+    def block(self):
+        """The structured block: the peak snapshot's fields on top, `sampled_at` holds all three."""
+        if not self.n:
+            return NR
+        out = {k: v for k, v in self.peak.items() if k != "t_s"}
+        out["basis"] = "the snapshot with the highest RAM in use during the run"
+        out["sampled_at"] = {"start": self.start, "peak": self.peak, "end": self.end}
+        out["samples"] = self.n
+        return out
+
+
+def snapshot_from_gtm_line(d):
+    """One line of chain's gtm_sampler.ps1 (.gtm.jsonl) -> the block's fields. A chain item holds several runs: filter the lines by the run's start and end
+    time first (env_from_lines)."""
+    g = d.get("gputaskman") if isinstance(d.get("gputaskman"), dict) else None
+    llama = d.get("llama") or []
+    pids = {x.get("pid") for x in llama}
+    mine = sum(x.get("ws_gb") or 0 for x in llama)
+    total, used = d.get("total_ram_gb"), d.get("used_ram_gb")
+    if g and (g.get("system") or {}).get("ram"):
+        r = g["system"]["ram"]
+        if r.get("total") and r.get("available") is not None:
+            total, used = r["total"] / GIB, (r["total"] - r["available"]) / GIB
+    rows = [{"pid": x.get("pid"), "name": x.get("name"), "bytes": (x.get("ws_gb") or 0) * GIB} for x in d.get("top_ram") or []]
+    if g and (g.get("system") or {}).get("top_ram"):
+        rows = [{"pid": x.get("pid"), "name": x.get("name"), "bytes": x.get("rss")} for x in g["system"]["top_ram"]]
+    top = top_by_name(rows, pids)
+    snap = {"t_s": None, "ram_total_gb": round(total, 2) if isinstance(total, (int, float)) else NR, "ram_used_total_gb": round(used, 2) if isinstance(used, (int, float)) else NR,
+            "ram_moe_cache_gb": round(mine, 2) if llama else NR,
+            "ram_rest_of_system_gb": round(max(used - mine, 0), 2) if isinstance(used, (int, float)) and llama else NR,
+            "top_programs": [[n, gb(b)] for n, b in top] if top else NR, "vram_total_gb": NR, "vram_per_process": NR, "commit_free_gb": NR,
+            "source": "gputaskman --json via chain gtm_sampler.ps1" if g else "chain gtm_sampler.ps1 (no gputaskman data in this line)"}
+    if g and g.get("processes") is not None:
+        s = env_snapshot(_NoProbe(), pids, g)
+        snap.update({"vram_total_gb": s["vram_total_gb"], "vram_per_process": s["vram_per_process"]})
+    return snap
+
+
+class _NoProbe:
+    os_name = "none"
+
+    def mem(self): return {"total": None, "available": None}
+
+    def proc(self, pids): return None
+
+    def vram(self, pids): return None, None, None
+
+
+def env_from_lines(lines, start=None, end=None):
+    """The block from the lines of a chain .gtm.jsonl (text lines). start / end: 'YYYY-MM-DDTHH:MM:SS' bounds of one run (inclusive); None = all lines."""
+    tr = EnvTrack()
+    for ln in lines:
+        try:
+            d = json.loads(ln)
+        except ValueError:
+            continue
+        t = str(d.get("t") or "")
+        if (start and t < start) or (end and t > end):
+            continue
+        tr.add(snapshot_from_gtm_line(d))
+    return tr.block()
+
+
+def env_line(env, label="working desktop", server="moe-cache"):
+    """One compact line for a published number, or None when the block is missing:
+    'working desktop (at peak): 31 GB RAM, moe-cache 9.0 GB, other programs 8.4 GB (Claude 0.8, Dia 0.4...), GPU: moe-cache 10.9 GB, desktop 1.8 GB'."""
+    if not isinstance(env, dict) or not isinstance(env.get("ram_total_gb"), (int, float)):
+        return None
+    f = lambda x: f"{x:.1f} GB" if isinstance(x, (int, float)) else NR
+    parts = [f"{env['ram_total_gb']:.0f} GB RAM"]
+    if isinstance(env.get("ram_moe_cache_gb"), (int, float)):
+        parts.append(f"{server} {f(env['ram_moe_cache_gb'])}")
+    if isinstance(env.get("ram_rest_of_system_gb"), (int, float)):
+        t = env.get("top_programs")
+        names = ""
+        if isinstance(t, list) and t:
+            shown = ", ".join(f"{n} {v:.1f}" if isinstance(v, (int, float)) else f"{n}" for n, v in t[:3])
+            names = f" ({shown}{'...' if len(t) > 3 or env['ram_rest_of_system_gb'] > sum(v for _, v in t[:3] if isinstance(v, (int, float))) + 0.05 else ''})"
+        parts.append(f"other programs {f(env['ram_rest_of_system_gb'])}{names}")
+    v = env.get("vram_per_process")
+    if isinstance(v, list) and v:
+        mc = next((x for x in v if x[0] == "moe-cache"), None)
+        rest = sum(x[1] for x in v if x[0] != "moe-cache" and isinstance(x[1], (int, float)))
+        g = []
+        if mc and isinstance(mc[1], (int, float)):
+            g.append(f"{server} {f(mc[1])}" + (f" ({mc[2]:.1f} GB spilled)" if len(mc) > 2 and isinstance(mc[2], (int, float)) and mc[2] >= 0.05 else ""))
+        if len(v) > (1 if mc else 0):
+            g.append(f"desktop {f(rest)}")
+        if g:
+            parts.append("GPU: " + ", ".join(g))
+    return f"{label} (at peak): " + ", ".join(parts)
+
+
+def env_of(rec, arm=None):
+    """(block, number of runs that have one) for an arm of a record: the run with the most RAM in use at its peak, because a number is only as clean as its worst run."""
+    best, n = None, 0
+    for r in rec.get("runs", []):
+        e = r.get("environment")
+        if (arm is None or r.get("arm") == arm) and r.get("ok", True) and isinstance(e, dict):
+            n += 1
+            if best is None or (e.get("ram_used_total_gb") or 0) > (best.get("ram_used_total_gb") or 0):
+                best = e
+    return best, n
+
+
+def env_line_for(rec, arm=None):
+    """The line for one arm: the stock arm's server is plain llama-server, so the line says that instead of 'moe-cache'."""
+    e, n = env_of(rec, arm)
+    line = env_line(e, server="stock llama-server" if str(arm or "").lower().startswith("stock") else "moe-cache")
+    return line + (f" [the busiest of {n} runs]" if line and n > 1 else "") if line else None
+
+
 # ---------------------------------------------------------------- Sampler
 
 class Sampler(threading.Thread):
@@ -553,7 +826,7 @@ class Sampler(threading.Thread):
     memory / private bytes), the lowest free system RAM, VRAM (process share when the OS tells it, else the whole card), CPU % of all logical CPUs as
     an average over the run and as the highest interval, for the process tree and for the whole system. stop() returns the metrics dict."""
 
-    def __init__(self, pid, pr=None, interval=0.5, vram_interval=2.0, log_lines=None):
+    def __init__(self, pid, pr=None, interval=0.5, vram_interval=2.0, log_lines=None, env_every=ENV_EVERY_S, gtm=None):
         super().__init__(daemon=True)
         self.pid, self.pr, self.interval, self.vram_interval = pid, pr or probe(), interval, vram_interval
         self.log_lines = log_lines if log_lines is not None else []
@@ -567,6 +840,21 @@ class Sampler(threading.Thread):
         self.t0 = self.t1 = None
         self.cpu_total_s = None
         self.vram_before = None
+        self.env_every = env_every                       # BENCH-1150: the environment block (RAM and VRAM of the whole machine) at start, peak and end; None = off
+        self.gtm = gtm if gtm is not None else (find_gtm() if env_every else None)
+        self.env = EnvTrack()
+
+    def _env_loop(self):
+        # its own thread too: a gputaskman call (or the typeperf fallback) takes 0.1-2 s
+        while not self._stop_ev.is_set():
+            self.env_sample()
+            self._stop_ev.wait(self.env_every)
+
+    def env_sample(self):
+        try:
+            self.env.add(env_snapshot(self.pr, set(self.pr.tree(self.pid)), read_gtm(self.gtm) if self.gtm else None, time.time() - (self.t0 or time.time())))
+        except Exception:
+            pass                                          # a failed read leaves a gap, never ends the run
 
     def _vram_loop(self):
         # its own thread: on Windows a typeperf call takes 1-2 s and stalled the RAM and CPU samples (one sample in 2 s on the CI runner, 2026-11-03)
@@ -582,6 +870,9 @@ class Sampler(threading.Thread):
         self.t0 = time.time()
         vt = threading.Thread(target=self._vram_loop, daemon=True)
         vt.start()
+        et = threading.Thread(target=self._env_loop, daemon=True) if self.env_every else None
+        if et:
+            et.start()
         while not self._stop_ev.is_set():
             try:
                 self.sample_once(box, False)
@@ -589,6 +880,9 @@ class Sampler(threading.Thread):
                 pass
             self._stop_ev.wait(self.interval)
         vt.join(timeout=25)
+        if et:
+            et.join(timeout=25)
+            self.env_sample()                              # the END sample, after the run's last request
         self.t1 = time.time()
 
     def sample_once(self, last_box, do_vram=True):
@@ -631,7 +925,7 @@ class Sampler(threading.Thread):
 
     def stop(self):
         self._stop_ev.set()
-        self.join(timeout=30)
+        self.join(timeout=60 if self.env_every else 30)       # the end snapshot comes after the loops end: a slow gputaskman must not cut it off
         return self.result()
 
     def result(self):
@@ -648,7 +942,7 @@ class Sampler(threading.Thread):
                 "process_private_peak_mib": rnd(self.priv_peak / MiB if self.samples else None, 0),
                 "system_ram_free_min_mib": rnd(self.free_min / MiB if self.free_min is not None else None, 0),
                 "cpu_avg_pct": avg(self.proc_cpu), "cpu_peak_pct": top(self.proc_cpu), "system_cpu_avg_pct": avg(self.sys_cpu), "system_cpu_peak_pct": top(self.sys_cpu),
-                "samples": self.samples}
+                "samples": self.samples, **({"environment": self.env.block()} if self.env.n else {})}
 
 
 # ---------------------------------------------------------------- the record
@@ -823,6 +1117,9 @@ def run_entry(arm, index, r, mon=None):
     for k in ("vram_used_peak_mib", "vram_source", "vram_system_peak_mib", "process_ram_peak_mib", "process_private_peak_mib", "system_ram_free_min_mib",
               "cpu_avg_pct", "cpu_peak_pct", "system_cpu_avg_pct", "system_cpu_peak_pct"):
         e[k] = (mon or r).get(k, NR) if (mon or r).get(k) is not None else NR
+    env = (mon or r).get("environment")
+    if isinstance(env, dict):
+        e["environment"] = env                              # BENCH-1150: optional, additive (schema 1 stays valid)
     t = r.get("text")
     e["text_sha256"] = sha256_text(t)[:16] if isinstance(t, str) and t else nr(r.get("text_sha256"))
     return e
@@ -855,6 +1152,9 @@ def outputs_from(runs, baseline_arm="stock"):
 
 
 def assemble(env, settings, conditions, protocol, runs, reproduce=None, notes=None, now=None):
+    benv = env_of({"runs": runs})[0]
+    if benv and isinstance(conditions, dict):
+        conditions = {**conditions, "environment": benv}   # the busiest run's block: what the number's "other programs" line is built from
     rec = {"record_schema": RECORD_SCHEMA, "created_utc": (now or datetime.datetime.now(datetime.timezone.utc)).strftime("%Y-%m-%d %H:%M"),
            "hardware": env["hardware"], "software": env["software"], "model": env["model"], "settings": settings, "conditions": conditions, "protocol": protocol,
            "runs": runs, "summary": summarize_runs(runs), "outputs": outputs_from(runs), "reproduce": reproduce or {}, "notes": notes or []}
@@ -897,7 +1197,8 @@ def details_lines(rec, section=None, date=None, arm="moe-cache"):
             f"VRAM peak {_gib(pick('vram_used_peak_mib'))} · process RAM peak {_gib(pick('process_ram_peak_mib'))} (system free min {_gib(pick('system_ram_free_min_mib'))}) · "
             f"CPU {pct(avg('cpu_avg_pct'))} avg, {pct(pick('cpu_peak_pct'))} peak",
             f"launcher {sw['moe_cache_commit']}, DLL {sw['plugin_sha256_prefix'][:7] if sw['plugin_sha256_prefix'] != NR else NR} · llama.cpp {sw['llama_build']} "
-            f"({sw['llama_commit']}, {sw['llama_backend']}) · {date or d}" + (f" · §{section}" if section else "")]
+            f"({sw['llama_commit']}, {sw['llama_backend']}) · {date or d}" + (f" · §{section}" if section else "")] + \
+           ([env_line_for(rec, arm) or env_line_for(rec)] if env_line_for(rec, arm) or env_line_for(rec) else [])
 
 
 def card_row(rec):
@@ -927,7 +1228,7 @@ Details (the benchmark card's lines): {details}
 
 Settings: `{cmd}`. Environment: {env}.
 Conditions: {cond}. Text identical to baseline: {ident}. Record: {record_file}.
-"""
+{envline}"""
 
 
 def results_section(rec, title="TITLE", number="N", record_file="records/NAME.json"):
@@ -944,7 +1245,8 @@ def results_section(rec, title="TITLE", number="N", record_file="records/NAME.js
                                   runs=pr.get("runs_per_arm", NR), baseline=c["baseline_check"], uptime=c["uptime_h"], arms="results", rows=rows,
                                   details=" | ".join(details_lines(rec)), cmd=s["command_line"], env=json.dumps(s["environment"]) if s["environment"] else "none",
                                   cond=f"other programs {c['other_programs']}, file cache {c['file_cache']}, CPU temp {c['cpu_temp_c']}, GPU temp {c['gpu_temp_c']}",
-                                  ident=rec["outputs"]["identical_to_baseline"], record_file=record_file)
+                                  ident=rec["outputs"]["identical_to_baseline"], record_file=record_file,
+                                  envline=(lambda l: f"Environment: {l}.\n" if l else "")(env_line_for(rec)))
     return txt.replace("## Result N.", f"## Result {number}.").replace("TITLE", title, 1)
 
 
@@ -1114,8 +1416,14 @@ def main(argv=None):
     s.add_argument("--cache", choices=["cold", "warm"]); s.add_argument("--baseline"); s.add_argument("--other-programs"); s.add_argument("--kit-url"); s.add_argument("--out")
     v = sub.add_parser("validate", help="check a record against docs/bench_record.schema.json"); v.add_argument("record")
     r = sub.add_parser("card", help="print a record as card lines / row / RESULTS section / issue body"); r.add_argument("record")
-    r.add_argument("--as", dest="fmt", choices=["details", "row", "results", "issue", "gaps"], default="details"); r.add_argument("--section"); r.add_argument("--title", default="TITLE")
+    r.add_argument("--as", dest="fmt", choices=["details", "row", "results", "issue", "gaps", "env"], default="details"); r.add_argument("--section"); r.add_argument("--title", default="TITLE")
+    e = sub.add_parser("env-from-gtm", help="the environment block (BENCH-1150) from chain's .gtm.jsonl lines, optionally one run's time window")
+    e.add_argument("file"); e.add_argument("--start"); e.add_argument("--end"); e.add_argument("--line", action="store_true", help="print the one-line text instead of the JSON")
     a = ap.parse_args(argv)
+    if a.cmd == "env-from-gtm":
+        blk = env_from_lines(READ(a.file).splitlines(), a.start, a.end)
+        print((env_line(blk) or NR) if a.line else json.dumps(blk, indent=1, ensure_ascii=False))
+        return 0 if blk != NR else 1
     if a.cmd == "collect":
         env = collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url, hash_model=a.hash_model)
         text = json.dumps(env, indent=1, ensure_ascii=False)
@@ -1142,6 +1450,8 @@ def main(argv=None):
         return 1 if errs else 0
     if a.fmt == "gaps":
         print("\n".join(not_recorded_fields(rec)))
+    elif a.fmt == "env":
+        print(env_line_for(rec) or NR)
     elif a.fmt == "row":
         print(card_row(rec))
     elif a.fmt == "results":

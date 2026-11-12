@@ -316,6 +316,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "autotune test failed" }
           python tests/room_test.py               # LAUNCHER-1133: the planner plans against the GPU room the card really gives (fake counters)
           if ($LASTEXITCODE -ne 0) { throw "room test failed" }
+          python tests/env_block_test.py          # BENCH-1150: the environment block of a published number (fake probe, fake gputaskman); the real commit_free ctypes call runs here
+          if ($LASTEXITCODE -ne 0) { throw "env block test failed" }
           $env:REQUIRE_JINJA2 = "1"               # the rendering checks fail instead of skipping when jinja2 is missing
           python tests/model_folders_test.py      # GUI-1052: model folders on every fixed drive (the real drive query runs here)
           if ($LASTEXITCODE -ne 0) { throw "model_folders test failed" }

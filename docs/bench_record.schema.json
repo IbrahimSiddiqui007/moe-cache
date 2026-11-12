@@ -23,6 +23,79 @@
      "type": "number"
     }
    ]
+  },
+  "environment": {
+   "type": "object",
+   "description": "The machine while the run went on (BENCH-1150). GB are GiB. Optional: older records have none. Fields: ram_total_gb, ram_used_total_gb (total minus available), ram_moe_cache_gb (llama-server and launcher: private plus mapped resident), ram_rest_of_system_gb, top_programs [[name, GB] x5, one program's processes added up], vram_total_gb, vram_per_process [[name, GB, spill GB] ..., moe-cache first], commit_free_gb. sampled_at holds start, peak and end snapshots.",
+   "properties": {
+    "ram_total_gb": {
+     "$ref": "#/$defs/num"
+    },
+    "ram_used_total_gb": {
+     "$ref": "#/$defs/num"
+    },
+    "ram_moe_cache_gb": {
+     "$ref": "#/$defs/num"
+    },
+    "ram_rest_of_system_gb": {
+     "$ref": "#/$defs/num"
+    },
+    "top_programs": {
+     "anyOf": [
+      {
+       "const": "not recorded"
+      },
+      {
+       "type": "array",
+       "items": {
+        "type": "array"
+       }
+      }
+     ]
+    },
+    "vram_total_gb": {
+     "$ref": "#/$defs/num"
+    },
+    "vram_per_process": {
+     "anyOf": [
+      {
+       "const": "not recorded"
+      },
+      {
+       "type": "array",
+       "items": {
+        "type": "array"
+       }
+      }
+     ]
+    },
+    "commit_free_gb": {
+     "$ref": "#/$defs/num"
+    },
+    "source": {
+     "$ref": "#/$defs/str"
+    },
+    "basis": {
+     "$ref": "#/$defs/str"
+    },
+    "samples": {
+     "type": "number"
+    },
+    "sampled_at": {
+     "type": "object",
+     "properties": {
+      "start": {
+       "type": "object"
+      },
+      "peak": {
+       "type": "object"
+      },
+      "end": {
+       "type": "object"
+      }
+     }
+    }
+   }
   }
  },
  "type": "object",
@@ -292,6 +365,9 @@
     },
     "gpu_temp_c": {
      "$ref": "#/$defs/num"
+    },
+    "environment": {
+     "$ref": "#/$defs/environment"
     }
    }
   },
@@ -441,6 +517,9 @@
      },
      "error": {
       "type": "string"
+     },
+     "environment": {
+      "$ref": "#/$defs/environment"
      }
     }
    }

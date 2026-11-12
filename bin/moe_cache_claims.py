@@ -406,6 +406,10 @@ def show_claim(c, runs, st):
             vs = f"{cell['vs']}: {pct(m, arm_stats(rec, cell['vs'], cell['metric'])[0])}"
         lines.append(f"| {cell['arm']} | {METRICS[cell['metric']]} | {fmt(cell['metric'], m)} | {n} | {sp:.1f} % | {vs} | {cell['run']} |")
     gaps = sorted({g for r in c["runs"] for g in rr.not_recorded_fields(runs[r])})
+    for line in dict.fromkeys(filter(None, (rr.env_line_for(runs[cell["run"]], cell["arm"]) for cell in c["cells"]))):
+        lines += ["", f"Measured on a {line}"]
+    if not any(rr.env_of(runs[r])[0] for r in c["runs"]):
+        lines += ["", f"Environment: {NR} (the run predates the environment block, or no sampler ran)."]
     lines += ["", f"{len(gaps)} fields say `{NR}` in the runs behind this claim." + (" First ones: " + ", ".join(gaps[:6]) if gaps else "")]
     return "\n".join(lines)
 
@@ -449,8 +453,10 @@ def board_text(claims, runs, version=None, pin=None):
     rows = {}
     for (machine, model, setting, arm, metric), (d, cid, cell) in win.items():
         rows.setdefault((machine, model, setting, arm), {})[metric] = (d, cid, cell)
+    has_env = any(rr.env_of(rec)[0] for rec in runs.values())             # BENCH-1150: the column appears once a run carries an environment block
     for machine in sorted({k[0] for k in rows}):
-        out += [f"## {machine_label(runs, machine)}", "", "| Model | Setting | Arm | Prompt tok/s | Decode tok/s | Date | Status | Claims |", "|---|---|---|---|---|---|---|---|"]
+        out += [f"## {machine_label(runs, machine)}", "", "| Model | Setting | Arm | Prompt tok/s | Decode tok/s | Date | Status | Claims |" + (" Working desktop |" if has_env else ""),
+                "|---|---|---|---|---|---|---|---|" + ("---|" if has_env else "")]
         for key in sorted(k for k in rows if k[0] == machine):
             cells, parts = rows[key], {}
             for metric in METRICS:
@@ -464,7 +470,8 @@ def board_text(claims, runs, version=None, pin=None):
             ids = sorted({v[1] for v in cells.values()})
             sts = sorted({status[i][0] for i in ids})
             out.append(f"| {md(key[1])} | {md(key[2])} | {md(key[3])} | {parts['prompt_tps']} | {parts['decode_tps']} | {max(v[0] for v in cells.values())} | {', '.join(sts)} | "
-                       + ", ".join(f"[{i}](claims/{claims[i]['file']})" for i in ids) + " |")
+                       + ", ".join(f"[{i}](claims/{claims[i]['file']})" for i in ids) + " |"
+                       + ((" " + md(next(filter(None, (rr.env_line_for(runs[cl["run"]], cl["arm"]) for cl in cells.values() for cl in [cl[2]])), NR)) + " |") if has_env else ""))
         out.append("")
     bad = [(cid, st) for cid, st in sorted(status.items()) if st[0] != "current"]
     out += ["## Claims that are not current", ""]
