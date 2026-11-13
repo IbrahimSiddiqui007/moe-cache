@@ -52,10 +52,11 @@ def facts_from_model(path):
     for p in gp.shards(path):
         for name, size in gp.read_tensors(p):
             total += size
-            emb += size if name in ("token_embd.weight", "per_layer_token_embd.weight") else 0      # the n-gram lookup table (Flash-Next: 28.8 GB in shard 2) is read from the file, never put on the GPU (gguf_plan.model_layout)
+            emb += size if name == "token_embd.weight" else 0
             m = re.match(r"blk\.(\d+)\.ffn_(up|down|gate|gate_up)\.weight$", name)
             if m:
                 ffn[int(m.group(1))] = ffn.get(int(m.group(1)), 0) + size
+    emb += lay["table_bytes"]      # the n-gram lookup table (Flash-Next: 28.8 GB in shard 2) is read from the file, never put on the GPU: host side like the token embedding, the same rule as gguf_plan.model_layout
     dense = not lay["n_layers"]
     n_layers = lay["n_layers"] or len(ffn)
     return {"total": total, "emb": emb, "n_layers": n_layers, "dense": dense, "expert_per_layer": lay["expert_bytes_per_layer"],

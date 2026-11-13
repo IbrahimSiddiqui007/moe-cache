@@ -427,5 +427,10 @@ finally:
     _gp.shards, _gp.read_tensors = _save
 ee = cg.estimate(ft, dict(ctx=32768, kv_q8=True, ub=4096, n_cpu_moe=44, cache_ram_mib=2048, fit=False))
 check(ee["gpu_total"] < 20 * GB, f"two-shard model with a 28.8 GB n-gram table: GPU buffers {ee['gpu_total'] / GB:.1f} GB with 44 of 48 layers' experts on the CPU, not 34.8 (the table is not GPU weights)")
+_L = dict(ctx=32768, kv_q8=True, ub=4096, n_cpu_moe=44, cache_ram_mib=2048, fit=False)
+_dd = cg.decide(ft, _L, 44.2e9, 79.1e9, locked={"ub", "kv", "cache", "weights"})
+check(_dd["ok"] and not _dd["steps"], f"the PC's figures (44.2 GB free of 79.1): decide() starts the plan as planned ({_dd['est']['total'] / GB:.1f} GB estimate)")
+_ec = cg.estimate(ft, dict(_L, copy_weights=True))
+check(_ec["copied_weights"] > 28.8e9 and _ec["gpu_total"] < 20 * GB, f"copied weights (--load-mode none): the n-gram table lands in copied_weights ({_ec['copied_weights'] / GB:.1f} GB), not in the GPU buffers ({_ec['gpu_total'] / GB:.1f} GB)")
 print("FAIL" if fails else "all ok")
 sys.exit(1 if fails else 0)
