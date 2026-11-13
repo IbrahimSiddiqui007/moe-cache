@@ -162,10 +162,53 @@ def stage(m):
     return a, said
 a1, s1 = stage(SM())
 check(abs(a1.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and mc.REAL_ROOM.get("room_mib") == 16304 - 2400 - 300, f"gpu_stage: the pre-load room as before; the watcher gets room_mib {mc.REAL_ROOM.get('room_mib')}")
-rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 12000, 2000)
+rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 13000, 2000)
 a2, s2 = stage(SM())
-check(abs(a2.room_gib - 12000 / 1024) < 0.01 and any("before the card paged" in x for x in s2), f"gpu_stage: a learned ceiling below the pre-load room wins ({getattr(a2, 'room_gib', None)})")
+check(abs(a2.room_gib - 13000 / 1024) < 0.01 and any("before the card paged" in x for x in s2), f"gpu_stage: a learned ceiling below the pre-load room wins ({getattr(a2, 'room_gib', None)})")
 m0 = SM(); m0.others = 0
 a3, s3 = stage(m0)
-check(abs(a3.room_gib - 12000 / 1024) < 0.01 and any("could not be read" in x for x in s3), "gpu_stage: counters unreadable -> the ceiling still applies")
+check(abs(a3.room_gib - 13000 / 1024) < 0.01 and any("could not be read" in x for x in s3), "gpu_stage: counters unreadable -> the ceiling still applies")
+
+# --- critic F1: the plan's -ub reaches the stored measurement (the wiring, not only the function) ---
+mc.CACHE_DIR = os.path.join(TMP, "f1_cache"); mc.REAL_ROOM.clear(); mc.REAL_ROOM["device"] = "AMD Radeon RX 9070 XT"
+cmd512 = ["no-such-llama-server", "-m", mdl, "-c", str(ctx), "-ctk", "q4_0", "-ctv", "q4_0", "-ub", "512"]
+rr.measure_save(mc.CACHE_DIR, cmd512, "AMD Radeon RX 9070 XT", {"gpu": {"model": 9000.0, "kv": 700.0, "rs": 100.0, "compute": 500.0}, "cpu": {}, "offloaded": (24, 24)})
+n512 = mc.measured_need(mdl, ctx, ("q4_0", "q4_0"), 512); n4096 = mc.measured_need(mdl, ctx, ("q4_0", "q4_0"), 4096)
+check(abs(n512 - (9000 + 700 + 100 + 500) / 1024) < 1e-6, "F1: a plan at the measured -ub (512) uses the stored compute buffer")
+check(abs(n4096 - ((9000 + 700 + 100) / 1024 + 0.20 + 0.15 * 7)) < 1e-6 and n4096 > n512, f"F1: a plan at -ub 4096 does NOT use the compute buffer measured at 512 (table figure for 4096: {n4096:.2f} GiB, not {n512:.2f})")
+mk = lambda **kw: types.SimpleNamespace(vram="15.04", room_gib=None, gpu_margin=None, **kw)
+tt = mc.dense_gpu_fit_pair(mk(ub="4096"), mdl, ctx, M(), with_q4=True); t5 = mc.dense_gpu_fit_pair(mk(ub="auto"), mdl, ctx, M(), with_q4=True)
+check(tt and t5 and tt[3]["need_gib"] > t5[3]["need_gib"] + 0.5, f"F1: dense_gpu_fit_pair passes the plan's ub (4096: {tt[3]['need_gib']:.2f} GiB, default 512: {t5[3]['need_gib']:.2f} GiB)")
+tu = mc.dense_gpu_fit_pair(mk(ub="auto", plan_ub=4096), mdl, ctx, M(), with_q4=True)
+check(tu and abs(tu[3]["need_gib"] - tt[3]["need_gib"]) < 1e-6, "F1: the user's own -ub after `--` (plan_ub) counts the same")
+
+# --- critic F4: the off switch ---
+os.environ["MOE_CACHE_LEARN_ROOM"] = "0"
+check(mc.measured_need(mdl, ctx, ("q4_0", "q4_0"), 512) is None, "F4: MOE_CACHE_LEARN_ROOM=0: a stored measurement is not used")
+mc.CACHE_DIR = os.path.join(TMP, "f4_cache"); rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 12000, 2000)
+a4, s4 = stage(SM())
+check(abs(a4.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and not mc.REAL_ROOM.get("device") and not any("before the card paged" in x for x in s4), "F4: MOE_CACHE_LEARN_ROOM=0: the learned ceiling is ignored, no watcher device (the pre-load room stays)")
+del os.environ["MOE_CACHE_LEARN_ROOM"]
+
+# --- critic F2: a stale ceiling is dropped at the start when the room is back ---
+mc.CACHE_DIR = os.path.join(TMP, "f2_cache"); rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 10000, 2000)
+a5, s5 = stage(SM())              # pre-load room 13604 MiB > 10000 + 1024: the ceiling is stale
+check(abs(a5.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and rr.room_ceiling(mc.CACHE_DIR, "AMD Radeon RX 9070 XT") is None and any("ceiling is dropped" in x for x in s5), "F2: room 13.3 GiB against a learned 9.8 GiB: planned with the room, the ceiling is gone at once")
+rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 13000, 2000)
+a6, s6 = stage(SM())              # ceiling 13000 is within 1024 of the room 13604: it stands
+check(abs(a6.room_gib - 13000 / 1024) < 0.01 and any("learned" in x and "ago" in x for x in s6) and rr.room_ceiling(mc.CACHE_DIR, "AMD Radeon RX 9070 XT") == 13000, "F2: a ceiling within 1 GiB of the room stands, and the line says how old it is")
+
+# --- critic F4: see and reset ---
+mc.CACHE_DIR = os.path.join(TMP, "f4b_cache"); rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 12000, 2000)
+rr.measure_save(mc.CACHE_DIR, cmd512, "AMD Radeon RX 9070 XT", {"gpu": {"model": 9000.0, "kv": 700.0, "rs": 100.0, "compute": 500.0}, "cpu": {}, "offloaded": (24, 24)})
+lt = rr.learned_text(mc.CACHE_DIR)
+check(any("11.72 GiB" in x for x in lt) and any("1 stored load measurement" in x for x in lt), f"F4: learned_text shows the ceiling and the measurements ({lt})")
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    mc.room_cmd([])
+    mc.room_cmd(["--reset"])
+    mc.room_cmd([])
+out = buf.getvalue()
+check("11.72 GiB" in out and "forgot 2 file(s)" in out and out.rstrip().endswith("nothing learned yet"), "F4: `moe_cache.py room` shows, `--reset` forgets, then there is nothing")
 sys.exit(1 if fails else 0)

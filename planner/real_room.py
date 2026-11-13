@@ -69,6 +69,66 @@ def room_ceiling(cache_dir, device, now=None):
     return None
 
 
+def enabled(env=None):
+    """LAUNCHER-1131 (critic F4): MOE_CACHE_LEARN_ROOM=0 turns the whole feature off: no learned ceiling is read, written or used, no load is stored as a measurement or used for a fit, and the
+    server's GPU counters are not read after the start (the pre-load room of LAUNCHER-1133 is a separate, stateless step and stays)."""
+    return (os.environ if env is None else env).get("MOE_CACHE_LEARN_ROOM", "") != "0"
+
+
+def room_ceiling_info(cache_dir, device, now=None):
+    """(ceiling MiB, age in seconds) of the learned ceiling of this GPU, or None (same rules as room_ceiling)."""
+    c = room_ceiling(cache_dir, device, now)
+    if not c:
+        return None
+    return c, max(0, int((now or time.time()) - float((_read_json(_store_file(cache_dir)).get(device) or {}).get("t", 0))))
+
+
+def room_forget(cache_dir, device):
+    """Drop the learned ceiling of this GPU (the desktop gave the room back); True when something was dropped."""
+    st = _read_json(_store_file(cache_dir)); d = st.get(device) or {}
+    if "ceiling_mib" not in d:
+        return False
+    d.pop("ceiling_mib", None); d.pop("paged_mib", None)
+    st[device] = d
+    return _write_json(_store_file(cache_dir), st)
+
+
+def _age_text(sec):
+    return f"{sec // 86400} d" if sec >= 86400 else (f"{sec // 3600} h" if sec >= 3600 else f"{max(1, sec // 60)} min")
+
+
+def learned_text(cache_dir, now=None):
+    """Plain lines: what this PC has learned (ceilings per GPU, stored load measurements), for `moe_cache.py room`."""
+    now = now or time.time(); out = []
+    for dev, d in sorted(_read_json(_store_file(cache_dir)).items()):
+        info = room_ceiling_info(cache_dir, dev, now) if isinstance(d, dict) else None
+        if info:
+            out.append(f"GPU {dev}: planning ceiling {info[0] / 1024:.2f} GiB of dedicated memory, learned {_age_text(info[1])} ago (the card paged; kept {ROOM_KEEP_S // 86400} days unless a later start sees the room back)")
+    md = os.path.join(cache_dir, "measured")
+    n = 0
+    try:
+        for f in os.listdir(md):
+            m = _read_json(os.path.join(md, f))
+            if f.endswith(".json") and m.get("version") == MEASURE_VERSION and now - float(m.get("t", 0) or 0) <= MEASURE_KEEP_S:
+                n += 1
+    except OSError:
+        pass
+    if n:
+        out.append(f"{n} stored load measurement(s) (model, KV type, context, GPU, llama-server build; kept {MEASURE_KEEP_S // 86400} days)")
+    return out or ["nothing learned yet"]
+
+
+def reset_learned(cache_dir):
+    """Delete the learned ceilings and the stored measurements; returns the number of files removed."""
+    n = 0
+    for f in [_store_file(cache_dir)] + [os.path.join(cache_dir, "measured", x) for x in (os.listdir(os.path.join(cache_dir, "measured")) if os.path.isdir(os.path.join(cache_dir, "measured")) else [])]:
+        try:
+            os.remove(f); n += 1
+        except OSError:
+            pass
+    return n
+
+
 def room_learn(cache_dir, device, ded, sha, now=None, room_mib=None):
     """Record one reading of our own process. Paging = shared above GPU_PAGED_MIB while dedicated memory is within NEAR_ROOM_MIB of room_mib (the pre-load room; unknown: any shared use counts):
     the dedicated figure becomes the ceiling. Shared use with dedicated far below the room is staging, not paging. No paging with more dedicated memory than a stored ceiling, or a pre-load
