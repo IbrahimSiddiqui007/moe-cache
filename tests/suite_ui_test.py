@@ -110,7 +110,25 @@ for route in ("/api/suite/records", "/api/suite/compare", "/api/suite/status", "
 check(not any(r.startswith("/api/suite") for r in ui.REMOTE_GET + ui.REMOTE_POST), "the suite routes are not allowed over the LAN (private)")
 check('id="cmpdlg"' in page and 'id="cmpopen"' in page and "askConfirm(\"Publish this record?" in page and "esc(" in page.split("async function cmpCards")[1].split("async function cmpPoll")[0], "the page: the Compare button and dialog, publish asks first, record fields go through esc()")
 check("run: stop the model" not in src and "stop the model that this page runs first" in src and "self.running()" in src.split('"/api/suite/run"')[1][:400], "running a suite is refused while the page's own model runs (memory)")
-check('"/api/start", "/api/servers/start", "/api/servers/group") and self.suite.running()' in src, "starting a model by hand (also further servers and groups) is refused while a suite runs")
+import json, threading, urllib.request, urllib.error
+_srv = ui.make_server(0, "llama-server", token="t")
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_job = _srv.RequestHandlerClass.suite
+_job.running = lambda: True            # a suite is "running": the real handler must refuse a manual start BEFORE it reaches the start / group code
+def _post(path, body):
+    r = urllib.request.Request(f"http://127.0.0.1:{_srv.server_address[1]}{path}", json.dumps(body).encode(), {"X-MoeCache-Token": "t", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(r, timeout=30) as x:
+            return x.status, x.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+for _path in ("/api/start", "/api/servers/start", "/api/servers/group"):
+    _code, _txt = _post(_path, {"model": "/m/a.gguf"})
+    check(_code >= 400 and "a suite is running" in _txt, f"{_path} while a suite runs: refused by the real handler ({_code}: {_txt[:80]})")
+_job.running = lambda: False
+_code, _txt = _post("/api/servers/start", {"model": "/m/a.gguf"})
+check("a suite is running" not in _txt, "the same start with no suite running is not refused for the suite (another reason, if any)")
+_srv.shutdown()
 check("catch (e) { CMP.timer = setTimeout(cmpPoll" in page, "the page keeps polling after one failed status call")
 print("suite_ui_test: " + ("FAIL" if fails else "PASS"))
 sys.exit(1 if fails else 0)

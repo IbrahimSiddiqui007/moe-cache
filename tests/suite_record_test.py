@@ -66,6 +66,9 @@ near = {r["label"]: r for r in S.compare([rec("a", 20, 9000, 25.0, loops=0), rec
 chk("20 -> 24 of 27 is inside the noise of the pass count ('=')", near["hard tasks passed of 27"]["marks"][1] == "=")
 chk("loops 0 -> 1 is '=' (not 'worse because the base is 0')", near["loops in the final answer"]["marks"][1] == "=")
 chk("a single-run speed change of -8 % is '=' (needs 10 %)", near["decode at 32k"]["marks"][1] == "=")
+ra, rb = rec("a", 20, 9000, 25.0), rec("b", 20, 9000, 25.0); ra["sections"]["hard"]["think_repeat_share_median"] = 0.10; rb["sections"]["hard"]["think_repeat_share_median"] = 0.60
+rr = {r["label"]: r for r in S.compare([ra, rb])["rows"]}["thinking repetition share (median)"]
+chk("N2: the thinking repetition share is shown but never marked better/worse (the docs: 'not a verdict')", rr["values"] == [0.10, 0.60] and rr["marks"] == ["", ""])
 chk("every row says how it was measured: pass counts carry n, speed rows are kind 'run'", near["hard tasks passed of 27"]["kind"] == "pass" and near["hard tasks passed of 27"]["ns"] == [27, 27] and near["decode at 32k"]["kind"] == "run")
 lo, hi = S.wilson(20, 27); chk("Wilson interval of 20/27 brackets 0.74 and is wide", lo < 0.74 < hi and hi - lo > 0.25)
 # quality across different models is KV sensitivity, not a ranking

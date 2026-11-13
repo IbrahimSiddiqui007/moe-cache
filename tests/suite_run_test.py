@@ -104,6 +104,25 @@ pt = R.Partial(tempfile.mkdtemp(), "fake", "quick", {"k": 1}); pt.data["sections
 chk("a partial file with the same key loads; another key (other settings) does not", pt2.load() and not R.Partial(os.path.dirname(pt.path), "fake", "quick", {"k": 2}).load())
 n0 = len(REQS); R.measure_server(url, "fake", "quick", tempfile.mkdtemp(), pt2, served=R.served_facts(url), progress=lambda m: None)
 chk("resume: speed is kept, tasks are measured, and each finished section is saved at once", "tasks" in pt2.data["sections"] and pt2.data["sections"]["speed"]["protocol"] == "x" and json.load(open(pt2.path))["sections"].get("tasks"))
+# R2: an errored hard section is not stored as done; a dead server stops the sections
+_ho = dict(R.PROFILES["night"]); R.PROFILES["_t"] = dict(_ho, speed="probe", think=[], hard=True, kl_chunks=0)
+FAIL[0] = next(iter(HARD)); _pt = R.Partial(tempfile.mkdtemp(), "fake", "_t", {"k": 9}); _w = tempfile.mkdtemp()
+try:
+    R.measure_server(url, "fake", "_t", _w, _pt, served=R.served_facts(url), progress=lambda m: None); _ok = False
+except RuntimeError as e:
+    _ok = "not finished" in str(e) and "error" in str(e)
+FAIL[0] = None
+chk("R2: a hard set with an errored task raises and stores no 'hard' section (the speed section is kept)", _ok and "hard" not in _pt.data["sections"] and "speed" in _pt.data["sections"])
+R.measure_server(url, "fake", "_t", _w, _pt, served=R.served_facts(url), progress=lambda m: None)
+chk("R2: the rerun resumes (only the errored task is redone) and stores the finished hard section", _pt.data["sections"].get("hard", {}).get("n") == 27 and _pt.data["sections"]["hard"]["errors"] == 0)
+_pt2 = R.Partial(tempfile.mkdtemp(), "fake", "quick", {"k": 8}); _orig = R.server_alive; R.server_alive = lambda u, timeout=5: False
+try:
+    R.measure_server(url, "fake", "quick", tempfile.mkdtemp(), _pt2, served=R.served_facts(url), progress=lambda m: None); _ok = False
+except RuntimeError as e:
+    _ok = "does not answer" in str(e)
+R.server_alive = _orig
+chk("R2: a server that does not answer stops the sections and nothing is stored", _ok and not _pt2.data["sections"])
+del R.PROFILES["_t"]
 out = tempfile.mkdtemp(); r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "bench-suite", "run", "--url", url, "--name", "fake-model", "--quant", "Q3", "--profile", "quick", "--out", out], capture_output=True, text=True)
 files = os.listdir(out)
 chk("`moe_cache.py bench-suite run --url` writes one valid private record", r.returncode == 0 and len(files) == 1 and S.validate_record(json.load(open(os.path.join(out, files[0])))) == [])

@@ -167,7 +167,7 @@ def _metrics(records):
              ("quality", "KL mean (KV cost)", lambda s: s.get("kl_mean"), "", -1, "kl"), ("quality", "same top token (KV cost)", lambda s: s.get("top1_pct"), "%", 1, "kl"),
              ("tasks", f"tasks passed of {_n(records, 'tasks')}, thinking off", lambda s: s.get("pass"), "", 1, "pass"), ("tasks_on", f"tasks passed of {_n(records, 'tasks_on')}, thinking on", lambda s: s.get("pass"), "", 1, "pass"),
              ("hard", f"hard tasks passed of {_n(records, 'hard')}", lambda s: s.get("pass"), "", 1, "pass"), ("hard", "thinking tokens, median", lambda s: s.get("think_median"), "", -1, "run"), ("hard", "thinking tokens, p90", lambda s: s.get("think_p90"), "", -1, "run"),
-             ("hard", "loops in the final answer", lambda s: s.get("loops"), "", -1, "count"), ("hard", "thinking repetition share (median)", lambda s: s.get("think_repeat_share_median"), "", -1, "run"), ("hard", "cap hits", lambda s: s.get("cap_hits"), "", -1, "count")]
+             ("hard", "loops in the final answer", lambda s: s.get("loops"), "", -1, "count"), ("hard", "thinking repetition share (median)", lambda s: s.get("think_repeat_share_median"), "", -1, "info"), ("hard", "cap hits", lambda s: s.get("cap_hits"), "", -1, "count")]
     return rows
 
 
@@ -179,7 +179,7 @@ def _same_model(records):
 def compare(records, noise_pct=SINGLE_RUN_NOISE_PCT):
     """Returns {"records": [labels], "rows": [{section, label, unit, kind, values, ns, deltas_pct, marks}], "skipped": [text], "warnings": [text]}; the first record is the reference.
     A section is compared only between records whose protocol hash equals the reference's and whose known server settings (REFUSE) are equal; the others show '-' and a line in `skipped` says
-    which section and why. Marks: pass counts use a 95 % Wilson interval (overlap = '='); counts of 0-1 apart are '='; one-run numbers need `noise_pct` (default 10 %); the KL rows carry no
+    which section and why. Marks: pass counts use a 95 % Wilson interval (overlap = '='); counts of 0-1 apart are '='; one-run numbers need `noise_pct` (default 10 %); the "info" rows (thinking repetition share) carry no mark at all; the KL rows carry no
     mark between different models (KL against the model's own f16 KV is what the KV cache costs, not how good the model is)."""
     labels = [f"{r['model'].get('name', '?')} {r['model'].get('quant', '')}".strip() for r in records]; skipped = []; warnings = []; rows = []; same_model = _same_model(records)
     for i in range(1, len(records)):
@@ -212,7 +212,7 @@ def compare(records, noise_pct=SINGLE_RUN_NOISE_PCT):
             if i == 0 or v is None or base is None:
                 deltas.append(None); marks.append(""); continue
             d = v - base; pct = (d / base * 100) if base else None; deltas.append(pct)
-            if kind == "kl" and not same_model:
+            if kind == "info" or (kind == "kl" and not same_model):          # info: shown, never marked (repetition inside the thinking is normal, the docs say "not a verdict")
                 mk = ""
             elif kind == "pass" and ns[0] and ns[i]:
                 a, b = wilson(base, ns[0]), wilson(v, ns[i]); mk = "=" if not (b[0] > a[1] or a[0] > b[1]) else ("better" if d * better > 0 else "worse")

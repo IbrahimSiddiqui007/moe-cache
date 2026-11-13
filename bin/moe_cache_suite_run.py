@@ -216,6 +216,14 @@ def run_hard(url, cap, workers, tmp, ctx, task_seconds=None):
     return sec
 
 
+def server_alive(url, timeout=5):
+    """True when the server answers /health with 200."""
+    try:
+        return urllib.request.urlopen(url.rstrip("/") + "/health", timeout=timeout).status == 200
+    except Exception:
+        return False
+
+
 def run_quality(model, served, chunks, tmp, perplexity="llama-perplexity", windows=None):
     """KL and same-top-token of the SERVED KV cache (served['ctk'] / ['ctv'], the plan flags the server ran with) against the same model with f16 KV, on chat-style windows. Run after the server has stopped
     (the model is not held twice). Returns None when the served KV cache is f16 (identical to the reference by definition: nothing to measure)."""
@@ -330,8 +338,14 @@ def measure_server(url, name, prof, work, part, workers=1, monitor_pid=None, ser
     """The sections that need the running server; each one is skipped when the partial file already has it and saved as soon as it is done."""
     P = PROFILES[prof]; sec = part.data["sections"]; ctx = (served or {}).get("ctx")
 
+    def need_alive(what):
+        """R2 (critic): a section measured against a server that has died is not a result. Checked before a section starts and again before its numbers are stored."""
+        if not server_alive(url):
+            raise RuntimeError(f"the server does not answer {what}: nothing was stored for this section (run again to resume from the saved sections)")
+
     def done(key, value):
         if value is not None:
+            need_alive(f"after the {key} section")
             sec[key] = value; part.save()
     if "speed" not in sec:
         progress(f"[{name}] speed ({P['speed']})")
@@ -350,10 +364,15 @@ def measure_server(url, name, prof, work, part, workers=1, monitor_pid=None, ser
     for think in P["think"]:
         key = "tasks" if think == "off" else "tasks_on"
         if key not in sec:
+            need_alive(f"before the tasks section (thinking {think})")
             progress(f"[{name}] tasks, thinking {think}"); done(key, run_tasks(url, think, P["tasks_n"], work))
     if P["hard"] and "hard" not in sec:
         tsec = hard_budget(sec.get("speed"), ctx); part.data["task_seconds"] = tsec
-        progress(f"[{name}] hard set (no cap, {tsec} s per task)"); done("hard", run_hard(url, HARD_CAP, workers, work, ctx, tsec))
+        need_alive("before the hard set")
+        progress(f"[{name}] hard set (no cap, {tsec} s per task)"); hs = run_hard(url, HARD_CAP, workers, work, ctx, tsec)
+        if hs.get("errors"):         # R2 (critic): tasks that ended in an error are not "done"; the finished ones stay in hard_run.json and a rerun (--resume) redoes only the errored ones
+            raise RuntimeError(f"the hard set is not finished: {hs['errors']} of {hs['errors'] + hs['n']} tasks ended in an error (server gone or refusing?); nothing was stored for this section, run again to resume")
+        done("hard", hs)
 
 
 def measure(url, name, quant, prof, model_path=None, tmp=None, workers=1, perplexity="llama-perplexity", progress=print, served=None, monitor_pid=None, windows=None):

@@ -37,7 +37,7 @@ def render(records, title="Model comparison"):
                 rows_html.append(f'<div class="sec">{e({"speed": "speed", "memory": "memory", "quality": "KV cache cost (KL vs the same model with f16 KV)", "tasks": "tasks", "tasks_on": "tasks", "hard": "hard reasoning"}.get(r["section"], r["section"]))}</div>'); last = r["section"]
             d, mk = r["deltas_pct"][i], r["marks"][i]
             chip = "" if d is None or not mk else f'<span class="d {"flat" if mk == "=" else mk}">{"=" if mk == "=" else f"{d:+.0f} %"}</span>'
-            tag = "" if r["values"][i] is None else (f' <span class="tag">n={r["ns"][i]}</span>' if r["kind"] == "pass" and r["ns"][i] else (' <span class="tag">1 run</span>' if r["kind"] == "run" else ""))
+            tag = "" if r["values"][i] is None else (f' <span class="tag">n={r["ns"][i]}</span>' if r["kind"] == "pass" and r["ns"][i] else (' <span class="tag">1 run</span>' if r["kind"] in ("run", "info") else ""))
             rows_html.append(f'<div class="row"><span>{e(r["label"])}</span><span class="v">{e(fmt(r["values"][i], r["unit"]))}{chip}{tag}</span></div>')
         sv = rec.get("served") or {}; mc = rec.get("machine") or {}
         meta = " · ".join(x for x in [m.get("quant", ""), f'{m["size_gb"]} GB' if m.get("size_gb") else "", (mc.get("gpu_model") or mc.get("cpu_model") or mc.get("platform") or "")[:40], rec.get("created_utc", "")] if x)

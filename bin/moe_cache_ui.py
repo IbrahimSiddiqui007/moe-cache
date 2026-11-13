@@ -2726,6 +2726,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, self.downloads.start(str(body.get("id") or ""), self.download_folder(body.get("folder")), body.get("files")))
             if self.path == "/api/download/cancel":
                 return self.send(200, self.downloads.cancel())
+            if self.path in ("/api/start", "/api/servers/start", "/api/servers/group") and self.suite.running():
+                raise ValueError("a suite is running: it starts and stops its own models; wait for it or cancel it first")
             if self.path == "/api/servers/start":            # GUI-013: one more server on another port, with the page's settings (the same checks as Start)
                 return self.send(200, self.start_extra(body))
             if self.path == "/api/servers/plan":              # MULTIMODEL-010: the split for two or three models, nothing started
@@ -2737,8 +2739,6 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/llama":                    # "llama.cpp not found": the path the user typed (checked with --version) is remembered
                 r, v = self.store.set_llama(body.get("path"))
                 return self.send(200, {"path": r, "version": v, "llama_found": True})
-            if self.path in ("/api/start", "/api/servers/start", "/api/servers/group") and self.suite.running():
-                raise ValueError("a suite is running: it starts and stops its own models; wait for it or cancel it first")
             if self.path == "/api/start":
                 if body.get("on_demand") and not ON_DEMAND:
                     raise ValueError("Start on first request is not in this version yet")
