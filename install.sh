@@ -214,7 +214,7 @@ FLAGS=(-DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF -DBUILD
 [ $VULKAN = 1 ] && FLAGS+=(-DGGML_VULKAN=ON)
 GEN=(); command -v ninja >/dev/null && GEN=(-G Ninja)
 cmake -S "$L" -B "$L/build" "${GEN[@]}" "${FLAGS[@]}" >/dev/null
-cmake --build "$L/build" --target llama-server llama-bench llama-perplexity -j "$JOBS"
+cmake --build "$L/build" --target llama-server llama-bench llama-perplexity llama-fit-params -j "$JOBS"      # llama-fit-params: the planner measures the GPU compute buffer with it (LAUNCHER-1152)
 BIN="$L/build/bin"; [ -x "$BIN/llama-server" ] || { echo "llama-server was not built"; exit 1; }
 fi
 

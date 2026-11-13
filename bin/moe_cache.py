@@ -2388,6 +2388,7 @@ class Machine:
     def vk_cache_cap(self, ls, model, listing=None): return vk_cache_cap(ls, model, listing)
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
     def planner_answer(self, model, ctx, ram_gib, vram_gib): return planner_answer(model, ctx, ram_gib, vram_gib)
+    def fit_params(self, ls): return plan_fit_params(ls)       # LAUNCHER-1152: llama-fit-params of this llama-server's build, or None
     def lib_exists(self, lib): return os.path.isfile(lib)
 
     def other_llama_servers(self): return other_llama_servers()
@@ -2974,6 +2975,9 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
                     say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
+            fp = machine.fit_params(ls)
+            if fp:
+                kw["fit_params"] = fp            # LAUNCHER-1152: the compute buffer measured on this machine (the rule below may replace it with its own lookup)
             from gguf_plan import plan_rule_on
             if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
                 from gguf_plan import find_fit_params, plan_table, plan_table_lines
@@ -2985,6 +2989,11 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             if getattr(a, "long_prompt", False) and not (ub_asked or "").isdigit() and getattr(a, "lp_kv", False):
                 kw["long_prompt"] = True
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
+            line = compute_buffer_line(tuned, kw.get("fit_params"))
+            if line and not getattr(a, "lp_retune", False):
+                say(line)
+            if tuned is not None:
+                tuned["fit_params"] = kw.get("fit_params")
         except Exception:
             tuned = None
     return tuned, desk_kw, ub_asked
@@ -3087,6 +3096,32 @@ def win_gpu_process_text():
     if text:
         _GPU_PROC[0], _GPU_PROC[1] = now, text
     return text
+
+
+def plan_fit_params(ls):
+    """LAUNCHER-1152: the llama-fit-params the planner measures the GPU compute buffer with: the one next to llama-server (same build) or MOE_CACHE_FIT_PARAMS;
+    None when there is none or MOE_CACHE_FIT_PARAMS=off (the planner then uses its table and says so)."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import find_fit_params
+        return find_fit_params(ls, use_path=False)
+    except Exception:
+        return None
+
+
+def compute_buffer_line(tuned, fit_params):
+    """LAUNCHER-1152 (rule C16): one plain line saying which GPU compute-buffer figure the plan used and where it came from; None when the tuner gave none."""
+    mib, ub, src = (tuned or {}).get("compute_mib"), (tuned or {}).get("ub"), (tuned or {}).get("compute_source")
+    if not mib or src == "rule":
+        return None
+    if src == "llama-fit-params":
+        return (f"moe-cache: GPU compute buffer: {mib:.0f} MiB at -ub {ub}, measured for this model, context and KV type on this GPU by llama.cpp's llama-fit-params "
+                "(remembered for the next start; MOE_CACHE_FIT_PARAMS=off uses the table instead)")
+    import gguf_plan
+    why = ("MOE_CACHE_FIT_PARAMS=off" if gguf_plan.fit_params_off() else
+           "llama-fit-params gave no figure" if fit_params else "no llama-fit-params next to llama-server")
+    return (f"moe-cache: GPU compute buffer: {mib:.0f} MiB at -ub {ub}, an estimate (not measured on this machine: {why}); the table was measured on one other model "
+            "on our test PC and errs high, so more expert layers may stay on the CPU than this model needs")
 
 
 def plan_vram_gib(a):
@@ -3685,6 +3720,7 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
             try:
                 from gguf_plan import fast_kv_hint
                 h = fast_kv_hint(model, ctx, free=plan_vram_gib(a) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
+                                 fit_params=tuned.get("fit_params"),
                                  **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
                 if h:
                     say("moe-cache: " + h)
@@ -4716,7 +4752,7 @@ def run_launch_plan(plan):
             if not tf:
                 return None
             reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
-            t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve)
+            t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, fit_params=machine.fit_params(ls))      # LAUNCHER-1152: the same measured buffer as the plan
             lay = model_layout(model)
             old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])
             new_n = min(lay["n_layers"] or 999, max(int(t["n_cpu_moe"]), old_n + 1)) if lay["n_layers"] else old_n + 1

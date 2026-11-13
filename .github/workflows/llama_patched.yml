@@ -13,7 +13,7 @@ on:
     branches: [ci/llama-patched, 'ci/llama-patched-**']
 
 # LLAMA_CONNECT=OFF: at b12064 (and b12207) =ON makes CMake download a prebuilt llama-connect binary from github.com (scripts/connect-download.cmake, 3 tries, no sha256) at
-# configure/build time; a github.com 504 broke the build on 2026-11-08. We build only llama-server (+ test-backend-ops), not that tool. The option is OFF by default upstream.
+# configure/build time; a github.com 504 broke the build on 2026-11-08. We build only llama-server and llama-fit-params (the planner measures the GPU compute buffer with it, LAUNCHER-1152) (+ test-backend-ops), not that tool. The option is OFF by default upstream.
 env:
   LLAMA_COMMIT: 998200491327347eed85f007e4de7a1a7c871453   # b12207
   VULKAN_VERSION: "1.4.357.0"
@@ -48,7 +48,7 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DLLAMA_BUILD_BORINGSSL=ON -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_OPENMP=ON -DGGML_OPENMP_FETCH=ON %CMAKE_ARGS% -DLLAMA_BUILD_TESTS=ON
-          cmake --build build --config Release --target llama-server test-backend-ops
+          cmake --build build --config Release --target llama-server llama-fit-params test-backend-ops
       - name: Version line
         shell: bash
         run: llama.cpp/build/bin/Release/llama-server.exe --version
@@ -227,7 +227,7 @@ jobs:
         working-directory: llama.cpp
         run: |
           cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS -DLLAMA_BUILD_TESTS=ON
-          cmake --build build --config Release --target llama-server test-backend-ops test-cpu-gpu-split -j $(nproc)
+          cmake --build build --config Release --target llama-server llama-fit-params test-backend-ops test-cpu-gpu-split -j $(nproc)
           build/bin/llama-server --version
       - name: "IQ3_XXS mat-vec kernel (patch 0090) against the CPU result, switch off and on (Vulkan on the CPU via mesa lavapipe, no GPU on the runner)"
         working-directory: llama.cpp
@@ -252,11 +252,12 @@ jobs:
           name: llama-patched-linux-x64
           path: |
             llama.cpp/build/bin/llama-server
+            llama.cpp/build/bin/llama-fit-params
             llama.cpp/build/bin/*.so
       - name: Pack with the library symlinks kept (the tarball the Linux release bundles)
         run: |
           mkdir pkg
-          cp -a llama.cpp/build/bin/llama-server llama.cpp/build/bin/*.so* pkg/
+          cp -a llama.cpp/build/bin/llama-server llama.cpp/build/bin/llama-fit-params llama.cpp/build/bin/*.so* pkg/      # llama-fit-params: the planner measures the GPU compute buffer (LAUNCHER-1152)
           tar -C pkg -czf llama-patched-linux-x64.tar.gz .
           sha256sum llama-patched-linux-x64.tar.gz | tee llama-patched-linux-x64.tar.gz.sha256
           ls -l pkg | head -40

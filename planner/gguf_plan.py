@@ -747,14 +747,24 @@ def parse_fit_params_compute_mib(text):
     return float(best) if best is not None else None
 
 
-def find_fit_params(llama_server=None):
-    """Path of llama-fit-params next to llama-server or on PATH (MOE_CACHE_FIT_PARAMS overrides); None when there is none."""
+def fit_params_off():
+    """MOE_CACHE_FIT_PARAMS=off (or 0 / no): the planner does not measure the compute buffer and plans with the table (LAUNCHER-1152)."""
+    return (os.environ.get("MOE_CACHE_FIT_PARAMS") or "").strip().lower() in ("off", "0", "no", "false")
+
+
+def find_fit_params(llama_server=None, use_path=True):
+    """Path of llama-fit-params next to llama-server or on PATH (MOE_CACHE_FIT_PARAMS overrides); None when there is none or MOE_CACHE_FIT_PARAMS=off.
+    use_path=False (the default plan, LAUNCHER-1152): only the tool of the same build as the llama-server that will run (its folder) or the one MOE_CACHE_FIT_PARAMS
+    names; a llama-fit-params of another build on PATH could size the graph differently."""
     import shutil
+    if fit_params_off():
+        return None
     cands = [os.environ.get("MOE_CACHE_FIT_PARAMS")]
     if llama_server:
         d = os.path.dirname(os.path.abspath(llama_server))
         cands += [os.path.join(d, "llama-fit-params"), os.path.join(d, "llama-fit-params.exe")]
-    cands.append(shutil.which("llama-fit-params"))
+    if use_path:
+        cands.append(shutil.which("llama-fit-params"))
     return next((c for c in cands if c and os.path.isfile(c)), None)
 
 
@@ -960,13 +970,30 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     rule = plan_rule_on()
     if rule and fit_params:
         prefetch_fit_params(fit_params, path, ctx, [u for u in PLAN_UBS if u <= max(ub or 0, 2048)] + ([ub] if ub else []), kv_q8)
+    # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
+    keep_1024 = ctx > 32768 and "gpt-oss" in (sampling_meta(path).get("arch") or "")
+    try_4096 = bool(long_prompt) and not ub and not want_cache and not keep_1024
+    ladder = (ub,) if ub else (((4096,) if try_4096 else ()) + ((1024, 512) if keep_1024 else (2048, 1024, 512)))
+    # LAUNCHER-1152: the compute buffer of THIS model, context, -ub and KV type on THIS GPU, from llama.cpp's own llama-fit-params (same code as the server's
+    # sched_reserve, no weights loaded; ~3 s a figure, remembered on disk). The table below was measured on one model (Flash-Next) on our PC: its -ub 4096 figure
+    # (4660 MiB) put 23 of the 35B's 40 expert layers on the CPU where its server needs 864 MiB (PC 2026-11-13: 53.1 tok/s against 71.2 at 12, single runs).
+    # The table still decides which micro-batches are candidates; without a measurement its number is used (errs high: more experts on the CPU, never a spill).
+    measure = bool(fit_params) and not rule
+    if measure:
+        prefetch_fit_params(fit_params, path, ctx, list(ladder) + ([1024] if want_cache else []), kv_q8)
+    src = {}
 
     def cbm(u, guess):
         if rule:              # MOE_CACHE_PLAN_RULE=1: the table only says whether u is a candidate (as before); the number is the rule's
             if not guess and compute_buffer_mib(ctx, u) is None:
                 return None
             return rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params)[0]
-        return compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
+        t = compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
+        if t is None:
+            return None
+        m = fit_params_buffer_mib(fit_params, path, ctx, u, kv_q8) if measure else None
+        src[u] = "llama-fit-params" if m else "table"
+        return m if m else t
     # long prompts run their expert block on the GPU and upload one whole layer of experts for it: the micro-batch, the cache and static layers must
     # all leave that room (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 18-24 tok/s instead
     # of 50-60). The block needs 923 MiB for a 704 MiB layer at -ub 1024 (weights plus the batch's intermediate results), so 1.35x plus headroom
@@ -979,10 +1006,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
     best = None
     fixed_ub = ub
-    # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
-    keep_1024 = ctx > 32768 and "gpt-oss" in (sampling_meta(path).get("arch") or "")
-    try_4096 = bool(long_prompt) and not fixed_ub and not want_cache and not keep_1024
-    for ub in ((fixed_ub,) if fixed_ub else (((4096,) if try_4096 else ()) + ((1024, 512) if keep_1024 else (2048, 1024, 512)))):
+    for ub in ladder:
         buf = cbm(ub, bool(fixed_ub) or ub == 4096)
         if buf is None:
             continue
@@ -1019,11 +1043,12 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         why.append(f"{where} ({int(block // 1048576)} MiB kept free for the long-prompt GPU block"
                    + (")" if not want_cache else "; a cache would be under 1.5 GiB or under 4 % of the experts)"))
     why.append(f"micro-batch {ub} (long-prompt mode: the memory plan leaves room for it)" if ub == 4096 else f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
+    compute = cbm(ub, True) if fixed_ub or not best or ub == 4096 else cbm(ub, False)
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
-            "compute_mib": cbm(ub, True) if fixed_ub or not best or ub == 4096 else cbm(ub, False), "why": why}
+            "compute_mib": compute, "compute_source": "rule" if rule else src.get(ub, "table"), "why": why}
 
 
-def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
+def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072, fit_params=None):
     """Exact mode keeps llama-server's f16 KV cache (identity with stock). At long contexts (>= 128k) q8_0 KV, which --fast uses, can free enough
     VRAM for more expert layers on the GPU: one plain line saying so when it gains 2+ layers or lets the context fit at all; None otherwise
     (idea N28; the owner keeps exact mode exact, so this only advises)."""
@@ -1033,7 +1058,7 @@ def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return None
-    kw = {"reserve_gb": reserve_gb, "want_cache": False}
+    kw = {"reserve_gb": reserve_gb, "want_cache": False, "fit_params": fit_params}
     if ub:
         kw["ub"] = ub
     a, b = tune(path, ctx, free=free, kv_q8=False, **kw), tune(path, ctx, free=free, kv_q8=True, **kw)
