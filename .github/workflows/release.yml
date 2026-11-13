@@ -81,6 +81,10 @@ jobs:
             grep -q "MOE_CACHE_REF:-${GITHUB_REF_NAME}}" install.sh || { echo "install.sh MOE_CACHE_REF does not match ${GITHUB_REF_NAME}: bump it with the version"; exit 1; }
           fi
 
+      - name: No release-night blank left in the release text (tags only; a manual dry run reports it but is not blocked)
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then python3 tools/rn_blanks_check.py; else python3 tools/rn_blanks_check.py || echo "(manual run: not blocked)"; fi
+
       - name: Published numbers have current claims (tags only; a waiver file is the only way past)
         if: github.ref_type == 'tag'
         run: |

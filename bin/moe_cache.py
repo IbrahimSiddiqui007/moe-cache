@@ -3119,9 +3119,26 @@ def real_room_stage(a, g, machine):
         pass
 
 
+def gpu_memory_line(a, vram_user, machine):
+    """LAUNCHER-1153 (release critic #5): ONE plain line saying which GPU memory figure the plan uses when no other line already said it (the Windows AMD / Intel path says it with llama-server's own figure):
+    the user's --vram, nvidia-smi or the amdgpu sysfs (Linux and NVIDIA), or none (no GPU memory is read, the plan is made without one). Never raises."""
+    try:
+        if vram_user:
+            say(f"moe-cache: GPU memory: planning with {float(vram_user):.1f} GiB, as you gave with --vram")
+            return
+        f = machine.free_vram_bytes()
+        if f:
+            say(f"moe-cache: GPU memory: planning with {f / 2**30:.1f} GiB free (read now from nvidia-smi or the AMD GPU's sysfs; --vram GiB sets it by hand)")
+        else:
+            say("moe-cache: GPU memory: no figure could be read (no NVIDIA GPU through nvidia-smi, no AMD GPU through sysfs): planning without GPU memory; --vram GiB sets it by hand")
+    except Exception:
+        pass
+
+
 def gpu_stage(a, ls, win, machine):
     """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
     vram_user = a.vram
+    said_gpu = False
     listing = machine.list_devices(ls) if win else None
     gpu = machine.pick_gpu_full(listing) if win else None
     if win and not a.vram and not machine.nvidia_reports():
@@ -3133,13 +3150,17 @@ def gpu_stage(a, ls, win, machine):
             # an integrated GPU (the Claw's Arc 140V, Ryzen APUs): Vulkan's "free" is shared system RAM, which the cache also counts;
             # plan with the dedicated carve-out only, as Linux does (planner/plan.py amd_free)
             say(f"moe-cache: GPU {g[1]} ({g[0]}) is integrated ({ded / 2**20:.0f} MiB of its own memory): planning without dedicated VRAM")
+            said_gpu = True
             g = None
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
+            said_gpu = True
             real_room_stage(a, g, machine)
             # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
             # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
+    if not said_gpu and not getattr(a, "cpu_only", False):
+        gpu_memory_line(a, vram_user, machine)         # LAUNCHER-1153: which GPU memory figure the plan uses, on NVIDIA and Linux too
     return vram_user, listing, gpu
 
 
@@ -3222,7 +3243,7 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
     r = pair[min(i, len(pair) - 1)] if pair else None
     if not r or not r["fits"]:
         return None
-    return "the model fits fully on the GPU: --load-mode none (no memory-mapped copy of the file in RAM while loading; --exact or --load-mode after -- keeps llama.cpp's default)"
+    return "the model fits fully on the GPU: --load-mode none (no memory-mapped copy of the file in RAM while loading; seen on one PC run, no published record yet; --exact or --load-mode after -- keeps llama.cpp's default)"
 
 
 LOAD_MODE_RAM_MARGIN_GIB = 4.0
@@ -3518,10 +3539,10 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
                 over8 = pair[1]["over_gib"]
                 if mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
-                    quality = "approximate: same top token in 94.6 % of positions against f16 (measured on Qwen3.8-27B; q8_0/q8_0: 96.5 %)"
+                    quality = "approximate: same top token in 94.6 % of positions against f16 (q8_0/q8_0: 96.5 %; measured on one laptop run, 27B, no published record yet)"
                 else:
                     a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
-                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173 (measured on Qwen3.8-27B; K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
+                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173; measured on one laptop run, 27B, no published record yet (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
                 saves = pair[1]["kv_gib"] - got["kv_gib"]
                 say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
                     f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else

@@ -78,14 +78,14 @@ with tempfile.TemporaryDirectory() as tmp:
     between8 = run((q8_need + mx_need) / 2)
     check("-ctk q8_0 -ctv q4_0" in cmd(between8) and "-c 8192" in cmd(between8), "dry run, q8_0/q8_0 would spill but K q8_0 / V q4_0 fits: that mix, the context stays")
     t8 = out(between8)
-    check("KV K q8_0 / V q4_0: q8_0 / q8_0 would spill by" in t8 and "this step saves" in t8 and "does not spill" in t8 and "94.6 %" in t8 and "measured on Qwen3.8-27B" in t8 and "--exact keeps f16" in t8, "...and the plan line names the step, the spill and the GiB it saves")
+    check("KV K q8_0 / V q4_0: q8_0 / q8_0 would spill by" in t8 and "this step saves" in t8 and "does not spill" in t8 and "94.6 %" in t8 and "measured on one laptop run, 27B" in t8 and "--exact keeps f16" in t8, "...and the plan line names the step, the spill and the GiB it saves")
     import re as _re
     sv = float(_re.search(r"this step saves ([0-9.]+) GiB", t8).group(1))
     check(abs(sv - (kv8 - kvx) / GIB) < 0.06, f"...the GiB saved is the KV difference to q8_0/q8_0 ({sv:.1f} vs {(kv8 - kvx) / GIB:.2f})")
     between4 = run((mx_need + q4_need) / 2)
     check("-ctk q4_0 -ctv q4_0" in cmd(between4) and "-ctk q8_0 -ctv q4_0" not in cmd(between4) and "-c 8192" in cmd(between4), "dry run, the mix would spill too but q4_0/q4_0 fits: q4_0/q4_0, the context stays")
     t4 = out(between4)
-    check("KV q4_0 / q4_0: q8_0 / q8_0 would spill by" in t4 and "does not spill" in t4 and "92.9 %" in t4 and "measured on Qwen3.8-27B" in t4 and "K q8_0 / V q4_0 would still spill by" in t4, "...and the plan line says why, by how much, and that the mix would still spill")
+    check("KV q4_0 / q4_0: q8_0 / q8_0 would spill by" in t4 and "does not spill" in t4 and "92.9 %" in t4 and "measured on one laptop run, 27B" in t4 and "K q8_0 / V q4_0 would still spill by" in t4, "...and the plan line says why, by how much, and that the mix would still spill")
     check("runs from system RAM" not in t4 and "all on GPU" not in t4, "...with no 'runs from RAM' line")
     still = run(q4_need / 2)
     check("-ctk q4_0 -ctv q4_0" in cmd(still) and "-c 8192" in cmd(still) and "is still" in out(still) and "system RAM" in out(still) and "all on GPU" not in out(still),
