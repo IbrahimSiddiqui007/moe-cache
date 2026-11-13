@@ -2978,6 +2978,14 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             fp = machine.fit_params(ls)
             if fp:
                 kw["fit_params"] = fp            # LAUNCHER-1152: the compute buffer measured on this machine (the rule below may replace it with its own lookup)
+                import gguf_plan
+                dev = arg_after(extra, "--device", "-dev")
+                gname = gpu[1] if gpu and len(gpu) > 1 and isinstance(gpu[1], str) else None      # the card's name (Windows: --list-devices) names it in the cache
+                gguf_plan.set_fit_device(fp, dev if dev and "," not in dev else None, gname)
+                probe_ub = int(ub_asked) if (ub_asked or "").isdigit() else 2048
+                if not getattr(a, "lp_retune", False) and not gguf_plan.fit_disk_known(fp, model, ctx, probe_ub, kv_q8):
+                    say("moe-cache: measuring the GPU compute buffer for this model and context with llama-fit-params (a few seconds"
+                        + ("; remembered for the next start)" if gguf_plan.fit_can_remember(fp) else ")"))
             from gguf_plan import plan_rule_on
             if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
                 from gguf_plan import find_fit_params, plan_table, plan_table_lines
@@ -3114,10 +3122,11 @@ def compute_buffer_line(tuned, fit_params):
     mib, ub, src = (tuned or {}).get("compute_mib"), (tuned or {}).get("ub"), (tuned or {}).get("compute_source")
     if not mib or src == "rule":
         return None
+    import gguf_plan
     if src == "llama-fit-params":
         return (f"moe-cache: GPU compute buffer: {mib:.0f} MiB at -ub {ub}, measured for this model, context and KV type on this GPU by llama.cpp's llama-fit-params "
-                "(remembered for the next start; MOE_CACHE_FIT_PARAMS=off uses the table instead)")
-    import gguf_plan
+                + ("(remembered for the next start" if gguf_plan.fit_can_remember(fit_params) else "(measured again at each start: this GPU could not be identified")
+                + "; MOE_CACHE_FIT_PARAMS=off uses the table instead)")
     why = ("MOE_CACHE_FIT_PARAMS=off" if gguf_plan.fit_params_off() else
            "llama-fit-params gave no figure" if fit_params else "no llama-fit-params next to llama-server")
     return (f"moe-cache: GPU compute buffer: {mib:.0f} MiB at -ub {ub}, an estimate (not measured on this machine: {why}); the table was measured on one other model "

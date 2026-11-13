@@ -807,13 +807,31 @@ def _file_id(p):
     return [os.path.basename(p), st.st_size, st.st_mtime_ns]
 
 
+_FIT_DEVICE = {}       # LAUNCHER-1152: tool path -> (llama.cpp device id the server will use, e.g. "Vulkan1", or None; that device's name from --list-devices, or None)
+
+
+def set_fit_device(fit_params, device=None, name=None):
+    """LAUNCHER-1152: measure on the device llama-server will run on (the launcher passes --device Vulkan1 when it leaves an integrated GPU out; without it
+    llama-fit-params splits the layers over every GPU and its per-device figures are not this card's). The name identifies the GPU in the disk cache where
+    nvidia-smi and /sys/class/drm do not answer (Windows AMD / Intel)."""
+    if fit_params:
+        _FIT_DEVICE[fit_params] = (device or None, (name or "").strip() or None)
+
+
+def fit_can_remember(fit_params):
+    """True when a measured figure can be stored on disk for this tool (the GPU is identified: nvidia-smi, /sys, or the card's name from the launcher)."""
+    return bool(gpu_identity() or _FIT_DEVICE.get(fit_params, (None, None))[1])
+
+
 def fit_disk_key(fit_params, path, ctx, ub, kv_q8):
-    """The key of a measured buffer: the tool, the model files, context, -ub, the KV type and the GPU; None when any part is unknown (nothing cached)."""
+    """The key of a measured buffer: the tool, the model files, context, -ub, the KV type, the GPU and the device; None when any part is unknown (nothing cached)."""
     try:
-        gpu = gpu_identity()
+        dev, name = _FIT_DEVICE.get(fit_params, (None, None))
+        gpu = gpu_identity() or (f"device:{name}" if name else "")
         if not gpu:
             return None
-        return json.dumps([_file_id(os.path.realpath(fit_params)), [_file_id(x) for x in shards(path)], ctx, ub, bool(kv_q8), gpu])
+        k = [_file_id(os.path.realpath(fit_params)), [_file_id(x) for x in shards(path)], ctx, ub, bool(kv_q8), gpu]
+        return json.dumps(k + [dev] if dev else k)
     except OSError:
         return None
 
@@ -844,7 +862,15 @@ def _fit_disk_store(key, v):
             pass
 
 
-def fit_params_buffer_mib(fit_params, path, ctx, ub, kv_q8=False, timeout=90):
+def fit_disk_known(fit_params, path, ctx, ub, kv_q8=False):
+    """True when this figure is already in memory or on disk (no tool run needed)."""
+    if (fit_params, path, ctx, ub, bool(kv_q8)) in _FIT_CACHE:
+        return True
+    k = fit_disk_key(fit_params, path, ctx, ub, kv_q8)
+    return bool(k) and k in _fit_disk_read()
+
+
+def fit_params_buffer_mib(fit_params, path, ctx, ub, kv_q8=False, timeout=45):
     """Compute buffer (MiB) llama.cpp itself would reserve for this model, context and -ub (-b raised to match, or the tool clamps -ub to 2048); None on any failure.
     Remembered for the process and on disk (PREFILL-180, ~3 s a measurement): the same model, context, -ub, KV type, GPU and tool files give the same figure."""
     key = (fit_params, path, ctx, ub, bool(kv_q8))
@@ -861,6 +887,9 @@ def fit_params_buffer_mib(fit_params, path, ctx, ub, kv_q8=False, timeout=90):
             cmd = [fit_params, "-m", path, "-c", str(ctx), "-ub", str(ub), "-b", str(max(ub, 2048)), "-ngl", "99", "--n-cpu-moe", "999", "--fit-print", "on"]
             if kv_q8:
                 cmd += ["-ctk", "q8_0", "-ctv", "q8_0"]
+            dev = _FIT_DEVICE.get(fit_params, (None, None))[0]
+            if dev:
+                cmd += ["--device", dev]
             v = parse_fit_params_compute_mib(subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout).stdout)
         except Exception:
             pass

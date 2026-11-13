@@ -134,5 +134,40 @@ os.environ.pop("MOE_CACHE_FIT_PARAMS")
 check(mc.compute_buffer_line(r, tool) is None and mc.compute_buffer_line(None, None) is None, "no line under the plan rule (it prints its own) or without a tuner answer")
 check(mc.plan_fit_params(ls) == tool and mc.plan_fit_params(os.path.join(lone, "llama-server")) is None, "Machine.fit_params: the tool next to llama-server, else None")
 
+
+# 10) critic fixes: the device llama-server runs on is passed; on Windows AMD / Intel (no nvidia-smi, no /sys) the card's name keys the disk cache
+gp.set_fit_device(tool, "Vulkan1", "AMD Radeon RX 9070 XT")
+gp._FIT_CACHE.clear(); calls.clear()
+gp.fit_params_buffer_mib(tool, m35, 32768, 4096, True)
+check(calls and calls[-1][-2:] == ["--device", "Vulkan1"], "the server's --device is passed to llama-fit-params")
+gp.gpu_identity = lambda: ""
+os.environ["MOE_CACHE_FIT_CACHE"] = os.path.join(TMP, "cache", "fit_win.json")
+gp._FIT_CACHE.clear(); calls.clear()
+gp.fit_params_buffer_mib(tool, m35, 32768, 4096, True); gp._FIT_CACHE.clear()
+check(gp.fit_disk_known(tool, m35, 32768, 4096, True) and gp.fit_params_buffer_mib(tool, m35, 32768, 4096, True) == 864 and len(calls) == 1,
+      "no nvidia-smi or /sys (Windows AMD): the card's name keys the disk cache, a second start runs no tool")
+gp.set_fit_device(tool, None, None); gp._FIT_CACHE.clear()
+check(not gp.fit_disk_known(tool, m35, 32768, 4096, True) and gp.fit_disk_key(tool, m35, 32768, 4096, True) is None, "no GPU identity at all: nothing is cached, nothing claimed")
+gp.set_fit_device(tool, "Vulkan1", "AMD Radeon RX 9070 XT")
+
+# 11) the launcher's tuner stage hands the tool, the device and the card to tune() and prints the lines (wiring, not the helpers alone)
+seen = {}
+def fake_tune(model, ctx, **kw):
+    seen.update(kw)
+    return {"n_cpu_moe": 9, "ub": 4096, "gpu_cache_mib": 0, "kv_mib": 591, "compute_mib": 864.0, "compute_source": "llama-fit-params", "why": []}
+gp.tune = fake_tune
+said = []
+mc.say = lambda t, err=False: said.append(t)
+class M:
+    def fit_params(self, ls_): return tool
+    def free_vram_bytes(self): return int(ROOM)
+    def gpu_total_free_bytes(self): return None
+a = types.SimpleNamespace(ub="auto", vram=None, gpu_margin=0.5, leave_room=False, dry_run=False, long_prompt=True, lp_kv=True, lp_retune=False, room_used_gib=None)
+os.environ["MOE_CACHE_FIT_CACHE"] = os.path.join(TMP, "cache", "fit_fresh.json")
+tuned, _, _ = mc.tune_launch(a, ["--device", "Vulkan1"], ls, os.path.join(TMP, "unseen.gguf"), 32768, M(), ("Vulkan1", "AMD Radeon RX 9070 XT", 15000, 16000), "off", True, 0)
+check(seen.get("fit_params") == tool and gp._FIT_DEVICE.get(tool) == ("Vulkan1", "AMD Radeon RX 9070 XT"), "tune_launch passes the tool, the device and the card's name")
+check(any("measuring the GPU compute buffer" in t for t in said) and any("864 MiB at -ub 4096, measured" in t for t in said),
+      f"tune_launch says it measures (nothing remembered yet) and which figure it used ({len(said)} lines)")
+
 print(f"compute_buffer_test: {len(fails)} failed")
 sys.exit(1 if fails else 0)
