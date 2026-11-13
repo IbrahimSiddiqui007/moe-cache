@@ -52,7 +52,7 @@ def facts_from_model(path):
     for p in gp.shards(path):
         for name, size in gp.read_tensors(p):
             total += size
-            emb += size if name == "token_embd.weight" else 0
+            emb += size if name in ("token_embd.weight", "per_layer_token_embd.weight") else 0      # the n-gram lookup table (Flash-Next: 28.8 GB in shard 2) is read from the file, never put on the GPU (gguf_plan.model_layout)
             m = re.match(r"blk\.(\d+)\.ffn_(up|down|gate|gate_up)\.weight$", name)
             if m:
                 ffn[int(m.group(1))] = ffn.get(int(m.group(1)), 0) + size

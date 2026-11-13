@@ -414,5 +414,18 @@ check(rn.poll() is True and len(said) == 3, "ram note: recovered (1 GB over the 
 rn2 = cg.RamNote(lambda: 1 / 0, said.append)
 check(rn2.poll() is False and cg.RamNote(lambda: None, said.append).poll() is False, "ram note: a failing or empty probe says nothing and never raises")
 check(not hasattr(rn, "stop_fn") and not hasattr(rn, "stop"), "ram note: read-only: the note has no stop function, it only says a line")
+# Flash-Next (2 shards): shard 2 is ONE tensor, the 28.8 GB n-gram table; it never goes on the GPU, so it must not count as GPU weights (PC refusal 2026-11-13: 34.8 GB "GPU buffers")
+import gguf_plan as _gp
+_fake = {"/m/fn-00001-of-00002.gguf": [("token_embd.weight", int(0.27e9))] + [(f"blk.{l}.ffn_{k}_exps.weight", int(0.49e9)) for l in range(48) for k in ("up", "down", "gate")] + [("blk.0.attn_q.weight", int(4e9))],
+         "/m/fn-00002-of-00002.gguf": [("per_layer_token_embd.weight", int(28.8e9))]}
+_save = (_gp.shards, _gp.read_tensors)
+_gp.shards = lambda path: sorted(_fake)
+_gp.read_tensors = lambda path: list(_fake[path])
+try:
+    ft = cg.facts_from_model("/m/fn-00001-of-00002.gguf")
+finally:
+    _gp.shards, _gp.read_tensors = _save
+ee = cg.estimate(ft, dict(ctx=32768, kv_q8=True, ub=4096, n_cpu_moe=44, cache_ram_mib=2048, fit=False))
+check(ee["gpu_total"] < 20 * GB, f"two-shard model with a 28.8 GB n-gram table: GPU buffers {ee['gpu_total'] / GB:.1f} GB with 44 of 48 layers' experts on the CPU, not 34.8 (the table is not GPU weights)")
 print("FAIL" if fails else "all ok")
 sys.exit(1 if fails else 0)
