@@ -1,7 +1,9 @@
 # release-prep 2026-11-14 (worker, branch claude/pretag-038, worktree /home/ibrum/Dev/StrataTest/wt-pretag)
 
 ## Part 1 (owner)
-Branch head 3d782bf (pushed). Done: archive tag, GUI removals, release-note blanks, GUI-1155 picker fix. CI (quick 43617793235, windows 43617796523, dispatched by hand on 3d782bf) running; critic review requested (local_082f5d5a-...). Not done: critic fixes, tools/set_version.sh 0.3.8, final CI. No tag, no release.yml, no merge (owner).
+Branch head 5142625 (pushed; version 0.3.8 set). quick 43620465682 + windows 43620468957 GREEN on it. Critic (notes/critic_pretag038_3b7d2d8.md) fixes applied: Windows kit icon moved to packaging/moe-cache.ico, manifests reworded, +77 % percentages dropped. Still open: findings 3 and 5 (owner). Older status below is superseded.
+
+OLD: Branch head 3d782bf. Done: archive tag, GUI removals, release-note blanks, GUI-1155 picker fix. CI (quick 43617793235, windows 43617796523, dispatched by hand on 3d782bf) running; critic review requested (local_082f5d5a-...). Not done: critic fixes, tools/set_version.sh 0.3.8, final CI. No tag, no release.yml, no merge (owner).
 
 ## Part 2 (detail)
 | Step | State |
