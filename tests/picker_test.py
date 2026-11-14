@@ -471,6 +471,18 @@ check(wt.win_tool("tasklist", windows=True) == os.path.join(_root, "System32", "
 check(wt.win_tool("powershell", windows=True) == os.path.join(_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "win_tool: powershell -> WindowsPowerShell\\v1.0")
 check(wt.win_tool("nosuchtool", windows=True) == "nosuchtool", "win_tool: a tool that is not in System32 keeps its bare name")
 check(wt.win_tool("taskkill", windows=False) == "taskkill" and wt.win_tool("powershell", windows=False) == "powershell", "win_tool: elsewhere the bare name")
+
+# ---- GUI-1155: an 8 GB machine is told plainly that nothing fits; no model, no speeds, no download; a 16 GB PC is not shown as "our PC" speeds ----
+for ram, vr in ((8, 0), (8, 4)):
+    for use in ("agents", "chat", "docs"):
+        r = pk.recommend(machine(ram, vr), use)
+        check(r.get("nothing_fits") is True and "Nothing fits" in r["why"][0] and r["download"] is None and r["alternatives"] == [] and not r["key"] and r["untested"],
+              f"{ram} GB RAM + {vr} GB VRAM, {use}: nothing fits well, no recommendation, no speed, no download")
+        check("Nothing fits" in "\n".join(pk.rec_lines(r)) and "tok/s" not in "\n".join(pk.rec_lines(r)), f"{ram} GB, {use}: the CLI prints the plain message only")
+check(pk.recommend(machine(16, 6), "chat").get("nothing_fits") is False, "16 GB RAM + 6 GB VRAM still gets a recommendation")
+check(pk.recommend(machine(8, 0), "chat", "qwen3.6-35b").get("nothing_fits") is False, "8 GB: a model the user chose is only warned about, never refused")
+check("our test PC" in pk.recommend(machine(32, 16), "agents")["measured"], "the PC's speeds are labelled 'our test PC'")
+
 if _sr is None: os.environ.pop("SystemRoot", None)
 else: os.environ["SystemRoot"] = _sr
 

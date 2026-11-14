@@ -22,8 +22,9 @@ USES = {"agents": "agents and coding (Hermes, OpenCode) at 64k-256k context", "c
 USE_SHORT = {"agents": "coding agents", "chat": "chat", "docs": "long documents"}      # for the fit reasons
 BOLT_BUILD = 11966          # Nemotron needs llama.cpp b11966 or newer (tokenizer fix #30960, RESULTS 65)
 DSV4_BUILD = 11870          # DeepSeek-V4.1-Flash needs llama.cpp b11870 or newer (the release of 25 Oct with "model: DSV4.1 flash (#31086)"; the card says so)
-PC = "32 GB RAM + 16 GB GPU (Windows desktop, RESULTS 59-67)"
-LAPTOP = "31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop, RESULTS 44-45)"
+PC = "our test PC, 32 GB RAM + 16 GB GPU (Windows desktop, RESULTS 59-67; not your speed)"
+LAPTOP = "our test laptop, 31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop, RESULTS 44-45; not your speed)"
+NOTHING_FITS_BELOW_CAP_GB = 11     # GUI-1155: the smallest server memory any candidate was ever run with (12 GB RAM laptop, RESULTS 53): below it nothing is recommended
 
 # The candidates are in models.json (bin/moe_cache_catalogue.py); MODELS is the picker's view of them: name, size = bytes of all shards, pattern finds a
 # copy in the model folders, repo + include = where it comes from (+ sha256, min_free, link, ollama). CAT has the whole entries (fit block, measured numbers).
@@ -521,6 +522,7 @@ def recommend(spec, use, model=None):
     if not chosen:      # no candidate that suits the machine is here or fits the disk: still the one that suits the machine (warn, never block), said plainly below
         chosen = next(r for r in R if r[1])
     k, _, ctx, measured, why = chosen
+    nothing = bool(not model and cap < NOTHING_FITS_BELOW_CAP_GB and not (k in local))     # GUI-1155: the last rule always matched, so an 8 GB machine was told to use a 22 GB model
     sib = SIBLINGS.get(k)
     if sib and not model and k not in local and sib in local and drive_ok(sib):     # the other Flash-Next file is already here: no 66-76 GB download
         why = f"{MODELS[sib]['name']} is already on this machine (same model, {SIBLINGS_WHY[sib]}); otherwise: {why}"
@@ -594,10 +596,14 @@ def recommend(spec, use, model=None):
                      "why": f"the default Flash-Next file (3-bit, 193/202 tasks), moe-cache; long context measured with Q2_0 on {PC}: "
                             "20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (2026-10-28); Q2_0 is the faster option (" + Q2_FAST + ")",
                      "fit": fit(spec, "flash-next-iq3_xxs", 65536, use, local)})
+    if nothing:
+        msg = (f"Nothing fits this machine well: the server may use {cap:.0f} GB of RAM and {vram:.0f} GiB of VRAM, and the smallest model we ever ran ({m['name']}, "
+               f"{m['size'] / 1e9:.0f} GB) was tried with 12 GB of RAM or more. No recommendation. You can still choose a model yourself (--model), but we have no speed to quote for it.")
+        warn.insert(0, msg); why = msg; measured = None; alts = []
     out = {"id": k, "name": m["name"], "use": use, "size": size_of(k, local), "ctx": ctx, "args": args, "engine": engine,
            "measured": measured or "untested on this class of machine", "untested": not measured, "key": key_numbers(measured), "why": [why], "warnings": warn,
            "alternatives": alts[:2], "fit": fit(spec, k, ctx, use, local), "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,
-           "download": None if (k in local or not fits_disk) else download_cmd(k)}
+           "download": None if (k in local or not fits_disk or nothing) else download_cmd(k), "nothing_fits": nothing}
     return out
 
 
@@ -784,6 +790,8 @@ def spec_lines(spec):
 
 
 def rec_lines(r):
+    if r.get("nothing_fits"):          # GUI-1155: no model, no speed, no download
+        return [f"{USES[r['use']]}: {r['why'][0]}"]
     out = [f"{USES[r['use']]}: {r['name']}  ({r['size'] / 1e9:.1f} GB, {r['engine']})",
            f"  context {r['ctx']}, options: {' '.join(r['args'])}",
            f"  memory: model {r['memory']['model'] / 1e9:.1f} GB + KV cache {r['memory']['kv'] / 1e9:.1f} GB ({r['memory']['kv_how']}) = {r['memory']['total'] / 1e9:.1f} GB; "

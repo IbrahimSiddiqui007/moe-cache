@@ -338,6 +338,9 @@ def launch(argv, deps=None):
             recs, whys = [deps.recommend(spec, use, a.model)], [None]
         else:
             recs, whys = candidates(deps, spec, use, a.models_dir)
+            if recs[0].get("nothing_fits"):      # GUI-1155: say so plainly, suggest nothing
+                say("     " + recs[0]["why"][0])
+                return 1
         for i, r in enumerate(recs, 1):
             for line in candidate_lines(i, r, i == 1 and not a.model, whys[i - 1]):
                 say(line)

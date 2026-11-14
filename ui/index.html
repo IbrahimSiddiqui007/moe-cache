@@ -812,14 +812,14 @@ async function loadPick() {
       row("Disk", `${gbs(m.disk_free)} free <span class="small">· ${esc(m.disk_kind || "SSD or HDD unknown")}</span>`) +
       row("CPU", `AVX2 ${yn(m.avx2)} · AVX-512 ${yn(m.avx512)}`) + row("llama.cpp", m.llama_build ? "b" + esc(m.llama_build) : "not found") +
       row("Models here", esc(local)) + `</table>` +
-      `<div class="rec"><div class="name">${esc(r.name)}</div><div class="small">${fmtGB(r.size)} · context ${Math.round(r.ctx / 1024)}k · ${esc(r.engine)}</div>` +
-      `<div class="nums">${key || `<span class="small">${esc(r.measured)}</span>`}</div><div class="why">${r.why.map(esc).join(" ")}</div></div>` +
+      (r.nothing_fits ? `<div class="rec"><div class="name">Nothing fits this machine well</div><div class="why">${r.why.map(esc).join(" ")}</div></div>` : `<div class="rec"><div class="name">${esc(r.name)}</div><div class="small">${fmtGB(r.size)} · context ${Math.round(r.ctx / 1024)}k · ${esc(r.engine)}</div>` +
+      `<div class="nums">${key || `<span class="small">${esc(r.measured)}</span>`}</div><div class="why">${r.why.map(esc).join(" ")}</div></div>`) +
       (r.alternatives.length ? `<h5 style="margin-top:12px">Other options</h5><ul class="alts">${r.alternatives.map(a => `<li><b>${esc(a.name)}</b>: ${esc(a.why)}</li>`).join("")}</ul>` : "") +
-      (noDisk ? `<div class="get pwarn">Not on this machine, and ${fmtGB(r.disk_missing)} of disk is missing: no download is offered.</div>`
+      (r.nothing_fits ? "" : noDisk ? `<div class="get pwarn">Not on this machine, and ${fmtGB(r.disk_missing)} of disk is missing: no download is offered.</div>`
         : !r.local ? `<div class="get">Not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code>. Download it yourself, then add its folder above and press Use it again:${(d.steps || [d.command]).map(x => `<div><code>${esc(x)}</code></div>`).join("")}${d.note ? `<div class="small">${esc(d.note)}</div>` : ""}` +
           (d.ollama ? `<div>Ollama: <code>${esc(d.ollama)}</code></div>` : "") + `</div>` : "") +
       `<details><summary>Memory, measurements and notes${r.warnings.length ? ` (${r.warnings.length} ${r.warnings.length == 1 ? "warning" : "warnings"})` : ""}</summary><div>${notes}</div></details>`;
-    $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice"; $("pickapply").hidden = !r.local && r.fits_disk === false;
+    $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice"; $("pickapply").hidden = (!r.local && r.fits_disk === false) || !!r.nothing_fits;
   } catch (e) { $("pickres").textContent = "could not read this machine: " + e.message; }
 }
 async function applyPick() {
