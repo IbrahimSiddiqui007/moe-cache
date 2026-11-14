@@ -1,6 +1,6 @@
 {
     "version": "@VERSION@",
-    "description": "Plugin for llama.cpp's llama-server that runs MoE models bigger than your RAM (experts cached in RAM, the rest read from the SSD; output identical to stock). Experimental on Windows.",
+    "description": "Plugin for llama.cpp's llama-server that runs MoE models bigger than your RAM (experts cached in RAM, the rest read from the SSD; `--exact` gives plain llama.cpp's answers). Experimental on Windows.",
     "homepage": "https://github.com/IbrahimSiddiqui007/moe-cache",
     "license": "MIT",
     "notes": [

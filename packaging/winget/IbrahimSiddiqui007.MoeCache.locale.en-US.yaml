@@ -10,10 +10,10 @@ PackageName: moe-cache
 PackageUrl: https://github.com/IbrahimSiddiqui007/moe-cache
 License: MIT
 LicenseUrl: https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/LICENSE
-ShortDescription: Plugin for llama.cpp's llama-server that runs MoE models bigger than your RAM, with output identical to stock.
+ShortDescription: Plugin for llama.cpp's llama-server that runs MoE models bigger than your RAM; `--exact` gives plain llama.cpp's answers.
 Description: |-
   moe-cache keeps the experts a MoE model uses most in RAM and reads the rest from the SSD, so models bigger than your RAM run
-  faster than stock llama.cpp with the same output. The kit has the plugin DLLs, the Python launcher, a local control page and
+  on a normal PC (no speed claim against plain llama.cpp in this release). The kit has the plugin DLLs, the Python launcher, a local control page and
   coding-agent support (OpenCode, Hermes Agent). Needs llama.cpp's official Windows release (Vulkan) and Python 3.8 or newer.
   Experimental on Windows.
 Moniker: moe-cache
