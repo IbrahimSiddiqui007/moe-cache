@@ -11,7 +11,7 @@ LINK = re.compile(r'\]\(([^)\s]+)(?:\s+"[^"]*")?\)|href="([^"]+)"')
 
 def md_files():
     out = subprocess.run(["git", "ls-files", "*.md"], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")
-    return [f for f in out if f and not f.startswith(("third_party/", "desktop/src-tauri/", "benchmarks/runs/"))]
+    return [f for f in out if f and not f.startswith(("third_party/", "benchmarks/runs/"))]
 
 
 def broken(path):

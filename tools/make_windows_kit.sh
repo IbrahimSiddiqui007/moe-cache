@@ -23,8 +23,8 @@ N=moe-cache-v$V-windows-x64; K="$X/kit/$N"; mkdir -p "$K"
 cp "$X/build/win-api2/ggml-moe-cache.dll" "$K/ggml-moe-cache-api2.dll"
 cp "$X/build/win-api3/ggml-moe-cache.dll" "$K/ggml-moe-cache-api3.dll"
 # moe-cache.exe: runs moe-cache.bat from its own real folder (winget's portable installs need an .exe and start it through a symlink)
-# the app icon (concept D, desktop/src-tauri/icons/icon.ico) is the exe's icon (windres resource) and sits beside it as moe-cache.ico for the Start menu shortcut (moe-cache.bat --shortcut)
-cp "$X/desktop/src-tauri/icons/icon.ico" "$K/moe-cache.ico"
+# the app icon (concept D, packaging/moe-cache.ico) is the exe's icon (windres resource) and sits beside it as moe-cache.ico for the Start menu shortcut (moe-cache.bat --shortcut)
+cp "$X/packaging/moe-cache.ico" "$K/moe-cache.ico"
 MCXX="${MINGW_CXX:-x86_64-w64-mingw32-g++}"; WRES="${MCXX%g++}windres"; command -v "$WRES" >/dev/null || WRES=x86_64-w64-mingw32-windres
 printf '1 ICON "%s"\n' "$K/moe-cache.ico" > "$X/win_launcher.rc"
 "$WRES" -i "$X/win_launcher.rc" -o "$X/win_launcher_res.o" || { echo "FAIL: windres could not embed the icon"; exit 1; }
