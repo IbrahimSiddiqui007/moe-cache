@@ -21,3 +21,11 @@ archive/quant-docs	archived	docs branch with Windows quant numbers; the numbers 
 archive/wt-quant-docs-995b10	archived	same (tag)
 archive/win-defaults	archived	Windows-only buffered reads and one more GPU layer: superseded by the file-view cache; kept only as a tag
 archive/wt-win-defaults	archived	same (tag)
+# 2026-11-14 (owner box, v0.3.8 tag): branches with open work that merges AFTER v0.3.8; each is reviewed then merged or dropped
+*claude/bench-suite-1142	open	bench suite (TEST-1142): merges after v0.3.8, h/i/j open
+*claude/bugbatch-1112	open	bug batch: merges after v0.3.8, needs two owner OKs
+*claude/docsbatch-1112	open	docs batch: merges after v0.3.8
+*claude/real-room-1131	open	real GPU room planner (LAUNCHER-1131): merges after a PC check
+*claude/room-all-paths	open	GPU room for every planning path (LAUNCHER-1152): merges after critic + PC check
+*claude/dense-resident-trim	open	dense resident trim: merges after v0.3.8
+*claude/hard-tasks-1141	open	hard task set (MODELS-1141): merges after v0.3.8
