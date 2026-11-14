@@ -72,6 +72,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   <header>
     <div class="eyebrow">Benchmark card · v0.3.8 · measured 2026-11-08 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
+    <p class="note"><strong>Earlier build.</strong> Speeds on this page were measured on our test PC with the previous llama.cpp build (b12064). v0.3.8 ships llama.cpp b12207 and has not been re-measured yet; treat these numbers as from the earlier build.</p>
     <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC, in a real 65,000-token conversation (code pastes, logs and follow-ups, sent turn by turn with the whole history), it reads new prompt tokens and decodes faster than stock llama-server on the models that are bigger than the RAM (a model that fits in RAM is about the same). Older measurements (8k chats, long prompts, agent sessions, other models) are on <a href="results-archive/benchmark_card_older.html">the older card page</a>.</p>
     <div class="machine">
       <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5 at 6000 MT/s</span><span>Windows 11</span><span>v0.3.8 head kit (the v0.3.7.1 code with the Windows scheduling tuning off), official llama.cpp b12064 (51fe42c5d) Vulkan</span>

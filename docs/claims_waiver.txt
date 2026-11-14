@@ -1,0 +1,1 @@
+waived: owner 2026-11-14; expires 2026-12-14; claims v038-conv-iq3xxs,v038-conv-q2*,v038-fits-qwen36,v038-longprompt-default; files README.md; reason: owner box 2026-11-14 - tag v0.3.8 on existing numbers; pages say they were measured with the previous llama.cpp b12064, not re-measured on b12207

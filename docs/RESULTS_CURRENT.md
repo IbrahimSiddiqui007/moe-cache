@@ -1,5 +1,7 @@
 # Current results (v0.3.8, Windows desktop)
 
+> **Earlier build.** Speeds on this page were measured on our test PC with the previous llama.cpp build (b12064). v0.3.8 ships llama.cpp b12207 and has not been re-measured yet; treat these numbers as from the earlier build.
+
 Moved out of the README on 2026-11-06 so the README stays short. The block between the `card` markers is generated from [benchmark_card.html](benchmark_card.html) (`python3 tools/card_markdown.py --write`; the quick tests check it). Older results: [results-archive/RESULTS.md](results-archive/RESULTS.md) (Windows desktop, every measurement, newest first) and [results-archive/RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) (Linux laptop).
 
 ## What changed since v0.3.7
