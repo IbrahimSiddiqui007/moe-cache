@@ -29,3 +29,5 @@ archive/wt-win-defaults	archived	same (tag)
 *claude/room-all-paths	open	GPU room for every planning path (LAUNCHER-1152): merges after critic + PC check
 *claude/dense-resident-trim	open	dense resident trim: merges after v0.3.8
 *claude/hard-tasks-1141	open	hard task set (MODELS-1141): merges after v0.3.8
+archive/multimodel-010	dropped	desktop app dropped by the owner 2026-11-14 (folder removed before v0.3.8)	d8528dd58,a3210d949,0506add43
+archive/next-v0.3.7	dropped	desktop app dropped by the owner 2026-11-14 (folder removed before v0.3.8)	d8528dd58,a3210d949,0506add43
