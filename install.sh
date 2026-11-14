@@ -23,7 +23,7 @@ set -e
 LLAMA_SHA_GIVEN="${LLAMA_SHA:-}"                     # set by the user: build that commit, never the bundled build
 LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
 case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
-MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.7.1}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
+MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.8}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 GGUF_PY_SHA256=70bcd10edfe697fb2dad6e40af2234b9d8ece9a41a99761405121ebda1c3c1cd   # sha256 of gguf-$GGUF_PY_VERSION-py3-none-any.whl (RELEASE-008); pip is refused to install anything else
 UNVERIFIED_OK=0; [ "${MOE_CACHE_ALLOW_UNVERIFIED:-}" = 1 ] || [ "${MOE_CACHE_SKIP_ATTESTATION:-}" = 1 ] && UNVERIFIED_OK=1

@@ -4,7 +4,7 @@
 moe-cache is a plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle llama.cpp b12207 built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.3.7.1-blue">
+<img alt="status" src="https://img.shields.io/badge/status-v0.3.8-blue">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b12207%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
