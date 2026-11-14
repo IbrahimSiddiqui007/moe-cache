@@ -27,7 +27,6 @@ HERE = mc.HERE
 WINDOWS = mc.WINDOWS
 PAGE = os.path.join(HERE, "ui", "index.html")
 MINI_PAGE = os.path.join(HERE, "ui", "mini.html")
-TOP_FILE = os.path.join(mc.CACHE_DIR, "ui-top.json")      # GUI-045: port + page token for `moe_cache.py top`, private to this user, removed when the page stops
 SETTINGS_FILE = os.path.join(mc.CACHE_DIR, "ui.json")
 LAUNCHER = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
 HEADROOM = mc.STOCK_HEADROOM   # shown in the reasons; the rule itself is mc.decide()
@@ -3199,27 +3198,6 @@ def agents_state(url):
     return {"url": url, "agents": [opencode_state(url), hermes_state(url)]}
 
 
-def write_top_file(port, token):
-    """Where `moe_cache.py top` finds this page: {port, token, pid} in a file only this user can read (the same trust as ui.json and the chats)."""
-    try:
-        os.makedirs(os.path.dirname(TOP_FILE), exist_ok=True)
-        fd = os.open(TOP_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"port": port, "token": token, "pid": os.getpid(), "t": time.time()}, f)
-    except OSError:
-        pass
-
-
-def remove_top_file():
-    try:
-        with open(TOP_FILE, encoding="utf-8") as f:
-            if json.load(f).get("pid") != os.getpid():
-                return                                  # another page's file: not ours to remove
-        os.remove(TOP_FILE)
-    except (OSError, ValueError):
-        pass
-
-
 def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
     store = Store(ls or mc.default_llama_server())
     if not ls and (line := mc.ls_found_line(store.ls)):
@@ -3271,7 +3249,6 @@ def ui(argv):
     if WINDOWS:
         threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
-    write_top_file(srv.server_address[1], srv.RequestHandlerClass.token)
     mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if a.ui_lan:
         mc.say(f"moe-cache: LAN: the control page also answers at http://{lan_addr}:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token} (open exactly this address on the other computer)")
@@ -3288,7 +3265,6 @@ def ui(argv):
         pass
     finally:
         remove_launch_files()
-        remove_top_file()
         for r in list(srv.RequestHandlerClass.extra.values()):
             r.stop()
         srv.RequestHandlerClass.runner.stop()

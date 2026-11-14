@@ -334,8 +334,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "control page test failed" }
           python tests/monitor_test.py  # GUI-041: the Monitor view's numbers, the Runner's hooks and the page's chart code
           if ($LASTEXITCODE -ne 0) { throw "monitor test failed" }
-          python tests/top_test.py      # GUI-044/045: the mini window and `moe_cache.py top` (frames, attach by port, page file, Windows console)
-          if ($LASTEXITCODE -ne 0) { throw "top test failed" }
+          python tests/mini_hw_test.py  # GUI-044/046: the mini window and the hardware readings (Windows kernel32 calls)
+          if ($LASTEXITCODE -ne 0) { throw "mini/hw test failed" }
           python tests/audit_test.py    # GUI-043: the audit's scoring and orchestration against a fake server
           if ($LASTEXITCODE -ne 0) { throw "audit test failed" }
 

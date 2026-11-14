@@ -1,4 +1,4 @@
-"""Hardware readings for the Monitor view and `moe_cache.py top` (GUI-046). Python 3.8+, standard library only, no admin rights.
+"""Hardware readings for the Monitor view (GUI-046). Python 3.8+, standard library only, no admin rights.
 
 Every reading is None when this machine cannot give it (no nvidia-smi, a GPU temperature or power on Windows, a process that is not ours): the screens print "n/a" and nothing
 else changes. Parsers are separate from the readers so tests run them on recorded output.

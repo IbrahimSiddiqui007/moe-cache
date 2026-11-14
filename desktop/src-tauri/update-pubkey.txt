@@ -1,1 +1,0 @@
-PLACEHOLDER: no update key yet. Replace this whole file with the public key printed by `npx tauri signer generate` (docs/DESKTOP_APP_DESIGN.md, section 6).

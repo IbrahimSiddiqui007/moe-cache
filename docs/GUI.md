@@ -166,20 +166,6 @@ The **📈 Monitor** button in the top bar opens a full-screen view of the runni
 
 **Small window.** **⧉ Mini** opens a 360 x 480 window with the numbers you glance at while working: decode speed with a sparkline, prompt speed, context, cache hit, SSD, CPU executor, RAM against the cap, VRAM and the last five log lines (warnings in colour). Allow pop-ups for the page once.
 
-**Terminal monitor.** `python3 bin/moe_cache.py top` is the same data as a full-screen terminal app for people who never open the page (Linux, macOS, Windows Terminal and PowerShell; no packages to install; read only, `q` leaves the server running). Seven views, keys `1`-`7` or left/right:
-
-| View | What it shows |
-|---|---|
-| 1 Overview | model state (Idle, Reading, Generating, Queued, Error) with the context bar; tiles with a sparkline each for speed, cache hit, SSD read and stall time, CPU executor, GPU load, VRAM, server RAM against the cap, CPU, GPU temperature, power, PCIe and disk read; cache budget and context bars; hit rate per layer; recent requests (prompt, reused from the prompt cache, output, tok/s, duration) |
-| 2 Serving | URL, state, requests running and queued, KV cache fill; the plan as it really runs (`-ub`, KV type, GPU layers, experts on the CPU, device, threads); the token-mode table (which changing-answer modes are won, unmeasured or in use); what the launcher decided |
-| 3 Requests | every finished request, with a detail block for the selected one (up/down) |
-| 4 Engine | hit rate, SSD GB/s and wait, executor share, evictions, GPU upload as trends; the per-layer hit-rate heat rows (newest on top), whole-run row and the worst layers; cache counters, MTP acceptance and the approximate-mode counters live (looked at, given up, replaced, share of picks changed, picks changed per second; plugins from before 0.3.8 report them at server stop only) |
-| 5 Hardware | all tiles plus GPU, CPU, RAM, cap and commit details |
-| 6 Logs | the launcher, plugin, llama-server and page lines with time and source, warnings yellow and errors red; `/` search (text or `/regex/`), `l` level, `s` source, `f` follow, arrows and PgUp/PgDn scroll |
-| 7 Connect | the OpenAI-compatible address, API key (hidden; `k` shows it), agent setup commands |
-
-Other keys: `space` freezes, `r` refreshes, `t` theme (dark, light, mono), `b` opens the control page (or llama-server's own page) in the browser, `?` help. `--once` prints one screen (add `--view N`), `--ascii` for the classic Windows console, `--no-color`. It finds a running control page by itself (a file only you can read), or attaches to a llama-server with `--port 8080` (then there is no plugin hit rate and no log, because that server was not started here). GPU temperature, power and PCIe come from `nvidia-smi` (NVIDIA) or sysfs (AMD on Linux) without admin rights; where this machine cannot give a number the screen says `n/a`.
-
 **Approximate modes: which words changed.** With `--fast`, `--fast=2`, `--fast=fewer` or an approximate tier on, the plugin counts, for each decode step, how many expert picks it changed. Under every chat answer the page shows `at risk: K of M steps`, a strip of the answer's steps (yellow = changed) and, when you click the chip, the answer as plain text with the words from changed steps highlighted. The numbers arrive about two seconds after the answer (the plugin's next snapshot); `top` shows `AT RISK` per request. One streamed piece of text is one token only without MTP, so with MTP the words are matched to steps in proportion and the chip says so. This marks where answers *could* differ; it does not say whether they do: the audit that re-scores an answer in exact mode is a separate step.
 
 **Audit.** The **audit (exact)** chip under the last answer re-scores that answer with an exact-mode server and shows where it could have gone another way: the share of positions where the exact model's most likely next token is the one the answer has, the mean log-loss, the words that differ (hover for both tokens and their probabilities) and a table of the first 30. The page tells you first how it will run: next to your server when the model fits in memory twice, otherwise by pausing your server (it is started again afterwards; allow a few minutes on a big model). The audit takes about as long as the answer took to write. It does not run unless you click, answers that have a thinking part or images are not audited, and an answer over 4096 tokens is audited up to there. It is not a KL number: that needs the approximate run's own probabilities, which a server does not keep.
@@ -208,7 +194,7 @@ lists them and the **Context** card shows how much of the context they use. **Im
 **Several servers** (card *Servers on this machine*): besides the main server the page can start up to 2 more on other ports with the same settings (*Start another server*; each loads its own model into memory, so the plan's numbers are for one model alone), stop them, and chat with any of them (*Chat here*). Servers started outside the page on ports 8080-8089 are listed and can be chatted with when they need no API key; the page never sends its key to a server it did not start.
 
 **Saved chats:** every chat is saved after each answer as a file in `~/.cache/moe-cache/ui-chats/` (Windows: in your profile's moe-cache
-folder; Settings shows the place), so it is there after a restart, in any browser and in the coming desktop app. **Export** saves a chat as a
+folder; Settings shows the place), so it is there after a restart, in any browser. **Export** saves a chat as a
 Markdown file; **Trash** moves it to the Trash.
 
 **System prompt and temperature** for new chats are in Settings → Chat (empty = the model's and the server's defaults).
@@ -335,4 +321,4 @@ If you open the page without the password you see a short note: open the address
   loading or ready, model, context, slots, busy slots, whether it wants a key; the key is never returned), and `GET /api/servers` does that for
   ports 8080-8089, marking the one the page started. Only this machine is asked.
 - Tests: `tests/ui_test.py` (no model) and `tests/ui_live.py MODEL.gguf --llama-server PATH` (a real model); CI runs both on Linux and Windows.
-- Remote access: only with `--ui-lan` (docs/LAN_ACCESS.md). Not yet: TLS, a desktop app (design draft APP2).
+- Remote access: only with `--ui-lan` (docs/LAN_ACCESS.md). Not yet: TLS.

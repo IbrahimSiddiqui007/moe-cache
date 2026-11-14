@@ -19,8 +19,6 @@
   moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
-  moe_cache.py server  MODEL.gguf --top [--ram GB --ctx N --port N --mode M --agent --mtp on|off]   start the model and watch it in the terminal monitor (q stops it)
-  moe_cache.py top     [--url URL | --port N] [--once]                    live one-screen monitor in the terminal (speed, cache, SSD, memory, log); bin/moe_cache_top.py
   moe_cache.py --version                                                   print the moe-cache version
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
@@ -6459,12 +6457,6 @@ def main():
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
-    if sys.argv[1:2] == ["server"] and "--top" in sys.argv[2:]:      # GUI-047: start a model and watch it in the terminal monitor
-        from moe_cache_top import top_start
-        return top_start(sys.argv[2:]) or 0
-    if sys.argv[1:2] == ["top"]:        # GUI-045: the Monitor view as one live terminal screen (bin/moe_cache_top.py)
-        from moe_cache_top import top
-        return top(sys.argv[2:]) or 0
     if sys.argv[1:2] == ["models"]:     # the model catalogue for this PC (bin/moe_cache_models.py)
         from moe_cache_models import models
         return models(sys.argv[2:]) or 0

@@ -24,7 +24,7 @@ The script refuses while `C:\dl\afternoon\runner.pid` is alive, any `llama-serve
 
 ## Actions cache
 
-* Only `desktop.yml` has caches (Cargo and the Tauri `target` folder, 1-1.5 GB per OS). `windows.yml` and `identity.yml` cache nothing: their builds are short (dll job 2 min; llama.cpp at a pin 4 of 40 min in identity).
+* `windows.yml` and `identity.yml` cache nothing: their builds are short (dll job 2 min; llama.cpp at a pin 4 of 40 min in identity).
 * GitHub scopes a cache to the branch that saved it. A run reads its own branch, the default branch (`main`) and, for a pull request, the base branch. The same key saved from three branches is three entries; that is how 8 caches / 8.5 GB came about.
 * Policy now: work branches only restore (`restore-keys` falls back to the newest entry of the same OS); `main` and `experimental` save one entry per OS and delete their older ones. A push to a `claude/desktop-*` branch can only read `main`'s cache (not `experimental`'s), so it is warm only after `main` has run the workflow once.
 * After merging and deleting a work branch: `tools/cache_cleanup.sh` lists caches of closed PRs and deleted branches; `--delete` removes them.

@@ -1,7 +1,3 @@
 Third-party code in this repository (name, version, source, sha256 of the release archive, licence)
 
 ggml          0.25.1 (backend API 2) headers only   llama.cpp commit 7fe450e19                                                MIT   third_party/ggml/LICENSE
-FTXUI         7.0.3   sources and headers (only the files FTXUI 7.0.3 builds itself: its CMakeLists source list, no tests, no examples) https://github.com/ArthurSonzogni/FTXUI tag v7.0.3 (tag object f921fad208912747c17d129a8ef75ec7624b6eec)
-              archive v7.0.3.tar.gz, 362964 bytes, sha256 e7c62ffe19009759821b4f0f8df7f2a6fb83784c3a9f1477d81f56d3ee723c88   MIT   third_party/ftxui/LICENSE
-              (R15-03, the native Monitor `moe-cache-top`; built by build_top.sh from these files, never fetched at build time; the sha256 was recorded when the archive was
-              downloaded on 2026-11-10 with the owner's OK, GitHub publishes no checksum for it)
