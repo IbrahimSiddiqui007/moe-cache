@@ -3185,7 +3185,10 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             a.plan_free_mib = (free / 2**20) if free else None
             a.plan_free_source = kw["free_source"]
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
-            a.walk_floor = walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=bool(getattr(machine, "windows", False)), use_room=use_room)
+            try:            # the walk's limit never costs the placement (critic F3)
+                a.walk_floor = walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=bool(getattr(machine, "windows", False)), use_room=use_room)
+            except Exception:
+                a.walk_floor = None
         except Exception:
             tuned = None
     return tuned, desk_kw, ub_asked

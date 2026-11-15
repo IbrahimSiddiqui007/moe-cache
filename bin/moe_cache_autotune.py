@@ -313,7 +313,8 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             walk_state["done"], walk_state["end"] = True, "no expert layer left on the CPU" if k > walk else f"{WALK_MAX} steps made"
             return None
         if floor is not None and walk - k < floor:
-            walk_state["done"], walk_state["end"] = True, f"--n-cpu-moe {walk - k} is past the planner's fit limit ({floor}) for this GPU"
+            walk_state["done"], walk_state["end"] = True, (f"--n-cpu-moe {walk - k} is past the planner's fit limit ({floor}) for this GPU" if k > 1 else
+                                                           f"the plan is already at the planner's fit limit ({floor}) for this GPU and reserve: no walk here")
             if k > 1 and last["id"] == f"ncmoe-{k - 1}" and last["status"] == "measured":
                 last["edge"] = True         # the step at the fit limit keeps no reserve: at the edge like the step before a failed load, not picked
                 walk_state["end"] += f"; {last['id']} is at the edge and is not picked"

@@ -406,5 +406,7 @@ for fr, want in ((FREE_PLAN + 40, FREE_PLAN), (FREE_PLAN - 900, None)):
     _p = types.SimpleNamespace(**dict(vars(_plan), machine=_M3(fr)))
     r_ = mc.make_load_recorder(_p)(["x", "--n-cpu-moe", "28"])
     check(r_ is not None and r_.ctx.get("free_plan_mib") == want, f"recorder: free memory {fr - FREE_PLAN:+.0f} MiB since the plan: gap learned against {r_ and r_.ctx.get('free_plan_mib')}")
+res = at.tune([at.Candidate("C0", "the plan as it is", [])], run_spill, clock=lambda: 0.0, walk=28, budget_s=10000, floor=28)
+check(res["walk"]["steps"] == 0 and "no walk here" in res["walk"]["end"], f"fit limit = plan: no walk, and the end line says so ({res['walk']})")
 print("placement checks: " + (f"{len(fails)} failed" if fails else "all passed"))
 sys.exit(1 if fails else 0)
