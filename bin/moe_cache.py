@@ -2129,7 +2129,22 @@ _LOAD_RECORDER = [None]         # planner map fix 1: a function cmd -> planner/l
 def user_set_log_verbosity(cmd, env):
     """The user chose llama-server's log level (flag after -- or LLAMA_ARG_LOG_VERBOSITY): the launcher then neither raises it nor hides lines."""
     return any(x in ("-lv", "--verbosity", "--log-verbosity", "-v", "--verbose", "--log-verbose") or x.startswith(("--verbosity=", "--log-verbosity="))
-               for x in cmd) or "LLAMA_ARG_LOG_VERBOSITY" in env or "LLAMA_ARG_LOG_VERBOSE" in env
+               for x in cmd) or "LLAMA_ARG_LOG_VERBOSITY" in env or "LLAMA_ARG_LOG_VERBOSE" in env or log_prefix_off(cmd, env)
+
+
+def log_prefix_off(cmd, env):
+    """The user turned llama-server's log timestamps or prefix off: the extra lines could not be told apart, so the level is left alone (critic L2)."""
+    if any(x in ("--no-log-timestamps", "--no-log-prefix") for x in cmd):
+        return True
+    for flag, var in (("--log-timestamps", "LLAMA_ARG_LOG_TIMESTAMPS"), ("--log-prefix", "LLAMA_ARG_LOG_PREFIX")):
+        v = arg_after(cmd, flag) if flag in cmd else env.get(var)
+        if v is not None and str(v).strip().lower() in ("0", "off", "false", "no"):
+            return True
+    return False
+
+
+FREE_DRIFT_MIB = 256           # the free GPU memory may move this much between the plan and the first load before the learned gap is dropped
+RECORD_SKIP_FLAGS = ("-ot", "--override-tensor", "-ts", "--tensor-split", "-sm", "--split-mode", "-mg", "--main-gpu")     # not --device: the launcher sets it itself for the GPU it picked
 
 
 def make_load_recorder(plan):
@@ -2152,7 +2167,20 @@ def make_load_recorder(plan):
         n = arg_after(cmd, "--n-cpu-moe", "-ncmoe")
         if n is None or not str(n).isdigit():
             return None
+        if any(x in RECORD_SKIP_FLAGS or x.startswith(tuple(f + "=" for f in RECORD_SKIP_FLAGS)) for x in cmd) or arg_after(cmd, "-ngl", "--n-gpu-layers", "--gpu-layers") not in (None, "99", "999"):
+            return None                     # the user's own tensor placement or GPU split: the weights figure would not be the plan's (critic M4)
+        if "draft-mtp" in cmd:
+            return None                     # an MTP load holds a second (draft) context: its figures are not recorded; the plan adds the draft as a constant (critic M2)
         runs[0] += 1
+        free_plan = getattr(a, "plan_free_mib", None)
+        if runs[0] == 1 and free_plan and getattr(a, "plan_free_source", None) == "nvidia-smi":
+            # the auto-tune can run up to 180 s between the plan's reading and this load: when the free memory moved meanwhile (another program), the gap is not learned (critic M5)
+            try:
+                now = plan.machine.free_vram_bytes()
+                if now is None or abs(now / 2**20 - free_plan) > FREE_DRIFT_MIB:
+                    free_plan = None
+            except Exception:
+                free_plan = None
         ub = arg_after(cmd, "-ub", "--ubatch-size")
         return lr.Recorder({"cache_dir": CACHE_DIR, "machine": gid, "build": build, "model": mid, "ctx": int(arg_after(cmd, "-c", "--ctx-size") or plan.ctx),
                             "ub": int(ub) if (ub or "").isdigit() else 0,
@@ -2161,7 +2189,7 @@ def make_load_recorder(plan):
                             # the gap is learned only on the first load against the figure the plan used (a retry re-reads the memory; a projector's memory is not llama's)
                             # and only on the stock engine without a GPU cache: the plugin's long-prompt block and llama.cpp's cache banks are allocated after load and would
                             # read as overhead (the plan counts them itself)
-                            "free_plan_mib": getattr(a, "plan_free_mib", None) if (runs[0] == 1 and plan.engine == "stock" and not arg_after(cmd, "--mmproj", "-mm")
+                            "free_plan_mib": free_plan if (runs[0] == 1 and plan.engine == "stock" and not arg_after(cmd, "--mmproj", "-mm")
                                                                                    and "--moe-cache-mib" not in cmd) else None,
                             "free_source": getattr(a, "plan_free_source", None)})
     return make
@@ -2231,9 +2259,8 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                         rec.finish()                 # the load's figures, kept even when the server is killed later
                 except Exception:
                     pass
-            if hide_extra and not shown.show(line.decode(errors="replace")):
-                continue                             # a verbosity-4 line the user did not ask for (it was fed to the recorder above)
-            if out is not None:
+            # a verbosity-4 line the user did not ask for (it was fed to the recorder above) is not printed; the checks below still read every line
+            if out is not None and not (hide_extra and not shown.show(line.decode(errors="replace"))):
                 try:
                     out.write(line); out.flush()
                 except (OSError, ValueError):
@@ -3103,6 +3130,7 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     forced one or None, the micro-batch the user asked for or None)."""
     tuned = None
     desk_kw = None
+    a.walk_floor = None
     ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
     if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
         try:
@@ -3157,9 +3185,26 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             a.plan_free_mib = (free / 2**20) if free else None
             a.plan_free_source = kw["free_source"]
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
+            a.walk_floor = walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a)
         except Exception:
             tuned = None
     return tuned, desk_kw, ub_asked
+
+
+def walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a):
+    """The auto-tune walk's fit limit (critic H1): the lowest --n-cpu-moe the same tuner places with only the reserve the user asked for (--gpu-margin, --leave-room;
+    else none: the walk measures into the planner's reserve on purpose) at the plan's micro-batch. Where a load that does not fit spills instead of failing (Windows),
+    the walk would otherwise go on into the spill. None when the plan places no static expert layers. Written into the plan's inputs."""
+    if not tuned or tuned.get("gpu_cache_mib") or not (0 < int(tuned.get("n_cpu_moe", 999)) < 999):
+        return None
+    reserve = a.gpu_margin * 2**30 / 1e9 if a.gpu_margin is not None else (LEAVE_ROOM_VRAM_GB if a.leave_room else 0.0)
+    fkw = dict(kw, reserve_gb=reserve, ub=tuned["ub"])
+    fkw.pop("long_prompt", None)
+    floor = int(tune(model, ctx, free=free, want_cache=False, kv_q8=kv_q8, **fkw)["n_cpu_moe"])
+    floor = min(floor, int(tuned["n_cpu_moe"]))
+    tuned.setdefault("inputs", []).append({"setting": "walk_floor_n_cpu_moe", "value": floor, "source": "probe",
+                                           "why": f"the lowest --n-cpu-moe the auto-tune walk may load: the same sizes with {reserve:.1f} GB kept free (the user's margin, else none)"})
+    return floor
 
 
 def load_record_on():
@@ -4481,7 +4526,7 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
                     "the plan as it is runs; --retune measures again")
             say_fn(line)
             return cmd, env, dict(stored, state="bad", lines=[line], locked=locked, key=at.key_of(parts), changed=False)
-        edits, held = at.replay_edits(cmd, stored, autotune_free_vram(a, machine))      # LAUNCHER-994 review: a part that puts more on the GPU needs as much free GPU memory as when it was measured
+        edits, held = at.replay_edits(cmd, stored, autotune_free_vram(a, machine), floor=getattr(a, "walk_floor", None))      # LAUNCHER-994 review: a part that puts more on the GPU needs as much free GPU memory as when it was measured
         new_cmd, new_env, skipped = at.apply_edits(cmd, env, edits, locked)
         lines = at.summary_lines(stored, cached=True, skipped=skipped, locked=locked)
         lines = [lines[0]] + [l for l in lines[1:] if "picked" in l or "stays" in l or "left alone" in l or "not applied" in l or "--retune" in l]       # the table is in the control page / --plan-json
@@ -4628,7 +4673,7 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
                 r = (runner or autotune_probe)(new_cmd, dict(os.environ, **dict(c_env + key_env)), left_s - (time.monotonic() - t_start), n)
         return r
     res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t), progress=lambda t: say_fn("moe-cache: auto-tune: " + t),
-                  walk=walk, check=walk_check)
+                  walk=walk, check=walk_check, floor=getattr(a, "walk_floor", None))
     if free_vram:
         res["free_vram_mib"] = int(free_vram / 2**20)       # what a pick that puts more on the GPU is later compared with (apply_stored)
     if walk is not None:
@@ -4638,7 +4683,7 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
             at.save(CACHE_DIR, parts, res)
     except OSError as e:
         say_fn(f"moe-cache: auto-tune: could not store the result ({e}); it is measured again at the next start", err=True)
-    new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(res), locked)
+    new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(res, cmd, getattr(a, "walk_floor", None)), locked)
     lines = [l for l in at.summary_lines(res, locked=locked) if not l.startswith("moe-cache: auto-tune:   ")]
     for l in lines:
         say_fn(l)

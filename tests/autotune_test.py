@@ -527,6 +527,12 @@ def runner_rel(cmd_, env_, left_, n_):          # fewer CPU expert layers than t
     fast = nc < ref["n"]
     return dict(ok=True, load_s=5, prompt_tps=400 if fast else 300, decode_tps=22 if fast else 20, decode_n=n_)
 mc.autotune_probe = runner_rel
+saved_floor = mc.walk_floor
+_floors = []
+def _floor_spy(*a_, **k_):
+    _floors.append(saved_floor(*a_, **k_))
+    return None                # this block tests the fall-back mechanics: the walk's fit limit on the fake GPU is tested in placement_test
+mc.walk_floor = _floor_spy
 try:
     def make_plan():
         ref["n"] = None
@@ -579,6 +585,7 @@ try:
         mc.commit_stage = real_stage
 finally:
     mc.CACHE_DIR, mc.port_busy, mc.autotune_probe, mc.run_child, mc.WINDOWS = saved4
+    mc.walk_floor = saved_floor
 
 # --- the real commit check (commit_fits over commit_stage) on a Windows fake machine ---
 class WM(M):

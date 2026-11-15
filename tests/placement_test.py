@@ -199,7 +199,9 @@ mt = plan(32768, mtp=True)
 mrow = {r["setting"]: r for r in mt["inputs"]}.get("mtp_draft_mib")
 check(mrow and mrow["source"] == "constant" and mt["n_cpu_moe"] > f32["n_cpu_moe"], f"MTP on: its draft context ({mrow and mrow['value']} MiB) is in the sum")
 mtm = plan(32768, as_measured(m32), mtp=True)
-check("mtp_draft_mib" not in {r["setting"] for r in mtm["inputs"]}, "MTP on with a measured overhead (a load with MTP on): no constant on top")
+mtr = {r["setting"]: r for r in mtm["inputs"]}
+check(mtr.get("mtp_draft_mib", {}).get("source") == "constant" and mtr["gpu_overhead_mib"]["source"] == "measured" and mtm["n_cpu_moe"] > plan(32768, as_measured(m32))["n_cpu_moe"],
+      "MTP on with a measured overhead (measured on a load without MTP): the draft constant is still added on top (critic M2)")
 
 # ---- 5. PC 35B 32k spill (LAUNCHER-1152): the old first placement said 0 and its shortcut kept it ----
 import importlib.util   # noqa: E402
@@ -352,5 +354,54 @@ e32 = at.pick_edits(stored, ["x", "--n-cpu-moe", "32"])
 check(e28 == [{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": -1}] and e26 == [] and e32[0]["delta"] == -5,
       f"replay: picked 27 on a plan of 32; plan now 28 -> -1 (27), plan now 26 -> nothing (never back toward the CPU), plan 32 -> -5 ({e28}, {e26})")
 check(at.pick_edits({k: v for k, v in stored.items() if k != "base_ncmoe"}, ["x", "--n-cpu-moe", "28"])[0]["delta"] == -5, "an older stored pick without a base keeps its delta")
+
+# ---- 7. second critic: H1 (walk fit limit), M1 (replay floor), M2/M3/M4/L2 ----
+# H1: where a load that does not fit spills instead of failing (Windows), decode drops less than 5 % per step; only the fit limit stops the walk
+seen_s = []
+def run_spill(c, left, n):
+    nc = 28 - (int(c.id.split("-")[1]) if c.id.startswith("ncmoe-") else 0)
+    seen_s.append(nc)
+    return {"ok": True, "load_s": 5.0, "prompt_tps": 600.0, "decode_tps": 20.0 + 0.3 * (28 - nc), "decode_n": 128}
+clk_s = [0.0]
+res = at.tune([at.Candidate("C0", "the plan as it is", [])], run_spill, clock=lambda: clk_s[0], walk=28, budget_s=10000, floor=26)
+check(min(seen_s) == 26 and "fit limit" in res["walk"]["end"] and res["picked"] != "ncmoe-2" and "edge" in res["walk"]["end"], f"walk: never loads below the planner's fit limit, even when nothing fails (spill) ({seen_s}, {res['walk']['end']})")
+# the launcher's fit limit: the same tuner with no reserve, at the plan's micro-batch; the user's --gpu-margin is honoured
+FA = types.SimpleNamespace(gpu_margin=None, leave_room=False)
+kw0 = {"plugin": False, "measured": as_measured(m64), "free_source": "nvidia-smi"}
+t64 = gguf_plan.tune(TWIN, 65536, free=FREE_PLAN * MIB, want_cache=False, kv_q8=False, **kw0)
+fl = mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, dict(t64, inputs=list(t64["inputs"])), FA)
+flm = mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, dict(t64, inputs=list(t64["inputs"])), types.SimpleNamespace(gpu_margin=2.0, leave_room=False))
+check(fl is not None and 25 <= fl <= t64["n_cpu_moe"] and flm == t64["n_cpu_moe"],
+      f"fit limit at 64k: {fl} (plan {t64['n_cpu_moe']}; 25 runs out of memory on the laptop); with --gpu-margin 2 GB: {flm} (never past the plan)")
+check(mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, {"n_cpu_moe": 999, "ub": 512}, FA) is None, "no fit limit when the plan places no expert layers")
+pcf = mc.walk_floor(gguf_plan.tune, TWIN, 32768, room * MIB, False, {"plugin": False, "measured": {"buffers": {2048: {"compute_mib": PC_COMPUTE}}}, "free_source": "room"},
+                    dict(pc, inputs=list(pc["inputs"])), FA)
+needf = weights + gguf_plan.gpu_expert_bytes(lay, pcf) / MIB + 891.25 + PC_COMPUTE
+check(pcf is not None and needf <= room, f"PC 35B 32k: the walk stops at --n-cpu-moe {pcf} ({needf:.0f} MiB inside the room of {room:.0f}), not in the spill")
+# M1: a replayed pick never goes below this start's fit limit
+check(at.pick_edits(stored, ["x", "--n-cpu-moe", "28"], floor=28) == [] and at.pick_edits(stored, ["x", "--n-cpu-moe", "32"], floor=29)[0]["delta"] == -2,
+      "replay: a pick past this start's fit limit is cut back to it")
+# M3: errors always show, even after a hidden line or without the log prefix
+F = lr.LineFilter()
+F.show("0.00.100.000 D llama_kv_cache: layer 0: dev = CUDA0\n")
+check(F.show("ggml_abort: something went wrong\n") and F.show("CUDA error: out of memory\n"), "line filter: aborts and errors always show")
+# L2: log prefix or timestamps off: the level is left alone
+check(mc.user_set_log_verbosity(["x", "--log-timestamps", "off"], {}) and mc.user_set_log_verbosity(["x"], {"LLAMA_ARG_LOG_PREFIX": "0"})
+      and mc.user_set_log_verbosity(["x", "--no-log-prefix"], {}) and not mc.user_set_log_verbosity(["x", "--log-timestamps", "on"], {}), "log prefix or timestamps off: verbosity not raised")
+# M2 + M4: MTP loads and the user's own tensor placement are not recorded
+_plan = types.SimpleNamespace(a=types.SimpleNamespace(vram=None, plan_free_mib=FREE_PLAN, plan_free_source="nvidia-smi"), cmd=["x", "--n-cpu-moe", "28"], machine=_M2(), ls=LS,
+                              model=TWIN, ctx=65536, engine="stock")
+mk = mc.make_load_recorder(_plan)
+check(mk is not None and mk(["x", "--n-cpu-moe", "28", "-c", "65536"]) is not None, "recorder: the plan's own load is recorded")
+check(mk(["x", "--n-cpu-moe", "28", "-ot", "blk.1=CPU"]) is None and mk(["x", "--n-cpu-moe", "28", "-ts", "1,1"]) is None and mk(["x", "--n-cpu-moe", "28", "-ngl", "20"]) is None,
+      "recorder: -ot, -ts or a partial -ngl: not recorded")
+check(mk(["x", "--n-cpu-moe", "28", "--spec-type", "draft-mtp"]) is None, "recorder: an MTP load is not recorded")
+class _M3(_M2):
+    def __init__(self, free): self.free = free
+    def free_vram_bytes(self): return self.free * MIB
+for fr, want in ((FREE_PLAN + 40, FREE_PLAN), (FREE_PLAN - 900, None)):
+    _p = types.SimpleNamespace(**dict(vars(_plan), machine=_M3(fr)))
+    r_ = mc.make_load_recorder(_p)(["x", "--n-cpu-moe", "28"])
+    check(r_ is not None and r_.ctx.get("free_plan_mib") == want, f"recorder: free memory {fr - FREE_PLAN:+.0f} MiB since the plan: gap learned against {r_ and r_.ctx.get('free_plan_mib')}")
 print("placement checks: " + (f"{len(fails)} failed" if fails else "all passed"))
 sys.exit(1 if fails else 0)

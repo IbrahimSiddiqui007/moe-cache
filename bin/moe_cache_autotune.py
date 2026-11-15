@@ -273,13 +273,15 @@ def aborted_result(rows, cid, why, total, budget_s, agent):
             "why": f"the memory guard stopped the probe of {cid} ({str(why)[:160]}): the tuning was aborted, nothing was stored, the plan as it is runs. It is tried again at the next start"}
 
 
-def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None, progress=lambda t: None, walk=None, check=None):
+def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None, progress=lambda t: None, walk=None, check=None, floor=None):
     """Measure the candidates in order and pick. runner(cand, left_s, decode_tokens) -> {"ok", "load_s", "prompt_tps", "decode_tps", "decode_n", "error"}.
     C0 (the plan as it is) always runs first with whatever time there is; each later candidate starts only when the time left covers a load and probe like
     C0's. When C0 cannot be measured the result is `too_slow` and nothing is picked. Returns the result dict that is stored.
     walk: the plan's --n-cpu-moe (walk_start): after C0 the edge walk (planner map fix 2) puts one more expert layer on the GPU per step until a load fails, decode
     falls more than MARGIN below the best step so far, the plan has no layer left on the CPU, WALK_MAX steps were made or the budget runs out; then the other candidates.
-    check(cand) -> (ok, why): a step the commit check would not start is not loaded and ends the walk."""
+    check(cand) -> (ok, why): a step the commit check would not start is not loaded and ends the walk.
+    floor: the lowest --n-cpu-moe the planner says still fits the GPU with only the user's own margin kept (the walk's fit limit, critic H1): a step below it is not loaded.
+    Where a model that does not fit spills into shared memory instead of failing to load (Windows), this is the only stop before the spill."""
     t0 = clock()
     rows, base_cost = [], None
     aborted = lambda rows_, cid, why: aborted_result(rows_, cid, why, clock() - t0, budget_s, agent)
@@ -309,6 +311,12 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         k = walk_state["k"] + 1
         if k > WALK_MAX or k > walk:
             walk_state["done"], walk_state["end"] = True, "no expert layer left on the CPU" if k > walk else f"{WALK_MAX} steps made"
+            return None
+        if floor is not None and walk - k < floor:
+            walk_state["done"], walk_state["end"] = True, f"--n-cpu-moe {walk - k} is past the planner's fit limit ({floor}) for this GPU"
+            if k > 1 and last["id"] == f"ncmoe-{k - 1}" and last["status"] == "measured":
+                last["edge"] = True         # the step at the fit limit keeps no reserve: at the edge like the step before a failed load, not picked
+                walk_state["end"] += f"; {last['id']} is at the edge and is not picked"
             return None
         c = walk_candidate(k)
         if check is not None:
@@ -477,12 +485,12 @@ def adds_gpu_use(cmd, edits):
     return False
 
 
-def replay_edits(cmd, stored, free_now, slack_mib=512):
+def replay_edits(cmd, stored, free_now, slack_mib=512, floor=None):
     """(edits to apply at this start, note or None). A stored pick is applied at every later start. An edit that puts more on the GPU than the plan (--n-cpu-moe lower, a bigger
     -ub) was measured with the free GPU memory of that day: it is left out for this start unless the free memory now is at least that (minus slack_mib); the other edits of the pick
     still apply (partial replay: the idea is from the outside review of 7c3d024). A stored result without the figure, or no reading now, cannot be compared: held back too - except when there is no reading at either time (the GPU's memory cannot be read
     on this machine): then the pick is applied, as it was at the start that measured it."""
-    edits = pick_edits(stored, cmd)
+    edits = pick_edits(stored, cmd, floor)
     add = [e for e in edits if adds_gpu_use(cmd, [e])]
     if not add or edits_fit_free_vram(stored, free_now, slack_mib):
         return edits, None
@@ -497,10 +505,11 @@ def replay_edits(cmd, stored, free_now, slack_mib=512):
     return [e for e in edits if e not in add], f"the stored pick's part that puts more on the GPU ({what}) is not applied at this start: {why} (--retune measures again)"
 
 
-def pick_edits(result, cmd=None):
+def pick_edits(result, cmd=None, floor=None):
     """The stored pick's edits ([] for the plan as it is). cmd: the plan they are applied to now. A pick measured on a plan of --n-cpu-moe B ("base_ncmoe") means the
     layer count B + delta; since the plan learns from loads (planner map fix 1), the plan at a later start can differ from B: the delta is then taken from the plan of
-    now so the same layer count runs, and dropped when the plan already puts that many or more layers on the GPU (the plan is then at least as far)."""
+    now so the same layer count runs, and dropped when the plan already puts that many or more layers on the GPU (the plan is then at least as far).
+    floor: the planner's fit limit at this start (tune's floor): the replayed count never goes below it (a pick near the edge on a day with less free memory, critic M1)."""
     edits = []
     for r in result.get("rows", []):
         if r["id"] == result.get("picked"):
@@ -514,6 +523,8 @@ def pick_edits(result, cmd=None):
     for e in edits:
         if e.get("flag") == "--n-cpu-moe" and "delta" in e:
             target = max(0, int(base) + int(e["delta"]))
+            if floor is not None and int(e["delta"]) < 0:
+                target = max(target, min(int(floor) + 1, int(cur)))      # the step at the fit limit keeps no reserve: never replayed (as in the walk)
             d = target - int(cur)
             if d < 0 or (int(e["delta"]) > 0 and d > 0):
                 out.append(dict(e, delta=d))

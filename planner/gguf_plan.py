@@ -1059,9 +1059,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         gap = 0.0
         note("gpu_overhead_mib", 0, "constant", f"none counted for this free figure ({free_source or 'given'}); no load recorded here")
     draft = 0.0
-    if mtp and measured.get("gap_mib") is None:
+    if mtp:
         draft = MTP_DRAFT_GIB * 2**30
-        note("mtp_draft_mib", draft / MiB, "constant", "MTP's draft context on the GPU (one model on our PC); a measured load with MTP on replaces it")
+        note("mtp_draft_mib", draft / MiB, "constant", "MTP's draft context on the GPU (one model on our PC); loads with MTP on are not recorded, so this stays a constant")
     free = free - gap - draft
 
     rule = plan_rule_on()

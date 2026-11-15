@@ -44,6 +44,7 @@ NCTX_RE = re.compile(r"llama_context: n_ctx\s*=\s*([0-9]+)")
 NUB_RE = re.compile(r"llama_context: n_ubatch\s*=\s*([0-9]+)")
 KVTYPE_RE = re.compile(r"llama_kv_cache: size =.*K \((\w+)\).*V \((\w+)\)")
 LOG_LINE_RE = re.compile(r"^\s*[0-9.]+ ([DIWE]) (\S+)")
+ERROR_LINE_RE = re.compile(r"error|fail|abort|assert|out of memory|exception|terminate|segmentation", re.I)
 
 
 # tagged info lines that llama-server prints only at verbosity 4 ((tag, function) as the log shows them; laptop logs of 2026-11-13 / 2026-11-15, verbosity 3 vs 4)
@@ -74,6 +75,8 @@ class LineFilter:
         self.last_hidden = False
 
     def show(self, line):
+        if ERROR_LINE_RE.search(line):
+            return True                      # an error, abort or failed allocation always shows (ggml_abort and Vulkan errors print without the prefix)
         if LOG_LINE_RE.match(line):
             self.last_hidden = extra_log_line(line)
             return not self.last_hidden
@@ -231,7 +234,7 @@ def lookup(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp):
     for k in ("compute_mib", "context_mib"):
         if b and isinstance(b.get(k), (int, float)) and b[k] > 0:
             out[k], out[k + "_at"] = float(b[k]), b.get("at")
-    o = d["overhead"].get(_key(machine, build, engine, bool(mtp)))
+    o = d["overhead"].get(_key(machine, build, engine, False))        # MTP loads are not recorded; the draft context is the plan's own constant (critic M2)
     if o and isinstance(o.get("gap_mib"), (int, float)):
         out["gap_mib"], out["gap_mib_at"] = float(o["gap_mib"]), o.get("at")
     return out
