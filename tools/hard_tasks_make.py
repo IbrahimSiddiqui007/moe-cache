@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MODELS-1141: builds tools/hard_tasks.json, a set of hard long-reasoning tasks with objective checks (standard library only, deterministic: fixed seeds).
 Each task: {id, category, prompt, check: {kind, ...}, why_hard}. The prompt always ends with 'Finish with one line: ANSWER: <answer>'. Checks live in tools/hard_tasks_run.py (check()).
-  python3 tools/hard_tasks_make.py [--out tools/hard_tasks.json] [--verify]      --verify re-solves every task with the reference solver and fails on a mismatch"""
+  python3 tools/hard_tasks_make.py [--out tools/hard_tasks.json] [--verify]      --verify rebuilds the set from the seeds and fails when it differs from the json (and re-checks the sudoku grid)"""
 import itertools, json, os, random, sys
 
 FINISH = "\n\nThink as long as you need. Finish with one line exactly in the form `ANSWER: <answer>`."

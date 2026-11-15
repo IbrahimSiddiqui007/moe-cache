@@ -58,6 +58,9 @@ r2 = subprocess.run([sys.executable, "-I", os.path.join(HERE, "tools", "hard_tas
 chk("a cap of 512 is sent as n_predict 512", r2.returncode == 0 and SEEN == [512])
 s = subprocess.run([sys.executable, "-I", os.path.join(HERE, "tools", "hard_tasks_run.py"), "summary", out], capture_output=True, text=True)
 chk("summary prints pass count and thinking tokens", "1/1 pass" in s.stdout and "thinking tokens" in s.stdout)
+sys.path.insert(0, os.path.join(HERE, "tools")); import hard_tasks_run as HR
+chk("thinking never closed: a draft ANSWER inside it is no answer; --no-think: the plain text is the answer", HR.final_answer("draft ANSWER: 5") is None and HR.final_answer("x</think>ANSWER: 5") == "5" and HR.final_answer("ANSWER: 5", False) == "5" and HR.think_tokens("", "ANSWER: 5", 9, "", False) == 0)
+chk("a summary of a run with no finished items does not crash", "no finished items" in HR.summary_text({"label": "x", "items": [None]}))
 ids = [t["id"] for t in TASKS]
 chk("the task file: 27 tasks, unique ids, known check kinds, an ANSWER instruction in every prompt", len(TASKS) == 27 and len(set(ids)) == 27 and all(t["check"]["kind"] in ("int", "word", "exact") and "ANSWER:" in t["prompt"] and t["why_hard"] for t in TASKS))
 print("hard_tasks_test: " + ("FAIL" if fails else "PASS"))
