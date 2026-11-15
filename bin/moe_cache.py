@@ -2530,6 +2530,12 @@ class LaunchPlan:
         import moe_cache_planfile
         return moe_cache_planfile.build(self)
 
+    def settings_safe(self):
+        try:
+            return self.settings()
+        except Exception:                          # the plan file never breaks --plan-json (the control page reads it)
+            return None
+
     def to_dict(self):
         return {"engine": self.engine, "method": self.method, "model": self.model, "llama_server": self.ls, "ctx": self.ctx, "port": self.port,
                 "n_cpu_moe": self.n_cpu_moe, "micro_batch": self.ub, "kv_cache": self.kv, "prompt_cache_mib": self.cache_ram,
@@ -2537,7 +2543,7 @@ class LaunchPlan:
                 "windows_job_limit_bytes": self.win_limit, "argv": list(self.cmd),
                 "env": [[k, "(hidden)" if k == "LLAMA_API_KEY" else v] for k, v in self.env + self.key_env],
                 "command_line": self.command_line(), "reasons": self.reasons, "warnings": self.warnings,
-                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines(), "autotune": self.autotune_dict(), "settings": self.settings(),
+                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines(), "autotune": self.autotune_dict(), "settings": self.settings_safe(),
                 **({"approx": getattr(self.a, "approx_info")} if getattr(self.a, "approx_info", None) else {})}
 
 
@@ -2682,7 +2688,8 @@ def server(argv):
         raise SystemExit(plan.commit_refusal)       # LAUNCHER-991: before anything loads a model, the --approx canary included
     if a.max_ram and not a.plan_json:
         os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram     # this process is the launch: its later memory decisions (OOM retry, warm-keeper threads) keep the cap
-    plan_file_stage(a, plan)
+    if a.dry_run or a.plan_json:
+        plan_file_stage(a, plan)
     if a.plan_json:
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
@@ -2699,6 +2706,8 @@ def server(argv):
                 plan = launch_plan(a2, extra2, argv2)
                 if getattr(a2, "approx_info", None):
                     a2.approx_info["canary"] = f"stepped down from {a.approx} to {final}"
+    if not a.dry_run:
+        plan_file_stage(a, plan)                      # the final plan (after the canary), and not over the file of a server that already holds the port
     return run_launch_plan(plan)
 
 
@@ -2711,9 +2720,15 @@ def plan_file_stage(a, plan):
     except Exception as e:                       # never stops a launch
         say(f"moe-cache: plan file not written ({type(e).__name__}: {e})", err=True)
         return
-    path = a.plan_file or (None if (a.dry_run or a.plan_json) else pf.default_path(CACHE_DIR, plan.port))
+    real = not (a.dry_run or a.plan_json)
+    path = a.plan_file or (pf.default_path(CACHE_DIR, plan.port) if real else None)
+    if path and real and not a.plan_file and port_busy(plan.port):
+        path = None                                   # another server holds this port: its plan file stays (run_launch_plan refuses this start)
     if path and pf.write(path, rec) and not a.plan_json:
         say(f"moe-cache: plan file: {path}")
+        if real and not a.plan_file:
+            import atexit
+            atexit.register(pf.remove, path, rec)     # a plan file describes a running server: gone when this launcher ends
     if not a.plan_json and (a.plan_file or not a.dry_run):
         for line in pf.summary(rec):
             say(line)
@@ -4716,7 +4731,10 @@ def _launch_plan(a, extra, argv, machine):
     plan.tuned, plan.planner_info, plan.planner_error = tuned, planner_info, planner_error
     plan.autotune = tune_info
     plan.tune_fallback = tune_fallback
-    plan.user_flags, plan.user_extra = user_flags, user_extra          # the plan file says which settings are yours (moe_cache_planfile.py)
+    plan.user_flags, plan.user_extra = user_flags, user_extra
+    plan.commit_changed = {n: (arg_after(cmd_picked, *f), arg_after(cmd, *f)) for n, f in (("ub", ("-ub", "--ubatch-size")), ("n_cpu_moe", ("--n-cpu-moe", "-ncmoe")), ("kv_type", ("-ctk", "--cache-type-k")),
+                                                                                         ("cache_ram_mib", ("--cache-ram",)), ("load_mode", ("--load-mode",)))
+                           if arg_after(cmd_picked, *f) != arg_after(cmd, *f)}     # what the Windows commit check changed after the plan was made          # the plan file says which settings are yours (moe_cache_planfile.py)
     return plan
 
 
