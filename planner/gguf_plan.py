@@ -188,7 +188,7 @@ def shards(path):
 def model_layout(path):
     """-> dict(n_layers, expert_bytes_per_layer, other_bytes, total_bytes, mtp_blocks). n_layers counts the MTP head's block (blk.N.nextn.*) when it
     has experts (Qwen3.6: 41 = 40 + 1); mtp_blocks says how many of the highest blocks are that head."""
-    layers, other, table, mtp = {}, 0, 0, set()
+    layers, other, table, mtp, emb, has_output = {}, 0, 0, set(), 0, False
     for p in shards(path):
         for name, size in read_tensors(p):
             mm = re.match(r"blk\.(\d+)\.nextn\.", name)
@@ -201,10 +201,41 @@ def model_layout(path):
                 table += size              # n-gram lookup table (qwen4exp): read from the file when needed, never on the GPU (same rule as planner/plan.py)
             else:
                 other += size
+                if name == "token_embd.weight":
+                    emb += size
+                elif name == "output.weight":
+                    has_output = True
     n = (max(layers) + 1) if layers else 0
     per = sum(layers.values()) / len(layers) if layers else 0
+    # token_embd stays on the CPU (llama.cpp keeps the input layer there; laptop 35B log: CUDA0 model buffer 5116.81 MiB = the other weights minus token_embd plus the
+    # GPU expert layers, to the MiB). A model without output.weight reuses token_embd as its output layer, which then IS on the GPU.
     return {"n_layers": n, "expert_bytes_per_layer": per, "other_bytes": other, "table_bytes": table, "total_bytes": other + table + sum(layers.values()),
-            "mtp_blocks": len(mtp & set(layers))}
+            "mtp_blocks": len(mtp & set(layers)), "expert_bytes_by_layer": dict(sorted(layers.items())), "cpu_only_bytes": emb if has_output else 0}
+
+
+def gpu_expert_bytes(lay, n_cpu_moe):
+    """Bytes of expert weights on the GPU with --n-cpu-moe n_cpu_moe (llama.cpp keeps the experts of layers 0 .. n-1 on the CPU): the real sizes of the layers
+    above n (quantisation mixes make some layers bigger: the 35B UD-IQ3_XXS has 262 and 300 MiB layers)."""
+    by = lay.get("expert_bytes_by_layer") or {}
+    if by:
+        return float(sum(v for k, v in by.items() if k >= n_cpu_moe))
+    return float(max(0, lay["n_layers"] - n_cpu_moe) * lay["expert_bytes_per_layer"])
+
+
+def gpu_layers_that_fit(lay, room):
+    """The most expert layers (counted from the top, as --n-cpu-moe places them) whose real sizes fit `room` bytes."""
+    by = lay.get("expert_bytes_by_layer") or {}
+    if not lay["n_layers"] or not lay["expert_bytes_per_layer"] or room <= 0:
+        return 0
+    if not by:
+        return max(0, min(lay["n_layers"], int(room // lay["expert_bytes_per_layer"])))
+    used, g = 0.0, 0
+    for k in range(lay["n_layers"] - 1, -1, -1):
+        used += by.get(k, 0)
+        if used > room:
+            break
+        g += 1
+    return g
 
 
 SMI_GAP_GIB = 0.40           # nvidia-smi (total - used) is 0.4 GiB more than CUDA can allocate on the RTX 4060 8 GB laptop (8146 vs 7745 MiB at idle); the first live run ran out of memory without it
@@ -616,12 +647,18 @@ def desk_reserve_gb(total, free, base=0.5):
     return min(2.5, max(base, 0.25 + 0.5 * used)), used
 
 
+LAST_FREE_SOURCE = [None]       # where free_vram_bytes' last figure came from (the plan counts the CUDA gap only for nvidia-smi's figure)
+
+
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
+    LAST_FREE_SOURCE[0] = None
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
         out = out.strip().splitlines()[0].split(",")    # one line per GPU: the first, as plan.py (with two GPUs the whole text failed to parse: no GPU)
-        return (float(out[0]) - float(out[1])) * 1048576
+        v = (float(out[0]) - float(out[1])) * 1048576
+        LAST_FREE_SOURCE[0] = "nvidia-smi"
+        return v
     except Exception:
         pass
     best = None
@@ -636,6 +673,8 @@ def free_vram_bytes():
         # RAM the GPU may borrow) is never counted. Under 1 GiB (e.g. a 512 MiB carve-out) no expert layer fits next to the buffers: skipped
         if tot >= 2**30 and (best is None or tot > best[0]):
             best = (tot, tot - used)
+    if best:
+        LAST_FREE_SOURCE[0] = "amd-sysfs"
     return best[1] if best else None
 
 
@@ -963,22 +1002,67 @@ def plan_table_lines(rows, ctx):
     return out
 
 
-def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False):
-    """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left.
+MTP_DRAFT_GIB = 0.85          # MTP's draft context on the GPU (planner/plan.py's figure, GLM on the PC, RESULTS 62); used until a load with MTP on was measured
+GAP_SOURCES = ("nvidia-smi",)  # free figures that overstate what llama.cpp can fill: nvidia-smi's (total - used) is ~0.4 GiB above CUDA's free on the RTX 4060 laptop
 
-    Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use and a list of reasons. Rules come from measurements
+
+def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False, plugin=True, measured=None,
+         free_source=None, mtp=False):
+    """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left. The only placement
+    function of the launcher (planner map fix 1; planner/plan.py's formula no longer decides).
+
+    Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use, a list of reasons and "inputs": every size the plan used with its
+    value, source (measured / probe / constant) and why, for the plan file. Rules come from measurements
     (docs/internal/PERFORMANCE_ANALYSIS.md): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
     compute buffer that grows with the context; the disk lookup table never counts as GPU weight. ub: a micro-batch the user chose (the rest is
     planned around it; without this a chosen -ub left no room for the long-prompt block and long prompts ran on the CPU, RESULTS 61). long_prompt: the opt-in
     long-prompt mode (--long-prompt): -ub 4096 is tried first and taken only when the memory plan leaves room for it (no GPU cache wanted, no -ub chosen); else the usual ladder.
+    plugin: the plugin runs (only then is the room for its long-prompt GPU block kept free: stock llama-server has no such block). measured: what the last real
+    loads on this machine measured (planner/load_record.py lookup): {"non_expert_mib", "gap_mib", "buffers": {ub: {"compute_mib", "context_mib"}}}; a missing part
+    falls back to the header (weights, KV) or our tables (compute buffer, gap). free_source: where `free` came from ("nvidia-smi" overstates it by the CUDA
+    reserve and context, SMI_GAP_GIB until measured). mtp: MTP drafting is on (its draft context needs GPU memory, MTP_DRAFT_GIB until measured).
     """
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
     why = []
     if not lay["n_layers"] or free is None:
-        return {"n_cpu_moe": 999, "ub": 512, "gpu_cache_mib": 0, "why": ["no GPU memory information: all experts stay on the CPU, default micro-batch"]}
-    kv = _kv_or_flat(path, ctx, kv_q8)
-    fixed = lay["other_bytes"] + kv
+        return {"n_cpu_moe": 999, "ub": 512, "gpu_cache_mib": 0, "why": ["no GPU memory information: all experts stay on the CPU, default micro-batch"], "inputs": []}
+    MiB = 1048576
+    measured = measured or {}
+    mbuf = {int(k): v for k, v in (measured.get("buffers") or {}).items()}
+    inputs = []
+
+    def note(name, value_mib, source, text):
+        inputs.append({"setting": name, "value": round(value_mib), "source": source, "why": text})
+    if measured.get("non_expert_mib"):
+        weights = measured["non_expert_mib"] * MiB
+        note("gpu_weights_mib", weights / MiB, "measured", "the model's weights on the GPU besides the expert layers, from llama-server's buffer lines at the last load on this machine and build")
+    else:
+        weights = lay["other_bytes"] - lay.get("cpu_only_bytes", 0)
+        note("gpu_weights_mib", weights / MiB, "probe", "the model's weights besides the expert layers, from the file's header (token_embd stays on the CPU); no load of this model was recorded here")
+    ctx_m = next((v["context_mib"] for v in mbuf.values() if v.get("context_mib")), None)
+    if ctx_m:
+        kv = ctx_m * MiB
+        note("gpu_kv_mib", ctx_m, "measured", "KV cache and recurrent state at this context and KV type, from llama-server's buffer lines at the last load")
+    else:
+        kv = _kv_or_flat(path, ctx, kv_q8)
+        note("gpu_kv_mib", kv / MiB, "probe", "KV cache and recurrent state at this context and KV type, from the file's header")
+    fixed = weights + kv
+    if measured.get("gap_mib") is not None:
+        gap = measured["gap_mib"] * MiB
+        note("gpu_overhead_mib", gap / MiB, "measured", "what the free figure overstates (driver vs CUDA total, CUDA context, buffers made after load"
+             + (", MTP's draft context" if mtp else "") + "), from the memory tables of the last load")
+    elif free_source in GAP_SOURCES:
+        gap = SMI_GAP_GIB * 2**30
+        note("gpu_overhead_mib", gap / MiB, "constant", "nvidia-smi's free figure is about this much above what CUDA can fill (RTX 4060 laptop, 8146 vs 7745 MiB at idle); no load recorded here")
+    else:
+        gap = 0.0
+        note("gpu_overhead_mib", 0, "constant", f"none counted for this free figure ({free_source or 'given'}); no load recorded here")
+    draft = 0.0
+    if mtp and measured.get("gap_mib") is None:
+        draft = MTP_DRAFT_GIB * 2**30
+        note("mtp_draft_mib", draft / MiB, "constant", "MTP's draft context on the GPU (one model on our PC); a measured load with MTP on replaces it")
+    free = free - gap - draft
 
     rule = plan_rule_on()
     if rule and fit_params:
@@ -989,6 +1073,8 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             if not guess and compute_buffer_mib(ctx, u) is None:
                 return None
             return rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params)[0]
+        if mbuf.get(u, {}).get("compute_mib"):
+            return mbuf[u]["compute_mib"]           # measured at the last load with this context, micro-batch and KV type
         return compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
     # long prompts run their expert block on the GPU and upload one whole layer of experts for it: the micro-batch, the cache and static layers must
     # all leave that room (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 18-24 tok/s instead
@@ -997,6 +1083,8 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     # plus the 256 MiB the plugin itself requires free before it allocates a block (gpu_segment's headroom check): without it the reserve had 24 MiB of
     # slack on Flash-Next at -ub 2048, and at ctx 8192 the block found 423 MiB free where it needed 455, so prompts fell back to the CPU (~20 tok/s)
     def block_for(u):
+        if not plugin:
+            return 0              # stock llama-server: no plugin, no long-prompt GPU block (LAUNCHER-1177: 839 MiB were kept free for nothing on the laptop 35B)
         if rule:
             return rule_block_mib(path, lay, u) * 1048576
         return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
@@ -1027,13 +1115,14 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     cache_room = room
     cache_mib = int(cache_room // 1048576) if cache_room > 0 else 0
     expert_total = lay["expert_bytes_per_layer"] * lay["n_layers"]
+    static_n = lay["n_layers"] - gpu_layers_that_fit(lay, room)       # the static answer for the same room (the launcher falls back to it when no cache size works out)
     if want_cache and expert_total > 0 and cache_mib >= 1536 and cache_mib * 1048576 >= 0.04 * expert_total:
         n_cpu_moe = 999
         why.append(f"GPU expert cache of {cache_mib} MiB ({100 * cache_mib * 1048576 / expert_total:.0f} % of the experts; "
                    f"{int(block // 1048576)} MiB kept free for the long-prompt GPU block)")
     else:
         cache_mib = 0
-        gpu_layers = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0
+        gpu_layers = gpu_layers_that_fit(lay, room)
         n_cpu_moe = lay["n_layers"] - gpu_layers
         # --n-cpu-moe counts from layer 0, so the MTP head's block (the last one) is the first to go to the GPU: say the model's own layers apart
         mtpb = min(lay.get("mtp_blocks", 0), gpu_layers)
@@ -1042,8 +1131,18 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         why.append(f"{where} ({int(block // 1048576)} MiB kept free for the long-prompt GPU block"
                    + (")" if not want_cache else "; a cache would be under 1.5 GiB or under 4 % of the experts)"))
     why.append(f"micro-batch {ub} (long-prompt mode: the memory plan leaves room for it)" if ub == 4096 else f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
+    comp = cbm(ub, True) if fixed_ub or not best or ub == 4096 else cbm(ub, False)
+    if mbuf.get(ub, {}).get("compute_mib"):
+        note("gpu_compute_mib", comp or 0, "measured", f"llama-server's compute buffer at -ub {ub} and this context, from the last load (or the size a failed load asked for)")
+    elif rule:
+        note("gpu_compute_mib", comp or 0, "measured" if fit_params else "constant", "compute buffer by MOE_CACHE_PLAN_RULE (" + ("llama-fit-params" if fit_params else "formula") + ")")
+    else:
+        note("gpu_compute_mib", comp or 0, "constant", f"compute buffer at -ub {ub}: our table (measured on Flash-Next on the PC); no load of this model, context and micro-batch recorded here")
+    note("long_prompt_block_mib", block / MiB, "constant",
+         "room for the plugin's long-prompt GPU block (one expert layer plus the batch's results, rule of ours)" if plugin else "0: stock llama-server runs no plugin, so no long-prompt block")
+    note("gpu_reserve_mib", reserve_gb * 1e9 / MiB, "constant", "kept free for other programs and growth (0.5 GB rule of ours, more when the desktop holds GPU memory, --gpu-margin)")
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
-            "compute_mib": cbm(ub, True) if fixed_ub or not best or ub == 4096 else cbm(ub, False), "why": why}
+            "compute_mib": comp, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 
 
 def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
