@@ -582,7 +582,7 @@ def recommend(spec, use, model=None):
     need = m["size"] + kv["bytes"]
     margin = spec.get("gpu_margin")
     margin = GPU_MARGIN_GIB if margin is None else float(margin)
-    usable_vram = max(0.0, vram - margin) * GIB if vram else 0.0          # the same margin the launcher's tuner keeps (--gpu-margin)
+    usable_vram = max(0.0, (spec.get("vram") or 0) / GIB - margin) * GIB if vram else 0.0          # the same margin the launcher's tuner keeps (--gpu-margin)
     memory = {"model": m["size"], "kv": kv["bytes"], "kv_how": kv["how"], "total": need, "available": cap * 1e9 + usable_vram, "gpu_margin_gib": margin}
     if need > memory["available"] and fits(k):
         warn.append(f"model {m['size'] / 1e9:.1f} GB + KV cache {kv['bytes'] / 1e9:.1f} GB at context {ctx} ({kv['how']}) is more than RAM cap + VRAM "

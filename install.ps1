@@ -158,6 +158,9 @@ function Install-MoeCache {
     if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)*$') { throw "odd version '$Version'" }
     $name = "moe-cache-v$Version-windows-x64"
     if (-not $BaseUrl) { $BaseUrl = "https://github.com/$Repo/releases/download/v$Version" }
+    # RELEASE-686: a plain-http mirror is refused (only this machine may use http), as install.sh and `update --apply` do
+    if ($BaseUrl -match '^(?i)http://' -and $BaseUrl -notmatch '^(?i)http://(127\.0\.0\.1|localhost|\[::1\])([:/]|$)') { throw "REFUSED: the download address $BaseUrl is not https (-BaseUrl / MOE_CACHE_BASE_URL may be https, a folder or this machine)" }
+    if ($BaseUrl -match '^(?i)https?://[^/]*@') { throw "REFUSED: the download address $BaseUrl has a user part (user@host)" }
     Say "moe-cache $Version for Windows: installing into $Root (Python $($py.Version) found)"
     if ($DryRun) { Say "install.ps1: would download $BaseUrl/$name.zip and SHA256SUMS-windows, check the hash, unpack to $kit, write $shim$(if (-not $NoPath) { " and add $bin to your user PATH" })"; return 0 }
 
@@ -204,6 +207,7 @@ function Install-MoeCache {
                     $vcode = $LASTEXITCODE
                     $vtail = $vout.Trim(); if ($vtail.Length -gt 300) { $vtail = $vtail.Substring($vtail.Length - 300) }
                     if ($vcode -eq 0) { $attOk = $true }
+                    elseif ($vout -match '(?i)unknown command|unknown subcommand|no such command|is not a (gh )?command') { $attWhy = 'this gh is too old: it has no `attestation` command (update gh, then try again)' }      # the check could not run: -YesUnverified may go on
                     elseif ($vout -match '(?i)no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5\d\d|rate limit|unexpected EOF') { $attWhy = "gh could not reach GitHub to verify (network): $vtail" }      # the check could not run: -YesUnverified may go on
                     elseif ($vout -match '(?i)gh auth login|not logged in|authentication required|requires authentication|HTTP 401|bad credentials|GH_TOKEN') { $attWhy = 'gh has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working `gh auth login` (see: gh auth status)' }
                     else { $attFailed = $true; $attWhy = "gh attestation verify FAILED: $vtail" }

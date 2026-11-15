@@ -381,7 +381,8 @@ class Backend:
                 except OSError:
                     pass
                 self.log(f"stopped while the model was loading ({reason})")
-            return
+                return
+            self.lock.acquire()         # not a load (a stop in progress, a request starting): wait for it as before, so a model swap never starts the next model beside a still-stopping one
         try:
             self._stop_locked(reason)
         finally:
