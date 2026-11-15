@@ -2266,6 +2266,7 @@ SERVER_HELP = """\
 --retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; not for a model over 40 % of RAM), for at most 180 s in
            all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %) and stores
            it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
+--plan-file PATH  write the launch plan as JSON there: every setting the launcher decided, its value, where it came from (probe / measured / constant / user / llama) and a plain reason. A real start writes it to <cache>/plans/port-PORT.json and prints a short summary; --plan-json shows the same under "settings"
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
            the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
@@ -2524,6 +2525,11 @@ class LaunchPlan:
         t = self.autotune
         return None if not t else {k: t.get(k) for k in ("state", "picked", "changed", "why", "rows", "total_s", "budget_s", "tuned_at", "locked", "lines", "prompt_tokens", "decode_tokens")}
 
+    def settings(self):
+        """The plan file's content: every setting decided, with value, source (probe / measured / constant / user / llama) and a plain reason (bin/moe_cache_planfile.py)."""
+        import moe_cache_planfile
+        return moe_cache_planfile.build(self)
+
     def to_dict(self):
         return {"engine": self.engine, "method": self.method, "model": self.model, "llama_server": self.ls, "ctx": self.ctx, "port": self.port,
                 "n_cpu_moe": self.n_cpu_moe, "micro_batch": self.ub, "kv_cache": self.kv, "prompt_cache_mib": self.cache_ram,
@@ -2531,7 +2537,7 @@ class LaunchPlan:
                 "windows_job_limit_bytes": self.win_limit, "argv": list(self.cmd),
                 "env": [[k, "(hidden)" if k == "LLAMA_API_KEY" else v] for k, v in self.env + self.key_env],
                 "command_line": self.command_line(), "reasons": self.reasons, "warnings": self.warnings,
-                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines(), "autotune": self.autotune_dict(),
+                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines(), "autotune": self.autotune_dict(), "settings": self.settings(),
                 **({"approx": getattr(self.a, "approx_info")} if getattr(self.a, "approx_info", None) else {})}
 
 
@@ -2575,6 +2581,7 @@ def parse_server(argv):
     ap.add_argument("--approx", choices=["exact", "safe", "careful", "aggressive"], default=None)      # QUALITY-970: opt-in tiers that change answers (bin/moe_cache_approx.py); off by default
     ap.add_argument("--approx-off", action="append", default=[], metavar="MODE"); ap.add_argument("--approx-unverified", action="store_true"); ap.add_argument("--no-approx-canary", action="store_true")
     ap.add_argument("--print-systemd", action="store_true")  # SERVER-005: print docs/moe-cache-server.service filled with this command line and the memory limits, and exit
+    ap.add_argument("--plan-file", metavar="PATH", help=argparse.SUPPRESS)           # write the plan file (every setting, its source and reason) there; a real start writes it to <cache>/plans/port-PORT.json
     ap.add_argument("--plan-json", action="store_true")      # print the launch plan as JSON (argv, environment, reasons, warnings) and exit; nothing is started
     extra = []
     if "--" in argv:
@@ -2675,6 +2682,7 @@ def server(argv):
         raise SystemExit(plan.commit_refusal)       # LAUNCHER-991: before anything loads a model, the --approx canary included
     if a.max_ram and not a.plan_json:
         os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram     # this process is the launch: its later memory decisions (OOM retry, warm-keeper threads) keep the cap
+    plan_file_stage(a, plan)
     if a.plan_json:
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
@@ -2692,6 +2700,23 @@ def server(argv):
                 if getattr(a2, "approx_info", None):
                     a2.approx_info["canary"] = f"stepped down from {a.approx} to {final}"
     return run_launch_plan(plan)
+
+
+def plan_file_stage(a, plan):
+    """The plan as a data file and a short summary: written on a real start (<cache>/plans/port-PORT.json) or where --plan-file says (also with --dry-run); printed on a
+    real start. Describes the finished plan only: no decision and no command line changes."""
+    import moe_cache_planfile as pf
+    try:
+        rec = pf.build(plan)
+    except Exception as e:                       # never stops a launch
+        say(f"moe-cache: plan file not written ({type(e).__name__}: {e})", err=True)
+        return
+    path = a.plan_file or (None if (a.dry_run or a.plan_json) else pf.default_path(CACHE_DIR, plan.port))
+    if path and pf.write(path, rec) and not a.plan_json:
+        say(f"moe-cache: plan file: {path}")
+    if not a.plan_json and (a.plan_file or not a.dry_run):
+        for line in pf.summary(rec):
+            say(line)
 
 
 def approx_canary(plan):
@@ -4691,6 +4716,7 @@ def _launch_plan(a, extra, argv, machine):
     plan.tuned, plan.planner_info, plan.planner_error = tuned, planner_info, planner_error
     plan.autotune = tune_info
     plan.tune_fallback = tune_fallback
+    plan.user_flags, plan.user_extra = user_flags, user_extra          # the plan file says which settings are yours (moe_cache_planfile.py)
     return plan
 
 

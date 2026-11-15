@@ -398,6 +398,28 @@ def fingerprint(model):
     return f"{os.path.getsize(model)}:{h.hexdigest()[:16]}"
 
 
+def plan_file_problems(plan):
+    """The plan file (plan["settings"], bin/moe_cache_planfile.py) must describe the command the launcher built: schema, one row per setting, source from the fixed list,
+    a reason on every row, and the values of --n-cpu-moe, -ub, -c and the KV types equal to what is in argv. Returns the problems (empty = fine)."""
+    st = plan.get("settings")
+    if not isinstance(st, dict) or st.get("schema") != 1 or not st.get("settings"):
+        return ["no plan file content"]
+    bad, rows, argv = [], {r["setting"]: r for r in st["settings"]}, plan["argv"]
+    for r in st["settings"]:
+        if r["source"] not in ("probe", "measured", "constant", "user", "llama") or not str(r.get("why", "")).strip():
+            bad.append(f"row {r.get('setting')}: source/reason missing")
+    def after(*names):
+        v = None
+        for i, x in enumerate(argv):
+            if x in names and i + 1 < len(argv):
+                v = argv[i + 1]
+        return v
+    for key, names in (("n_cpu_moe", ("--n-cpu-moe", "-ncmoe")), ("ub", ("-ub", "--ubatch-size")), ("context", ("-c", "--ctx-size")), ("load_mode", ("--load-mode",))):
+        if key not in rows or rows[key]["value"] != after(*names):
+            bad.append(f"row {key}: {rows.get(key, {}).get('value')!r} but the command has {after(*names)!r}")
+    return bad
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     record = "--record" in sys.argv
@@ -442,6 +464,10 @@ def main():
                     plan = json.loads(r["stdout"])
                     got = [l.replace(tmp, "<TMP>").replace(model, "<MODEL>").replace(HERE, "<HERE>") for l in plan["dry_run_lines"]]
                     ok = got == want and r["stderr"] == "" and plan["engine"] in ("stock", "plugin") and plan["argv"]
+                    bad_rows = plan_file_problems(plan)
+                    if bad_rows:
+                        ok = False
+                        got = bad_rows
                 except Exception as e:
                     ok = False
                     got = [str(e)]
