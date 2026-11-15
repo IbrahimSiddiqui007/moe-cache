@@ -3180,9 +3180,9 @@ def dense_fit_free(a, machine):
 def mtp_layer_skipped(ls, extra, machine):
     """True when llama-server will NOT load the model's MTP layer: MTP drafting is off (no --spec-type draft-mtp in the command) and this llama-server knows MTP drafting at all
     (draft-mtp in its --help: builds with it load the NextN layers only when MTP is on, `load_mtp`; older builds load them with the model, so nothing is skipped there). Checked
-    by loading Qwen3.8-27B with and without MTP on the pinned build (model buffer size) - see the LAUNCHER-1063 follow-up in docs/CHANGELOG."""
+    by loading Qwen3.8-27B with and without MTP on the pinned build (model buffer size) (one model, one build: not measured on the PC fit boundary)."""
     try:
-        return "draft-mtp" not in extra and "draft-mtp" in ls_help(ls, machine.run)
+        return not any("draft-mtp" in x for x in extra) and "draft-mtp" in ls_help(ls, machine.run)
     except Exception:
         return False
 
@@ -3538,8 +3538,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         skip = mtp_layer_skipped(ls, extra, machine)
         triple = dense_gpu_fit_pair(a, a.model, ctx, machine, with_q4=True, skip_mtp=skip)
         if triple and triple[0].get("mtp_skipped_gib", 0) > 0.05:
-            say(f"moe-cache: MTP is off, so llama-server does not load the model's MTP layer: its {triple[0]['mtp_skipped_gib']:.2f} GiB is not counted against the GPU "
-                "(--mtp keeps it and counts it)")
+            say(f"moe-cache: MTP is off, so llama-server does not load the model's MTP layer: its {triple[0]['mtp_skipped_gib']:.2f} GiB is not counted against the GPU")
         pair = triple[:2] if triple else None
         if pair and not pair[0]["fits"]:
             a.fast, a.dense_kv = "kv", True

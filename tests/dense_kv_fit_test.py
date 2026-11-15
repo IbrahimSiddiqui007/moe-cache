@@ -136,11 +136,13 @@ with tempfile.TemporaryDirectory() as tmp:
     m16 = lambda sk: gp.dense_gpu_fit(mtp_model, ctx, 64 * GIB, False, 0.0, 0.0, 0.20, skip_mtp=sk)["need_gib"]
     lim = (m16(False) + m16(True)) / 2
     run2 = lambda extra_opts=(): lp.run_case("linux", ["--ram", "12", "--vram", f"{lim:.3f}", "--ctx", str(ctx)] + list(extra_opts), [], mtp_model, tmp)
-    r_off = run2(["--no-mtp"]); r_on = run2(["--mtp"])
+    r_off = run2(["--no-mtp"]); r_on = run2(["--mtp"]); r_def = run2()
     c_off = next((l for l in r_off["stdout"].splitlines() if "llama-server" in l and " -m " in l), ""); c_on = next((l for l in r_on["stdout"].splitlines() if "llama-server" in l and " -m " in l), "")
     o_off = r_off["stdout"] + r_off.get("stderr", ""); o_on = r_on["stdout"] + r_on.get("stderr", "")
     check("-ctk" not in c_off and "MTP is off, so llama-server does not load the model's MTP layer" in o_off and "KV cache does not fit" not in o_off,
           "dry run, MTP off, f16 fits only without the MTP layer: f16 stays, the line says the layer is not counted and how many GiB")
+    c_def = next((l for l in r_def["stdout"].splitlines() if "llama-server" in l and " -m " in l), "")
+    check("-ctk" not in c_def and "MTP is off, so llama-server does not load" in r_def["stdout"] + r_def.get("stderr", ""), "dry run, no MTP flag (the default for a dense model): the layer is not counted, f16 stays")
     check("-ctk q8_0" in c_on and "does not load the model's MTP layer" not in o_on, "dry run, --mtp: the layer is counted, so f16 does not fit: q8_0 KV (unchanged behaviour)")
     kt = mc.kv_plan_type
     check(kt(["-ctk", "q4_0", "-ctv", "q4_0"], True) == "q4_0" and kt(["-ctk", "q8_0"], False) == ("q8_0", "f16") and kt([], True) is True and kt([], False) is False

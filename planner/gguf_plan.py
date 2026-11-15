@@ -260,13 +260,14 @@ def nextn_bytes(path):
         n_next, blocks = int(m.get(f"{arch}.nextn_predict_layers", 0) or 0), int(m.get(f"{arch}.block_count", 0) or 0)
         if n_next <= 0 or blocks <= n_next:
             return 0
-        first, total = blocks - n_next, 0
+        first, total, has_nextn = blocks - n_next, 0, False
         for pth in shards(path):
             for name, size in read_tensors(pth):
                 mm = re.match(r"blk\.(\d+)\.", name)
                 if mm and int(mm.group(1)) >= first:
                     total += size
-        return total
+                    has_nextn = has_nextn or ".nextn." in name
+        return total if has_nextn else 0      # block_count must really include the NextN layers: no nextn.* tensor there = count nothing
     except Exception:
         return 0
 
