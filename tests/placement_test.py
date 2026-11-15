@@ -370,12 +370,15 @@ FA = types.SimpleNamespace(gpu_margin=None, leave_room=False)
 kw0 = {"plugin": False, "measured": as_measured(m64), "free_source": "nvidia-smi"}
 t64 = gguf_plan.tune(TWIN, 65536, free=FREE_PLAN * MIB, want_cache=False, kv_q8=False, **kw0)
 fl = mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, dict(t64, inputs=list(t64["inputs"])), FA)
-flm = mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, dict(t64, inputs=list(t64["inputs"])), types.SimpleNamespace(gpu_margin=2.0, leave_room=False))
-check(fl is not None and 25 <= fl <= t64["n_cpu_moe"] and flm == t64["n_cpu_moe"],
+flm = mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, dict(kw0, reserve_gb=2.0 * 2**30 / 1e9), dict(t64, inputs=list(t64["inputs"])),
+                   types.SimpleNamespace(gpu_margin=2.0, leave_room=False))
+check(mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, dict(t64, inputs=list(t64["inputs"])), FA, spill=False) is None,
+      "no fit limit where a load that does not fit fails (Linux): the walk goes to the edge (third critic, finding 1)")
+check(fl is not None and 25 <= fl <= t64["n_cpu_moe"] and flm == t64["n_cpu_moe"] and {r["setting"]: r for r in t64["inputs"]}.get("walk_floor_n_cpu_moe") is None,
       f"fit limit at 64k: {fl} (plan {t64['n_cpu_moe']}; 25 runs out of memory on the laptop); with --gpu-margin 2 GB: {flm} (never past the plan)")
 check(mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, {"n_cpu_moe": 999, "ub": 512}, FA) is None, "no fit limit when the plan places no expert layers")
 pcf = mc.walk_floor(gguf_plan.tune, TWIN, 32768, room * MIB, False, {"plugin": False, "measured": {"buffers": {2048: {"compute_mib": PC_COMPUTE}}}, "free_source": "room"},
-                    dict(pc, inputs=list(pc["inputs"])), FA)
+                    dict(pc, inputs=list(pc["inputs"])), FA, use_room=True)
 needf = weights + gguf_plan.gpu_expert_bytes(lay, pcf) / MIB + 891.25 + PC_COMPUTE
 check(pcf is not None and needf <= room, f"PC 35B 32k: the walk stops at --n-cpu-moe {pcf} ({needf:.0f} MiB inside the room of {room:.0f}), not in the spill")
 # M1: a replayed pick never goes below this start's fit limit

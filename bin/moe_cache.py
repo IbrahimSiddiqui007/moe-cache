@@ -3185,25 +3185,32 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             a.plan_free_mib = (free / 2**20) if free else None
             a.plan_free_source = kw["free_source"]
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
-            a.walk_floor = walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a)
+            a.walk_floor = walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=bool(getattr(machine, "windows", False)), use_room=use_room)
         except Exception:
             tuned = None
     return tuned, desk_kw, ub_asked
 
 
-def walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a):
-    """The auto-tune walk's fit limit (critic H1): the lowest --n-cpu-moe the same tuner places with only the reserve the user asked for (--gpu-margin, --leave-room;
-    else none: the walk measures into the planner's reserve on purpose) at the plan's micro-batch. Where a load that does not fit spills instead of failing (Windows),
-    the walk would otherwise go on into the spill. None when the plan places no static expert layers. Written into the plan's inputs."""
-    if not tuned or tuned.get("gpu_cache_mib") or not (0 < int(tuned.get("n_cpu_moe", 999)) < 999):
+def walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=True, use_room=False):
+    """The auto-tune walk's fit limit on a machine where a load that does not fit spills into shared memory instead of failing (Windows; critic H1): the lowest
+    --n-cpu-moe the same tuner places with a smaller reserve at the plan's micro-batch. The reserve kept is the user's --gpu-margin / --leave-room or the desk reserve
+    for other programs when one applies (their memory grows while the server runs), else none on the room figure (the room keeps its own) and 0.25 GB on another figure.
+    None where a failed load stops the walk itself (Linux, macOS: there the walk goes to the edge) or the plan places no static expert layers. Written into the plan's inputs."""
+    if not spill or not tuned or tuned.get("gpu_cache_mib") or not (0 < int(tuned.get("n_cpu_moe", 999)) < 999):
         return None
-    reserve = a.gpu_margin * 2**30 / 1e9 if a.gpu_margin is not None else (LEAVE_ROOM_VRAM_GB if a.leave_room else 0.0)
+    if a.gpu_margin is not None or a.leave_room or kw.get("reserve_gb", 0.5) > 0.5:
+        reserve = kw.get("reserve_gb", 0.5)          # the user's margin, --leave-room or the desk reserve the plan kept
+    else:
+        reserve = 0.0 if use_room else 0.25
     fkw = dict(kw, reserve_gb=reserve, ub=tuned["ub"])
     fkw.pop("long_prompt", None)
-    floor = int(tune(model, ctx, free=free, want_cache=False, kv_q8=kv_q8, **fkw)["n_cpu_moe"])
-    floor = min(floor, int(tuned["n_cpu_moe"]))
-    tuned.setdefault("inputs", []).append({"setting": "walk_floor_n_cpu_moe", "value": floor, "source": "probe",
-                                           "why": f"the lowest --n-cpu-moe the auto-tune walk may load: the same sizes with {reserve:.1f} GB kept free (the user's margin, else none)"})
+    ftuned = tune(model, ctx, free=free, want_cache=False, kv_q8=kv_q8, **fkw)
+    floor = min(int(ftuned["n_cpu_moe"]), int(tuned["n_cpu_moe"]))
+    srcs = {r["source"] for r in ftuned.get("inputs", []) if r["setting"] in ("gpu_weights_mib", "gpu_kv_mib", "gpu_compute_mib", "gpu_overhead_mib")}
+    tuned.setdefault("inputs", []).append({"setting": "walk_floor_n_cpu_moe", "value": floor,
+                                           "source": "measured" if srcs == {"measured"} else "constant" if "constant" in srcs else "probe",
+                                           "why": f"the lowest --n-cpu-moe the auto-tune walk may load here (a load that does not fit spills instead of failing): the same sizes "
+                                                  f"with {reserve:.2f} GB kept free"})
     return floor
 
 

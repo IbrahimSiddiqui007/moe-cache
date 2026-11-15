@@ -1051,7 +1051,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     if measured.get("gap_mib") is not None:
         gap = measured["gap_mib"] * MiB
         note("gpu_overhead_mib", gap / MiB, "measured", "what the free figure overstates (driver vs CUDA total, CUDA context, buffers made after load"
-             + (", MTP's draft context" if mtp else "") + "), from the memory tables of the last load")
+             + "), from the memory tables of the last load")
     elif free_source in GAP_SOURCES:
         gap = SMI_GAP_GIB * 2**30
         note("gpu_overhead_mib", gap / MiB, "constant", "nvidia-smi's free figure is about this much above what CUDA can fill (RTX 4060 laptop, 8146 vs 7745 MiB at idle); no load recorded here")
