@@ -2,7 +2,7 @@
 # Build the release tarball: tools/make_release.sh VERSION   (e.g. 0.1.2). Output: dist/moe-cache-vVERSION-linux-x86_64.tar.gz (llama.cpp 7fe450e19, ggml 0.25.1) and dist/moe-cache-vVERSION-ggml0.26-linux-x86_64.tar.gz (llama.cpp 23b0202a1, ggml 0.26.0) + SHA256SUMS
 # The tarball is always built from a clean export of the last commit (git archive HEAD), never from the working tree, so untracked or
 # uncommitted files cannot end up in a release. Uncommitted changes are ignored (a warning is printed).
-set -e
+set -eo pipefail
 cd "$(dirname "$0")/.."
 V="$1"; [ -n "$V" ] || { echo "usage: tools/make_release.sh VERSION"; exit 1; }
 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?$ ]] || { echo "VERSION must look like 0.1.2 (got '$V')"; exit 1; }

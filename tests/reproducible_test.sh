@@ -12,7 +12,7 @@ python3 tools/reproducible_zip.py "$T/a" pkg "$T/a.zip"; python3 tools/reproduci
 python3 - "$T/a.zip" <<'P'
 import sys, zipfile
 z = zipfile.ZipFile(sys.argv[1]); n = [i.filename for i in z.infolist()]
-assert n == sorted(n, key=lambda s: (s.rsplit("/", 1)[0], s)) or n, n
+assert n == sorted(n, key=lambda s: (s.rsplit("/", 1)[0], s)), n
 assert all(i.date_time[:3] == (2023, 11, 14) for i in z.infolist()), [i.date_time for i in z.infolist()]
 print("  ok   zip: entries dated by SOURCE_DATE_EPOCH, names", n)
 P
