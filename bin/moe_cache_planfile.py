@@ -65,8 +65,9 @@ def build(plan):
 
     # memory figures the plan used
     if free is not None:
-        rows.append(_row("free_gpu_gib", free, "user" if getattr(a, "vram", None) else "probe",
-                         "your --vram" if getattr(a, "vram", None) else "free GPU memory read from the driver at start (before the reserves of the plan)"))
+        uv = getattr(a, "vram_user", getattr(a, "vram", None))
+        rows.append(_row("free_gpu_gib", free, "user" if uv else "probe",
+                         "your --vram" if uv else "free GPU memory read from the driver at start (before the reserves of the plan)"))
     if plan.avail:
         rows.append(_row("ram_for_server_gib", round(plan.avail / 2**30, 1), "user" if getattr(a, "ram", None) else "probe",
                          "your --ram" if getattr(a, "ram", None) else "RAM available at start, capped by our rule (total minus max(4 GiB, 12.5 %))"))
@@ -84,9 +85,23 @@ def build(plan):
     elif n == "999":
         rows.append(_row("n_cpu_moe", n, "constant", "all experts on the CPU side: the GPU expert cache or --hybrid holds the hot ones"))
     elif tuned and not any("no GPU memory information" in w for w in tuned.get("why", [])):
-        rows.append(_row("n_cpu_moe", n, "probe", "layers that fit the free GPU memory" + (f" ({free} GiB)" if free is not None else "") + " after model parts, KV cache, compute buffer and a reserve (the sizes are tables of ours)"))
+        srcs = {r["source"] for r in tuned.get("inputs", []) if r["setting"] in ("gpu_weights_mib", "gpu_kv_mib", "gpu_compute_mib", "gpu_overhead_mib")}
+        sizes = ("measured at the last load on this machine" if srcs == {"measured"} else "partly measured at the last load, partly from the header and our tables" if "measured" in srcs
+                 else "from the model header and our tables: no load of this model was recorded here yet")
+        rows.append(_row("n_cpu_moe", n, "measured" if srcs == {"measured"} else "constant" if "constant" in srcs else "probe", "expert layers that fit the free GPU memory" + (f" ({free} GiB)" if free is not None else "")
+                         + f" after the other weights, KV cache, compute buffer, overhead and a reserve; sizes {sizes} (the rows gpu_* below)"))
     else:
-        rows.append(_row("n_cpu_moe", n, "constant", "the planner's answer from fixed sizes (no GPU memory figure was read)"))
+        rows.append(_row("n_cpu_moe", n, "constant", "all experts on the CPU: no GPU memory figure was read, or the GPU plan could not be made"))
+    # what the placement counted (planner map fix 1): each size with where it came from
+    if tuned and n is not None and plan.ncmoe_user is None:
+        for r in tuned.get("inputs", []):
+            rows.append(_row(r["setting"], r["value"], r["source"], r["why"]))
+    if n is not None:
+        rec_on = os.environ.get("MOE_CACHE_LOAD_RECORD", "1") != "0"
+        uv = getattr(a, "vram_user", getattr(a, "vram", None))
+        rows.append(_row("load_record", rec_on and not uv, "user" if not rec_on or uv else "constant",
+                         "MOE_CACHE_LOAD_RECORD=0" if not rec_on else "your --vram: the plan does not learn against a figure you set" if uv else
+                         "every real load stores llama-server's buffer sizes (its log at verbosity 4, extra lines hidden) for the next plan on this machine and llama.cpp build"))
 
     # micro-batch
     ub, b = _after(cmd, "-ub", "--ubatch-size"), _after(cmd, "-b", "--batch-size")
