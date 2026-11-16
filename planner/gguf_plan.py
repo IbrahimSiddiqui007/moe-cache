@@ -830,6 +830,30 @@ def fit_disk_file():
     return os.environ.get("MOE_CACHE_FIT_CACHE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache", FIT_DISK_NAME)
 
 
+def drm_driver_version():
+    """The driver an AMD / Intel card on Linux runs with, for the record key (follow-up 6; nvidia-smi's identity already carries its driver version): the kernel
+    driver's name and its module version when it has one, else the kernel release (the amdgpu / i915 driver ships with the kernel). "" when nothing is readable."""
+    names = set()
+    for card in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
+        try:
+            names.add(os.path.basename(os.path.realpath(card + "/driver")))
+        except OSError:
+            pass
+    parts = []
+    for n in sorted(x for x in names if x and x != "driver"):
+        v = ""
+        try:
+            v = open(f"/sys/module/{n}/version").read().strip()
+        except OSError:
+            pass
+        parts.append(n + (f" {v}" if v else ""))
+    try:
+        parts.append("kernel " + os.uname().release)
+    except AttributeError:
+        pass
+    return ", ".join(parts)
+
+
 def gpu_identity():
     """Which GPU and driver the measured buffers belong to (PREFILL-180): nvidia-smi's name and driver, else the vendor/device ids of the DRM cards (Linux sysfs);
     "" when neither answers, and then nothing is cached on disk. Asked once per process."""
@@ -850,6 +874,8 @@ def gpu_identity():
             except OSError:
                 pass
         ident = "drm:" + ",".join(ids) if ids else ""
+        if ident:
+            ident += ";" + drm_driver_version()
     _GPU_ID.append(ident)
     return ident
 
@@ -1006,6 +1032,22 @@ MTP_DRAFT_GIB = 0.85          # MTP's draft context on the GPU (planner/plan.py'
 GAP_SOURCES = ("nvidia-smi",)  # free figures that overstate what llama.cpp can fill: nvidia-smi's (total - used) is ~0.4 GiB above CUDA's free on the RTX 4060 laptop
 
 
+def gpu_fixed_weights_bytes(lay):
+    """The model's weights that live on the GPU besides the expert layers: everything but the experts and the tensors that stay on the CPU (token_embd). The one
+    figure tune() and planner/multigpu.py count (follow-up 8)."""
+    return lay["other_bytes"] - lay.get("cpu_only_bytes", 0)
+
+
+def long_prompt_block_bytes(lay, ub):
+    """Room kept free for the plugin's long-prompt GPU block at micro-batch ub (one expert layer plus the batch's results, rule of ours; see tune()). 0 for a dense model."""
+    return ((1.6 if ub > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
+
+
+def room_bytes(free, compute_mib, reserve_gb, block=0):
+    """What is left of one card's free memory (bytes) after the compute buffer, the reserve and the long-prompt block: the subtraction tune() and multigpu.plan() both make."""
+    return free - compute_mib * 1048576 - reserve_gb * 1e9 - block
+
+
 def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False, plugin=True, measured=None,
          free_source=None, mtp=False):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left. The only placement
@@ -1018,9 +1060,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     planned around it; without this a chosen -ub left no room for the long-prompt block and long prompts ran on the CPU, RESULTS 61). long_prompt: the opt-in
     long-prompt mode (--long-prompt): -ub 4096 is tried first and taken only when the memory plan leaves room for it (no GPU cache wanted, no -ub chosen); else the usual ladder.
     plugin: the plugin runs (only then is the room for its long-prompt GPU block kept free: stock llama-server has no such block). measured: what the last real
-    loads on this machine measured (planner/load_record.py lookup): {"non_expert_mib", "gap_mib", "buffers": {ub: {"compute_mib", "context_mib"}}}; a missing part
+    loads on this machine measured (planner/load_record.py lookup): {"non_expert_mib", "gap_mib", "draft_mib", "buffers": {ub: {"compute_mib", "context_mib"}}}; a missing part
     falls back to the header (weights, KV) or our tables (compute buffer, gap). free_source: where `free` came from ("nvidia-smi" overstates it by the CUDA
-    reserve and context, SMI_GAP_GIB until measured). mtp: MTP drafting is on (its draft context needs GPU memory, MTP_DRAFT_GIB until measured).
+    reserve and context, SMI_GAP_GIB until measured). mtp: MTP drafting is on (its draft context needs GPU memory, MTP_DRAFT_GIB until a load with MTP was recorded).
     """
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
@@ -1038,7 +1080,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         weights = measured["non_expert_mib"] * MiB
         note("gpu_weights_mib", weights / MiB, "measured", "the model's weights on the GPU besides the expert layers, from llama-server's buffer lines at the last load on this machine and build")
     else:
-        weights = lay["other_bytes"] - lay.get("cpu_only_bytes", 0)
+        weights = gpu_fixed_weights_bytes(lay)
         note("gpu_weights_mib", weights / MiB, "probe", "the model's weights besides the expert layers, from the file's header (token_embd stays on the CPU); no load of this model was recorded here")
     ctx_m = next((v["context_mib"] for v in mbuf.values() if v.get("context_mib")), None)
     if ctx_m:
@@ -1060,8 +1102,12 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         note("gpu_overhead_mib", 0, "constant", f"none counted for this free figure ({free_source or 'given'}); no load recorded here")
     draft = 0.0
     if mtp:
-        draft = MTP_DRAFT_GIB * 2**30
-        note("mtp_draft_mib", draft / MiB, "constant", "MTP's draft context on the GPU (one model on our PC); loads with MTP on are not recorded, so this stays a constant")
+        if measured.get("draft_mib"):
+            draft = measured["draft_mib"] * MiB
+            note("mtp_draft_mib", draft / MiB, "measured", "MTP's draft context on the GPU (KV, recurrent state and compute buffer), from llama-server's buffer lines at the last load with MTP on")
+        else:
+            draft = MTP_DRAFT_GIB * 2**30
+            note("mtp_draft_mib", draft / MiB, "constant", "MTP's draft context on the GPU (one model on our PC); no load with MTP on was recorded here")
     free = free - gap - draft
 
     rule = plan_rule_on()
@@ -1087,7 +1133,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             return 0              # stock llama-server: no plugin, no long-prompt GPU block (LAUNCHER-1177: 839 MiB were kept free for nothing on the laptop 35B)
         if rule:
             return rule_block_mib(path, lay, u) * 1048576
-        return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
+        return long_prompt_block_bytes(lay, u)
     best = None
     fixed_ub = ub
     # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
@@ -1098,11 +1144,11 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         if buf is None:
             continue
         block = block_for(ub)
-        room = free - fixed - buf * 1048576 - reserve_gb * 1e9 - block
+        room = room_bytes(free, buf, reserve_gb, block) - fixed
         if room > 0 or ub == 512 or fixed_ub:
             best = (ub, room)
             break
-    ub, room = best if best else (512, free - fixed - cbm(512, True) * 1048576 - reserve_gb * 1e9 - block_for(512))
+    ub, room = best if best else (512, room_bytes(free, cbm(512, True), reserve_gb, block_for(512)) - fixed)
     block = block_for(ub)
     if fixed_ub:
         why.append(f"micro-batch {ub} as asked")
@@ -1110,7 +1156,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         ub = 1024
         buf = cbm(1024, False) or 0
         block = block_for(1024)
-        room = free - fixed - buf * 1048576 - reserve_gb * 1e9 - block
+        room = room_bytes(free, buf, reserve_gb, block) - fixed
         why.append("GPU cache requested: micro-batch limited to 1024 (the cache gains more than a bigger batch)")
     cache_room = room
     cache_mib = int(cache_room // 1048576) if cache_room > 0 else 0

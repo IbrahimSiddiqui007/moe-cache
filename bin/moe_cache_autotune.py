@@ -273,7 +273,7 @@ def aborted_result(rows, cid, why, total, budget_s, agent):
             "why": f"the memory guard stopped the probe of {cid} ({str(why)[:160]}): the tuning was aborted, nothing was stored, the plan as it is runs. It is tried again at the next start"}
 
 
-def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None, progress=lambda t: None, walk=None, check=None, floor=None):
+def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None, progress=lambda t: None, walk=None, check=None, floor=None, floor_edge=None):
     """Measure the candidates in order and pick. runner(cand, left_s, decode_tokens) -> {"ok", "load_s", "prompt_tps", "decode_tps", "decode_n", "error"}.
     C0 (the plan as it is) always runs first with whatever time there is; each later candidate starts only when the time left covers a load and probe like
     C0's. When C0 cannot be measured the result is `too_slow` and nothing is picked. Returns the result dict that is stored.
@@ -281,7 +281,9 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
     falls more than MARGIN below the best step so far, the plan has no layer left on the CPU, WALK_MAX steps were made or the budget runs out; then the other candidates.
     check(cand) -> (ok, why): a step the commit check would not start is not loaded and ends the walk.
     floor: the lowest --n-cpu-moe the planner says still fits the GPU with only the user's own margin kept (the walk's fit limit, critic H1): a step below it is not loaded.
-    Where a model that does not fit spills into shared memory instead of failing to load (Windows), this is the only stop before the spill."""
+    Where a model that does not fit spills into shared memory instead of failing to load (Windows), this is the only stop before the spill.
+    floor_edge: the part of `floor` that comes from a recorded failed edge (follow-up 7): a load at floor - 2 ran out of GPU memory in an earlier tune and floor - 1 was
+    its edge (loaded, reserve eaten, never picked). Neither is loaded again, and the step at the floor is a normal one (it was picked before), not an edge."""
     t0 = clock()
     rows, base_cost = [], None
     aborted = lambda rows_, cid, why: aborted_result(rows_, cid, why, clock() - t0, budget_s, agent)
@@ -313,9 +315,11 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             walk_state["done"], walk_state["end"] = True, "no expert layer left on the CPU" if k > walk else f"{WALK_MAX} steps made"
             return None
         if floor is not None and walk - k < floor:
-            walk_state["done"], walk_state["end"] = True, (f"--n-cpu-moe {walk - k} is past the planner's fit limit ({floor}) for this GPU" if k > 1 else
-                                                           f"the plan is already at the planner's fit limit ({floor}) for this GPU and reserve: no walk here")
-            if k > 1 and last["id"] == f"ncmoe-{k - 1}" and last["status"] == "measured":
+            known = floor_edge is not None and floor == floor_edge             # the stricter limit is the recorded failed edge, not the planner's figure
+            what = (f"the load at --n-cpu-moe {floor - 2} failed for lack of GPU memory before (recorded)" if known else f"the planner's fit limit ({floor}) for this GPU")
+            walk_state["done"], walk_state["end"] = True, (f"--n-cpu-moe {walk - k} is past {what}" if k > 1 else
+                                                           f"the plan is already at {what}" + ("" if known else " and reserve") + ": no walk here")
+            if k > 1 and not known and last["id"] == f"ncmoe-{k - 1}" and last["status"] == "measured":
                 last["edge"] = True         # the step at the fit limit keeps no reserve: at the edge like the step before a failed load, not picked
                 walk_state["end"] += f"; {last['id']} is at the edge and is not picked"
             return None
