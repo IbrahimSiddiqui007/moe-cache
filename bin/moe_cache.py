@@ -1886,6 +1886,37 @@ def cache_fallback_cmd(cmd, n_cpu_moe, ub=None):
     return new
 
 
+def cache_oom_decision(cmd, launcher_cache, exact, engine):
+    """LAUNCHER-1200: what the out-of-memory retry does with a command that has llama.cpp's GPU expert cache (--moe-cache-mib): "fallback" = start once without it (the cache is the
+    launcher's own choice, not --exact, the stock engine: with the plugin the cache needs MOE_CACHE_GPU_CACHE in the environment too); "refuse" = your own cache flag, --exact or the
+    plugin engine: no retry at all, the old retry would keep the cache and fail again; None = no cache in the command, the older retries apply."""
+    if "--moe-cache-mib" not in cmd:
+        return None
+    return "fallback" if (launcher_cache and not exact and engine != "plugin") else "refuse"
+
+
+def shrink_known_fail(gcmib, fail_mib):
+    """The cache size (MiB) to plan after a recorded failure of fail_mib: unchanged below it, else 15 % under it in steps of 64 MiB, 0 (no cache) under 1536 MiB."""
+    if not fail_mib or gcmib < fail_mib:
+        return gcmib
+    n = int(fail_mib * 0.85) // 64 * 64
+    return n if n >= 1536 else 0
+
+
+def cache_record_ident(a, machine, ls, model):
+    """(load_record module, GPU identity, llama.cpp build id, model id) for the cache-failure record, or None (record off, --vram given, something unknown). Never raises."""
+    try:
+        if not load_record_on() or getattr(a, "vram_user", a.vram):
+            return None
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        import load_record as lr
+        gid = (machine.gpu_identity() if hasattr(machine, "gpu_identity") else "") or getattr(a, "plan_gpu_ident", "")
+        build, mid = lr.build_id(ls), lr.model_id(model)
+        return (lr, gid, build, mid) if (gid and build and mid) else None
+    except Exception:
+        return None
+
+
 def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None, kv_retry=None, tune_retry=None):
     """run_child_once, and when llama-server stops before it is ready because the GPU ran out of memory at load (another program took the memory
     after the plan was made: desktop PC 2026-10-30, the control page planned with 13.4 GiB free), ask `oom_retry()` for a new command (it measures the
@@ -1906,7 +1937,7 @@ def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry,
         # LAUNCHER-1045: the server did not come up with a plan the auto-tune picked: the pick is marked bad and the plan as it is starts once (the other retries still apply to it)
         new = tune_retry(rc, seen)
         if new:
-            return _run_child(new[0], new[1], port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry, None)
+            return _run_child(new[0], new[1], port, expect_plugin, mem_limit, allow_sleep, None, None, None)      # LAUNCHER-1200: this was the second load: no third
     if rc not in (0, None) and not quiet and kv_retry and seen.get("kvabort") and not seen["ready"]:
         # The known abort (Granite 1B, 63a07fa) prints only "ggml-impl.h:NNN: fatal error", nothing about the KV type, so the text cannot be narrowed further; the retry is
         # limited instead to: an abort before the server was ready, a q8_0 KV cache this launcher chose (kv_retry is None otherwise), and ONE retry. The matched line is logged.
@@ -4129,7 +4160,7 @@ def default_gpu_cache_stage(a, extra, ls, machine, listing, dense, stock_engine,
     return "auto"
 
 
-def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine):
+def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx=None):
     """ENGINE-029, stage "GPU expert cache and hybrid bank": the size of llama.cpp's GPU expert cache (--gpu-cache auto/MiB, capped by one Vulkan device buffer), or the hybrid bank (--hybrid); both put every expert on the CPU side (n_cpu_moe 999). env and extra grow in place. Returns n_cpu_moe as text."""
     LAUNCHER_CACHE[0] = False
     placeholder = getattr(a, "n_cpu_moe", None) is None and ncmoe == "999" and bool(tuned) and tuned.get("static_n_cpu_moe") is not None
@@ -4150,6 +4181,19 @@ def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, sto
                 say(f"moe-cache: --gpu-cache: {gcmib} MiB capped to {cap} MiB: on Vulkan each of llama.cpp's cache banks must fit in one device buffer "
                     f"({lim / 2**20:.0f} MiB on this GPU), a bigger cache aborts the load")
                 gcmib = str(cap)
+        if gcmib.isdigit() and int(gcmib) > 0 and ctx and stock:
+            # LAUNCHER-1200: a load with a cache this size (or bigger) ran out of GPU memory here before: plan 15 % under it, or no cache (the record is dropped when more GPU memory is free now)
+            rid = cache_record_ident(a, machine, ls, model)
+            if rid:
+                try:
+                    kv_ = (arg_after(extra, "-ctk", "--cache-type-k") or "f16", arg_after(extra, "-ctv", "--cache-type-v") or "f16")
+                    fail = rid[0].lookup_cache_fail(CACHE_DIR, rid[1], rid[2], rid[3], int(ctx), kv_, "stock", free_now_mib=getattr(a, "plan_free_mib", None))
+                except Exception:
+                    fail = None
+                if fail and int(gcmib) >= fail:
+                    new_mib = shrink_known_fail(int(gcmib), fail)
+                    say(f"moe-cache: a GPU expert cache of {fail} MiB did not load here before (out of GPU memory): " + (f"planning {new_mib} MiB instead" if new_mib else "using the static GPU layers instead"))
+                    gcmib = str(new_mib) if new_mib else ""
         if gcmib and int(gcmib) < 512:
             say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
         if not gcmib:
@@ -5058,7 +5102,7 @@ def _launch_plan(a, extra, argv, machine):
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     kv_q8, tuned, desk_kw, ub_asked = long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked)
     ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
-    ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine)
+    ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
     # DELIBERATE (owner decision 2026-11-08): the long-prompt default sets a.fast = "kv", so this 64-token threshold applies to every default launch of a big model at 32k+ context,
     # not only to --fast users. It is part of what the +77 % prompt speed (claim v038-longprompt-default) measured; do not drop it for the long-prompt default without a new measurement.
@@ -5205,20 +5249,38 @@ def run_launch_plan(plan):
     def oom_retry():
         """llama-server could not allocate GPU memory at load: measure the free memory again, plan again with it (never fewer CPU expert layers than
         before + 1) and return the new command; None when nothing can be changed (the user fixed --n-cpu-moe, or there is no GPU figure)."""
-        if launcher_cache and "--moe-cache-mib" in cmd and not a.exact:
-            # LAUNCHER-1200: the cache is the launcher's own (--gpu-cache or the CUDA default), not yours: start once more with the static plan and no cache
+        what_cache = cache_oom_decision(cmd, launcher_cache, a.exact, plan.engine)
+        if what_cache == "refuse":
+            say("moe-cache: llama-server ran out of GPU memory while loading with a GPU expert cache that you asked for (--moe-cache-mib after --, --gpu-cache with --exact, or the plugin engine): "
+                "no second try (it would keep the cache). Use a smaller cache, --gpu-cache off, or free some GPU memory", err=True)
+            return None
+        if what_cache == "fallback":
+            # LAUNCHER-1200: the cache is the launcher's own choice: start once more with the static plan and no cache, and remember the size that failed
             try:
                 sys.path.insert(0, os.path.join(HERE, "planner"))
                 from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes
-                tf = gpu_total_free_bytes()
+                def free_now():
+                    if WINDOWS:
+                        g = pick_gpu_full(list_devices(ls))
+                        return (g[3] * 2**20, g[2] * 2**20) if g and g[3] > 0 else None
+                    return gpu_total_free_bytes()
+                time.sleep(2)                          # the failed server's memory is given back a moment after it exits
+                tf = free_now()
                 if tf:
                     reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
-                    t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd,
-                             free_source=getattr(a, "plan_free_source", None))
+                    t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd,
+                             free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
                     new = cache_fallback_cmd(cmd, t["n_cpu_moe"], t["ub"])
                     if new:
-                        say(f"moe-cache: llama-server could not load with the GPU expert cache of {arg_after(cmd, '--moe-cache-mib')} MiB (not enough free GPU memory): starting again once without "
-                            f"the cache, with {t['n_cpu_moe']} layers of experts on the CPU. --gpu-cache off keeps it off", err=True)
+                        mib = int(arg_after(cmd, "--moe-cache-mib"))
+                        rid = cache_record_ident(a, machine, ls, model)
+                        saved = False
+                        if rid:
+                            lr_, gid_, build_, mid_ = rid
+                            kv_ = (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16")
+                            saved = lr_.save_cache_fail(CACHE_DIR, gid_, build_, mid_, int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_, "stock", mib, getattr(a, "plan_free_mib", None))
+                        say(f"moe-cache: llama-server could not load with the GPU expert cache of {mib} MiB (not enough free GPU memory; {tf[1] / 2**30:.1f} GiB free now): starting again once without "
+                            f"the cache, with {t['n_cpu_moe']} layers of experts on the CPU." + (" The next start plans a smaller cache or none." if saved else "") + " --gpu-cache off keeps it off", err=True)
                         return new
             except Exception as e:
                 say(f"moe-cache: llama-server could not load with the GPU expert cache; the retry without it could not be planned ({e})", err=True)

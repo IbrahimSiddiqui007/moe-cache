@@ -19,6 +19,8 @@ Stored (one JSON file, <cache dir>/loads.json, newest 400 entries per kind):
                                                             from, because the gap of nvidia-smi's figure is not the gap of llama-server's or the room figure (follow-up 3)
   drafts   [machine, build, model, ctx, ub, kv]          -> draft_mib: the MTP draft context's own buffers (KV + recurrent state + compute + any weights), told apart from
                                                             the target's by the line "creating MTP draft context" llama-server prints between the two (follow-up 1)
+  cachefail [machine, build, model, ctx, kv, engine]     -> fail_mib: the smallest llama.cpp GPU expert cache the launcher chose that failed to load for lack of GPU memory
+                                                            (LAUNCHER-1200), with the free figure then; the next start shrinks the cache below it or skips it
   edges    [machine, build, model, ctx, ub, kv, engine, mtp] -> fail_ncmoe: the highest --n-cpu-moe whose load failed for lack of GPU memory (any lower value fails too),
                                                             with the free figure then; the auto-tune walk does not load a value it knows fails (follow-up 7)
 The GPU identity (machine) carries the driver version, so a new driver measures anew (follow-up 6).
@@ -35,7 +37,7 @@ GROWTH_CAP_MIB = 512        # growth after load counted at most (laptop 35B: 79 
 EDGE_MAX_AGE_DAYS = 30
 FILE_NAME = "loads.json"
 SCHEMA = 1
-KINDS = ("weights", "buffers", "overhead", "drafts", "edges")
+KINDS = ("weights", "buffers", "overhead", "drafts", "edges", "cachefail")
 _LOCK = threading.Lock()
 
 _NUM = r"([0-9]+(?:\.[0-9]+)?)"
@@ -290,6 +292,50 @@ def lookup_edge(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, free
     except (ValueError, OverflowError):
         return None
     return e["fail_ncmoe"]
+
+
+def save_cache_fail(cache_dir, machine, build, model, ctx, kv, engine, fail_mib, free_mib=None):
+    """LAUNCHER-1200: a load with the launcher's own GPU expert cache of fail_mib MiB ran out of GPU memory. Keeps the smallest failing size. Never raises."""
+    if not (machine and build and model) or not fail_mib:
+        return False
+    try:
+        with _LOCK:
+            d = _read(cache_dir)
+            key = _key(machine, build, model, int(ctx), kv_name(kv), engine)
+            old = d["cachefail"].get(key)
+            if old and isinstance(old.get("fail_mib"), int) and old["fail_mib"] < int(fail_mib) and old.get("free_mib") == free_mib:
+                fail_mib = old["fail_mib"]
+            d["cachefail"].pop(key, None)
+            d["cachefail"][key] = {"fail_mib": int(fail_mib), "free_mib": free_mib, "at": time.strftime("%Y-%m-%d %H:%M")}
+            for older in list(d["cachefail"])[:-KEEP]:
+                del d["cachefail"][older]
+            os.makedirs(cache_dir, exist_ok=True)
+            p = store_path(cache_dir)
+            tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=1)
+            os.replace(tmp, p)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def lookup_cache_fail(cache_dir, machine, build, model, ctx, kv, engine, free_now_mib=None, drift_mib=256):
+    """The cache size (MiB) a load failed at here, or None. Not trusted when there is more free GPU memory now (more than drift_mib) than at the failure, or after EDGE_MAX_AGE_DAYS."""
+    if not (machine and build and model):
+        return None
+    e = _read(cache_dir)["cachefail"].get(_key(machine, build, model, int(ctx), kv_name(kv), engine))
+    if not e or not isinstance(e.get("fail_mib"), int):
+        return None
+    if free_now_mib is not None and e.get("free_mib") is not None and free_now_mib > e["free_mib"] + drift_mib:
+        return None
+    try:
+        if time.time() - time.mktime(time.strptime(e.get("at", ""), "%Y-%m-%d %H:%M")) > EDGE_MAX_AGE_DAYS * 86400:
+            return None
+    except (ValueError, OverflowError):
+        return None
+    return e["fail_mib"]
 
 
 def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_source, n_cpu_moe=None, free_now_mib=None):

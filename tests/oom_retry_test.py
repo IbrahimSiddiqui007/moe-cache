@@ -147,21 +147,43 @@ if "--moe-cache-mib" in sys.argv:
     sys.stderr.write("ggml_backend_cuda_buffer_type_alloc_buffer: allocating 6500.00 MiB on device 0: cudaMalloc failed: out of memory\\nllama_init_from_model: failed to initialize the context: failed to allocate buffer for MoE cache\\n"); sys.exit(1)
 sys.stderr.write("fake ok without cache\\n"); sys.exit(0)
 ''')
-def run_cache(launcher_choice, exact=False):
-    mark = os.path.join(TMP, f"mc_{launcher_choice}_{exact}")
+def run_cache(launcher_choice, exact=False, engine="stock"):
+    """The decision is the launcher's real cache_oom_decision + cache_fallback_cmd (the same functions oom_retry calls), the child is a fake server."""
+    mark = os.path.join(TMP, f"mc_{launcher_choice}_{exact}_{engine}")
     start = [sys.executable, fake_cache, mark, "--n-cpu-moe", "999", "-ub", "2048", "--moe-cache-mib", "6500"]
     asked = []
     def oom_retry():
         asked.append(1)
-        if not launcher_choice or exact:
-            return None                     # what the launcher's oom_retry does for your own cache flag or --exact: the old behaviour, no cache fallback
-        return mc.cache_fallback_cmd(start, 30, 2048)
+        d = mc.cache_oom_decision(start, launcher_choice, exact, engine)
+        return mc.cache_fallback_cmd(start, 30, 2048) if d == "fallback" else None
     rc = mc.run_child(start, dict(os.environ), oom_retry=oom_retry)
     return rc, len(asked), int(open(mark).read())
 rc, asked, n = run_cache(True)
 check(rc == 0 and asked == 1 and n == 2, f"the launcher's cache fails at load: one retry without it starts (rc {rc}, asked {asked}, started {n}x)")
 rc, asked, n = run_cache(False)
-check(rc != 0 and n == 1, f"your own --moe-cache-mib: no cache fallback (rc {rc}, started {n}x)")
+check(rc != 0 and n == 1, f"your own --moe-cache-mib after --: no retry at all (rc {rc}, started {n}x)")
 rc, asked, n = run_cache(True, exact=True)
-check(rc != 0 and n == 1, f"--exact: no cache fallback (rc {rc}, started {n}x)")
+check(rc != 0 and n == 1, f"--gpu-cache N with --exact: no retry at all (rc {rc}, started {n}x)")
+rc, asked, n = run_cache(True, engine="plugin")
+check(rc != 0 and n == 1, f"the plugin engine with a cache: no cache fallback (rc {rc}, started {n}x)")
+check(mc.cache_oom_decision(["x", "--n-cpu-moe", "20"], False, False, "stock") is None, "no cache in the command: the older retries apply (decision None)")
+# remembered failure: the next plan is smaller or has no cache
+check(mc.shrink_known_fail(3000, 0) == 3000 and mc.shrink_known_fail(2000, 3000) == 2000 and mc.shrink_known_fail(3000, 3000) == 2496 and mc.shrink_known_fail(1700, 1700) == 0,
+      "shrink_known_fail: unchanged below the failed size, 15 % under it from there, none under 1536 MiB")
+sys.path.insert(0, os.path.join(ROOT, "planner"))
+import load_record as lr  # noqa: E402
+cd = os.path.join(TMP, "lrcache"); kvf = ("f16", "f16")
+check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock") is None, "no failure recorded: None")
+check(lr.save_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", 3000, 7600) and lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", free_now_mib=7600) == 3000,
+      "a failed cache of 3000 MiB is stored and found")
+check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", free_now_mib=8400) is None, "more free GPU memory now (+800 MiB): the failure is not trusted")
+check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 32768, kvf, "stock") is None and lr.lookup_cache_fail(cd, "gpu", "b2", "m1", 65536, kvf, "stock") is None, "another context or build: not found")
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", 2500, 7600)
+check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", free_now_mib=7600) == 2500, "a later, smaller failure replaces it")
+# at most two loads when the auto-tune's retry already ran (tune_retry first, then the same failure again: no third load)
+mark = os.path.join(TMP, "m_tune_oom"); asked = []
+def tune_retry(rc, seen):
+    return ([sys.executable, fake, mark, "oom_always", "tuned"], dict(os.environ))
+rc = mc.run_child([sys.executable, fake, mark, "oom_always"], dict(os.environ), oom_retry=lambda: asked.append(1) or [sys.executable, fake, mark, "oom_always", "third"], tune_retry=tune_retry)
+check(rc != 0 and int(open(mark).read()) == 2 and not asked, f"tune retry then the same failure: two loads in all, no third (started {int(open(mark).read())}x, oom_retry asked {len(asked)}x)")
 sys.exit(1 if fails else 0)
