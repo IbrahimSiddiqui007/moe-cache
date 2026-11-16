@@ -566,6 +566,32 @@ def overall(run):
             "cache_hit_pct": 100 * sum(t["cache_n"] for t in ts if t["cache_n"] is not None) / tot if tot else None}
 
 
+def spread_table(runs):
+    """Run by run: wall time, whole-run prompt and decode tok/s, then per arm the spread between its runs ((max - min) / mean, %) for the whole run and per
+    depth band. Two runs with the same arguments (A = B) give the noise floor; two arms with different settings should be judged against it."""
+    def sp(xs):
+        xs = [x for x in xs if x is not None]
+        return None if len(xs) < 2 or not sum(xs) else 100 * (max(xs) - min(xs)) / (sum(xs) / len(xs))
+    ov = [overall(r) for r in runs]
+    rows = ["| run | arm | wall s | turns | final depth | prompt tok/s | decode tok/s | first token s (median) | stopped |", "|---|---|---|---|---|---|---|---|---|"]
+    for i, (r, o) in enumerate(zip(runs, ov), 1):
+        rows.append(f"| {i} | {r['arm']} | {_f(r.get('wall_s'))} | {len(r['turns'])} | {_f(r.get('final_depth', r.get('prompt_tokens')))} | {_f(o['prompt_tps'])} | {_f(o['decode_tps'])} | "
+                    f"{_f(o['ttft_s'], 2)} | {r.get('stop_reason', '-')} |")
+    arms = []
+    for r in runs:
+        if r["arm"] not in arms:
+            arms.append(r["arm"])
+    rows += ["", "Spread between the runs of one arm, (max - min) / mean in %:", "",
+             "| arm | runs | wall s | prompt tok/s | decode tok/s | " + " | ".join(f"decode {b['band']}" for b in runs[0]["bands"]) + " |",
+             "|---|---|---|---|---|" + "---|" * len(runs[0]["bands"])]
+    for a in arms:
+        idx = [i for i, r in enumerate(runs) if r["arm"] == a]
+        bs = [sp([runs[i]["bands"][k]["decode_tps"] for i in idx]) for k in range(len(runs[0]["bands"]))]
+        rows.append(f"| {a} | {len(idx)} | {_f(sp([runs[i].get('wall_s') for i in idx]))} | {_f(sp([ov[i]['prompt_tps'] for i in idx]))} | {_f(sp([ov[i]['decode_tps'] for i in idx]))} | "
+                    + " | ".join(_f(b) for b in bs) + " |")
+    return "\n".join(rows)
+
+
 def _f(x, n=1):
     return "-" if x is None else (f"{x:.{n}f}" if isinstance(x, float) else str(x))
 
@@ -795,8 +821,13 @@ def main(argv=None):
     p.add_argument("--model", help="the model .gguf (hashes and quant are read from it)"); p.add_argument("--llama-server"); p.add_argument("--backend"); p.add_argument("--model-url")
     p.add_argument("--command-line"); p.add_argument("--baseline"); p.add_argument("--other-programs"); p.add_argument("--cache", choices=["cold", "warm"])
     p = sub.add_parser("table"); p.add_argument("file"); p.add_argument("--turns", action="store_true", help="also the per-turn table of every run")
+    p = sub.add_parser("spread"); p.add_argument("file", help="a bench record (assemble's output) or a run file")
     a = ap.parse_args(argv)
 
+    if a.cmd == "spread":
+        d = json.load(open(a.file, encoding="utf-8"))
+        print(spread_table(d["runs"] if "runs" in d else [d]))
+        return 0
     if a.cmd == "run":
         run = _one(a, a.url, a.arm)
         text = json.dumps(run, indent=1)
