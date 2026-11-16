@@ -3544,6 +3544,30 @@ def kv_fit_index(kv_k, kv_v=None):
     return {("q8_0", "q8_0"): 1, ("q8_0", "q4_0"): 2, ("q4_0", "q4_0"): 3}.get((kv_k or "f16", kv_v or kv_k or "f16"), 0)
 
 
+def load_mode_cache_none(a, cmd, extra, machine, model, cram):
+    """CACHE-1187 / LAUNCHER-1188: stock llama-server with its own GPU expert cache (--moe-cache-mib) on a MoE model that fits the RAM the server may use reads the
+    file faster and decodes about 8-10 % faster with `--load-mode none` than with mmap (laptop 4060, 35B IQ3_XXS, b12207, single request at 8k / 60k, one run each, so a
+    first measurement, not a verdict): llama.cpp warns that mmap is slow with CPU-side experts. `none` copies the whole file into private RAM, so only when the file plus the
+    prompt cache (`cram` MiB) plus the reserve fit the server's RAM; the reserve is the same one load_mode_low_ram uses (the larger of 4 GiB and what the machine keeps free).
+    Not for --exact / --stock, -ot, or a load flag of your own. Returns the plain note, or None."""
+    if a.exact or a.stock or "-ot" in cmd or any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
+        return None
+    try:
+        size = os.path.getsize(model)
+        avail = machine.mem_for_server(a.ram)
+        total, cap = machine.mem_total(), machine.mem_cap()
+    except (OSError, TypeError):
+        return None
+    if not size or not avail:
+        return None
+    margin = max(LOAD_MODE_RAM_MARGIN_GIB, (total - cap) / 2**30 if total and cap and total > cap else 0.0)
+    need = size / 2**30 + (int(cram) / 1024 if str(cram).isdigit() else 0.0) + margin
+    if need > avail / 2**30:
+        return None
+    return (f"GPU expert cache and the {size / 2**30:.1f} GiB model fits the {avail / 2**30:.1f} GiB of RAM this server may use (with the prompt cache and a {margin:.1f} GiB reserve): "
+            "--load-mode none (llama.cpp warns that mmap is slow with CPU-side experts; --exact or --load-mode after -- keeps mmap)")
+
+
 def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
     """LAUNCHER-1068: Windows, a dense model that fits fully on the GPU (the LAUNCHER-982 estimate, not --fit spilling, no -ot) loads with `--load-mode none`: the default mmap load
     spiked used RAM by ~12 GB for Qwen3.8-27B on the PC (2026-11-10), `--load-mode none` added 2-6 GB and was ready in under a minute. Returns the plain note, or None (mmap stays):
@@ -4357,6 +4381,11 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
             LOAD_NONE_BY_RULE[0] = True
+            say("moe-cache: " + why)
+    if method == "none (stock)" and not dense and "--moe-cache-mib" in extra and "--load-mode" in cmd:
+        why = load_mode_cache_none(a, cmd, extra, machine, model, arg_after(extra, "--cache-ram", "-cram"))
+        if why:
+            cmd[cmd.index("--load-mode") + 1] = "none"
             say("moe-cache: " + why)
     if method == "none (stock)":
         pass

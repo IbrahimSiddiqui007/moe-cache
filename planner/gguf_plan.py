@@ -1178,7 +1178,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     block = block_for(ub)
     if fixed_ub:
         why.append(f"micro-batch {ub} as asked")
-    elif want_cache and ub > 1024 and room > 0:
+    elif want_cache and ub > 1024 and room > 0 and (plugin or room < 1536 * 1048576):
+        # plugin path: unchanged (PC-measured). Stock llama-server (CACHE-1187/LAUNCHER-1188, laptop 4060, 35B, b12207, one machine): -ub 1024 cost 14-34 % of the prompt
+        # speed for no decode gain, so a stock cache keeps -ub 2048 as long as the cache still gets 1.5 GiB at that batch; below that the smaller batch buys the room
         ub = 1024
         buf = cbm(1024, False) or 0
         block = block_for(1024)
