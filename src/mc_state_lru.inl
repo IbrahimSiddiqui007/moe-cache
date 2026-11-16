@@ -402,7 +402,7 @@
     void flush_reads(std::vector<io_job_t> & jobs, size_t max_nb2) {
         const bool did_reads = !jobs.empty();
         std::vector<pack_job_t *> pjs;
-        pack_extract(jobs, pjs);       // BO-1: experts with two or more slices to read come from the pack, one read each
+        pack_extract(jobs, pjs);       // expert pack: experts with two or more slices to read come from the pack, one read each
         if (coalesce_bytes && jobs.size() > 1) {
             // long prompts need nearly every expert of a layer, and neighbouring experts of a tensor are neighbours in the file and in memory:
             // one large read instead of many half-megabyte ones (the drive reaches its speed only with large or many parallel reads)

@@ -194,7 +194,7 @@ jobs:
             tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_rb_off.txt
           if grep -q "idle rebalance:" ident_rb_off/plugin.log; then echo "FAIL: MOE_CACHE_IDLE_REBALANCE=0 still rebalanced"; exit 1; fi
 
-      - name: Expert pack (BO-1) - pack format test, then identity with experts read from MODEL.moepack (private memory, forced eviction, executor byte-checked)
+      - name: Expert pack - pack format test, then identity with experts read from MODEL.moepack (private memory, forced eviction, executor byte-checked)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
