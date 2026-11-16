@@ -101,7 +101,7 @@ def build(plan):
         uv = getattr(a, "vram_user", getattr(a, "vram", None))
         rows.append(_row("load_record", rec_on and not uv, "user" if not rec_on or uv else "constant",
                          "MOE_CACHE_LOAD_RECORD=0" if not rec_on else "your --vram: the plan does not learn against a figure you set" if uv else
-                         "every real load stores llama-server's buffer sizes (its log at verbosity 4, extra lines hidden) for the next plan on this machine and llama.cpp build"))
+                         "every load (a real start or an auto-tune probe, with MTP too) stores llama-server's buffer sizes (its log at verbosity 4, extra lines hidden) and a failed GPU allocation for the next plan on this machine, driver and llama.cpp build"))
 
     # micro-batch
     ub, b = _after(cmd, "-ub", "--ubatch-size"), _after(cmd, "-b", "--batch-size")

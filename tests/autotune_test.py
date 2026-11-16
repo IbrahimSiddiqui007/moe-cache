@@ -522,7 +522,7 @@ class Big(M):
 saved4 = (mc.CACHE_DIR, mc.port_busy, mc.autotune_probe, mc.run_child, mc.WINDOWS)
 mc.CACHE_DIR = os.path.join(tmp3, "cache2"); mc.port_busy = lambda port: False; mc.WINDOWS = False
 ref = {"n": None}
-def runner_rel(cmd_, env_, left_, n_):          # fewer CPU expert layers than the first (the plan as it is) is the fast one, whatever the planner chose
+def runner_rel(cmd_, env_, left_, n_, record=None):          # fewer CPU expert layers than the first (the plan as it is) is the fast one, whatever the planner chose
     nc = int(at.flag_value(cmd_, "--n-cpu-moe")); ref["n"] = nc if ref["n"] is None else ref["n"]
     fast = nc < ref["n"]
     return dict(ok=True, load_s=5, prompt_tps=400 if fast else 300, decode_tps=22 if fast else 20, decode_n=n_)

@@ -145,9 +145,11 @@ class _M:
     def planner_answer(self, model, ctx, ram, vram):
         if self.rs: raise RuntimeError("no planner answer")
         return {"n_cpu_moe": self.n, "layers": lay["n_layers"]}
+    def gpu_total_free_bytes(self): return None      # follow-up 9: the engine check counts the desk reserve like the plan (unknown here: none)
+    def free_vram_source(self): return None
     def free_vram_bytes(self):          # since the planner map fix 1 the placement is gguf_plan.tune's (as stock runs it): a big card -> 0 on the CPU, a tiny one -> some
         return (64 if self.n == 0 else 0.3) * GIB
-_A = lambda **kw: __import__("types").SimpleNamespace(**{**dict(stock=False, cpu_only=False, ram="32", vram=None), **kw})
+_A = lambda **kw: __import__("types").SimpleNamespace(**{**dict(stock=False, cpu_only=False, ram="32", vram=None, gpu_margin=None, leave_room=False), **kw})
 _old_env = {k: os.environ.pop(k, None) for k in ("MOE_CACHE_STOCK_WHEN_FITS", "MOE_CACHE_LIB")}
 try:
     f = lambda a, m: _mc.plugin_for_partial_offload(a, "llama-server", model, 8192, m)

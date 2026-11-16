@@ -2148,19 +2148,33 @@ RECORD_SKIP_FLAGS = ("-ot", "--override-tensor", "-ts", "--tensor-split", "-sm",
 
 
 def make_load_recorder(plan):
-    """For a real start: a function cmd -> Recorder that stores what this load measured (planner/load_record.py), keyed by this machine's GPU, the llama.cpp
-    build and the model; None when the record is off (MOE_CACHE_LOAD_RECORD=0), --vram was given, the GPU or build is unknown, or the plan places no experts."""
-    a = plan.a
-    if not load_record_on() or getattr(a, "vram_user", a.vram) or arg_after(plan.cmd, "--n-cpu-moe", "-ncmoe") is None:
+    """For a real start: a function cmd -> Recorder that stores what this load measured (planner/load_record.py); see load_recorder_for."""
+    return load_recorder_for(plan.a, plan.cmd, plan.machine, plan.ls, plan.model, plan.ctx, plan.engine)
+
+
+def free_before_load(machine, fallback):
+    """The free GPU memory (MiB) read now, just before a load starts; the plan's figure when the machine cannot read it."""
+    try:
+        v = machine.free_vram_bytes()
+        return v / 2**20 if v else fallback
+    except Exception:
+        return fallback
+
+
+def load_recorder_for(a, plan_cmd, machine, ls, model, ctx, engine):
+    """A function cmd -> Recorder that stores what one load of llama-server measured (planner/load_record.py), keyed by this machine's GPU and driver, the llama.cpp
+    build and the model; None when the record is off (MOE_CACHE_LOAD_RECORD=0), --vram was given, the GPU or build is unknown, or the plan places no experts. Used for the
+    real start and for the auto-tune's probe loads (follow-up 2: a probe is a load like any other)."""
+    if not load_record_on() or getattr(a, "vram_user", a.vram) or arg_after(plan_cmd, "--n-cpu-moe", "-ncmoe") is None:
         return None
     sys.path.insert(0, os.path.join(HERE, "planner"))
     import load_record as lr
     from gguf_plan import model_layout, gpu_expert_bytes
-    gid = (plan.machine.gpu_identity() if hasattr(plan.machine, "gpu_identity") else "") or getattr(a, "plan_gpu_ident", "")
-    build, mid = lr.build_id(plan.ls), lr.model_id(plan.model)
+    gid = (machine.gpu_identity() if hasattr(machine, "gpu_identity") else "") or getattr(a, "plan_gpu_ident", "")
+    build, mid = lr.build_id(ls), lr.model_id(model)
     if not (gid and build and mid):
         return None
-    lay = model_layout(plan.model)
+    lay = model_layout(model)
     runs = [0]
 
     def make(cmd):
@@ -2169,28 +2183,30 @@ def make_load_recorder(plan):
             return None
         if any(x in RECORD_SKIP_FLAGS or x.startswith(tuple(f + "=" for f in RECORD_SKIP_FLAGS)) for x in cmd) or arg_after(cmd, "-ngl", "--n-gpu-layers", "--gpu-layers") not in (None, "99", "999"):
             return None                     # the user's own tensor placement or GPU split: the weights figure would not be the plan's (critic M4)
-        if "draft-mtp" in cmd:
-            return None                     # an MTP load holds a second (draft) context: its figures are not recorded; the plan adds the draft as a constant (critic M2)
         runs[0] += 1
         free_plan = getattr(a, "plan_free_mib", None)
         if runs[0] == 1 and free_plan and getattr(a, "plan_free_source", None) == "nvidia-smi":
             # the auto-tune can run up to 180 s between the plan's reading and this load: when the free memory moved meanwhile (another program), the gap is not learned (critic M5)
             try:
-                now = plan.machine.free_vram_bytes()
+                now = machine.free_vram_bytes()
                 if now is None or abs(now / 2**20 - free_plan) > FREE_DRIFT_MIB:
                     free_plan = None
             except Exception:
                 free_plan = None
         ub = arg_after(cmd, "-ub", "--ubatch-size")
-        return lr.Recorder({"cache_dir": CACHE_DIR, "machine": gid, "build": build, "model": mid, "ctx": int(arg_after(cmd, "-c", "--ctx-size") or plan.ctx),
+        mtp = "draft-mtp" in cmd            # an MTP load is recorded with the draft context told apart (follow-up 1); its gap is not learned (planner/load_record.py: entries)
+        return lr.Recorder({"cache_dir": CACHE_DIR, "machine": gid, "build": build, "model": mid, "ctx": int(arg_after(cmd, "-c", "--ctx-size") or ctx),
                             "ub": int(ub) if (ub or "").isdigit() else 0,
                             "kv": (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16"),
-                            "engine": plan.engine, "mtp": "draft-mtp" in cmd, "gpu_expert_mib": gpu_expert_bytes(lay, min(int(n), lay["n_layers"])) / 2**20,
+                            "engine": engine, "mtp": mtp, "gpu_expert_mib": gpu_expert_bytes(lay, min(int(n), lay["n_layers"])) / 2**20,
+                            # a load that runs out of GPU memory is a failed edge at this value (follow-up 7): with the free memory read just before this load, not the plan's
+                            # (a plan with a GPU cache does not walk --n-cpu-moe: no edge from it)
+                            "n_cpu_moe": None if "--moe-cache-mib" in cmd else int(n), "free_now_mib": free_before_load(machine, getattr(a, "plan_free_mib", None)),
                             # the gap is learned only on the first load against the figure the plan used (a retry re-reads the memory; a projector's memory is not llama's)
                             # and only on the stock engine without a GPU cache: the plugin's long-prompt block and llama.cpp's cache banks are allocated after load and would
                             # read as overhead (the plan counts them itself)
-                            "free_plan_mib": free_plan if (runs[0] == 1 and plan.engine == "stock" and not arg_after(cmd, "--mmproj", "-mm")
-                                                                                   and "--moe-cache-mib" not in cmd) else None,
+                            "free_plan_mib": free_plan if (runs[0] == 1 and engine == "stock" and not arg_after(cmd, "--mmproj", "-mm")
+                                                           and "--moe-cache-mib" not in cmd) else None,
                             "free_source": getattr(a, "plan_free_source", None)})
     return make
 
@@ -3124,9 +3140,63 @@ def plan_placement(a, model, ctx, ncmoe, machine):
     return ncmoe, planner_info, planner_error
 
 
+def gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None, say_leave=None):
+    """The GPU memory the placement plans with, the one place it is worked out (follow-ups 4, 5, 9, 11): the free figure (--vram, the Windows AMD / Intel room, or the machine's
+    own reading; the projector's share off), the reserve to keep free next to everything the tuner places (the user's --gpu-margin, else what the desktop and other programs
+    hold, else --leave-room's 2 GB, else the tuner's own 0.5 GB), and where the figure came from. On the room figure the tuner's default 0.5 GB stays on top of the room's own
+    growth reserve (ROOM_RESERVE_MIB): dropping it (follow-up 4) is HELD for the owner (decision (b)); a --gpu-margin is the user's number and stays as given, --leave-room
+    keeps its 2 GB in all (the room's own reserve counts toward them). say_desk / say_leave: called with the line about the desk reserve / --leave-room's reserve (None: not said).
+    Returns {"free": bytes or None, "kw": the tune() arguments reserve_gb / free_source, "desk_kw": GB the desktop forced or None, "use_room": bool}."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
+    if mm_bytes and free:
+        free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
+    kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
+    desk_kw = None
+    room = getattr(a, "room_gib", None)          # LAUNCHER-1133: Windows AMD / Intel, the room the card really gives (never set for the user's own --vram)
+    use_room = bool(room and a.vram and room < float(a.vram))
+    if use_room:
+        # planner map fix 1, "real room on every path": the MoE plan used the Vulkan budget (PC, desktop on the card: 15.4 GiB "free", 13.1-13.5 GiB kept); without the plugin's
+        # block on the stock path that alone put every expert of the 35B on the card at 32k (the 2.2 GiB spill of LAUNCHER-1152). The room already leaves the other programs
+        # their memory and a growth reserve, so the desk reserve is not added on top of it; the tuner's default 0.5 GB still is (follow-up 4 is held, owner decision (b)).
+        free = max(room * 2**30 - ((mm_bytes + MMPROJ_VRAM_HEADROOM) if mm_bytes else 0), 0.0)
+        from gguf_plan import ROOM_RESERVE_MIB
+        room_reserve_gb = ROOM_RESERVE_MIB * 2**20 / 1e9
+        if a.gpu_margin is None:
+            # follow-up 4 (the tuner's 0.5 GB on top of the room's own 300 MiB) is HELD: dropping it moves every Windows AMD / Intel plan one layer onto the GPU and leaves the
+            # auto-tune walk no room (owner decision (b), LAUNCHER-1182). Without --leave-room the tuner's own 0.5 GB stays, as in 404dfd5.
+            if a.leave_room:
+                kw["reserve_gb"] = max(LEAVE_ROOM_VRAM_GB - room_reserve_gb, 0.0)
+                desk_kw = kw["reserve_gb"]
+                if say_leave:
+                    say_leave(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop (the room's own {ROOM_RESERVE_MIB} MiB reserve counts toward them)")
+    if a.gpu_margin is None and not use_room:
+        # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
+        from gguf_plan import desk_reserve_gb
+        tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else machine.gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
+        if tf and getattr(a, "room_used_gib", None) is not None and a.vram and gpu and tf[0]:
+            tf = (tf[0], max(tf[0] - a.room_used_gib * 2**30, 0.0))       # LAUNCHER-1133: "used" = the other programs' dedicated use from the counters, not total minus the driver's budget figure
+        if tf:
+            res, used = desk_reserve_gb(*tf)
+            if res > 0.5:
+                desk_kw = kw["reserve_gb"] = res
+                if say_desk:
+                    say_desk(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
+                             f"(--gpu-margin GiB to change)")
+        if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
+            desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
+            if say_leave:
+                say_leave(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
+    kw["free_source"] = ("user" if getattr(a, "vram_user", a.vram) else "llama-server" if a.vram else
+                         (machine.free_vram_source() if hasattr(machine, "free_vram_source") else None))
+    if use_room:
+        kw["free_source"] = "room"
+    return {"free": free, "kw": kw, "desk_kw": desk_kw, "use_room": use_room}
+
+
 def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes):
     """ENGINE-029, stage "tuner": micro-batch, GPU expert cache and the number of static expert layers, from the one shared tuner (planner/gguf_plan.py: tune),
-    with the VRAM other programs hold (desk reserve), --gpu-margin and --leave-room counted. Returns (tuned dict or None, the reserve in GB when the desktop
+    with the VRAM other programs hold (desk reserve), --gpu-margin and --leave-room counted (gpu_room_inputs). Returns (tuned dict or None, the reserve in GB when the desktop
     forced one or None, the micro-batch the user asked for or None)."""
     tuned = None
     desk_kw = None
@@ -3136,33 +3206,8 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
         try:
             sys.path.insert(0, os.path.join(HERE, "planner"))
             from gguf_plan import tune
-            free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
-            if mm_bytes and free:
-                free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
-            kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
-            room = getattr(a, "room_gib", None)          # LAUNCHER-1133: Windows AMD / Intel, the room the card really gives (never set for the user's own --vram)
-            use_room = bool(room and a.vram and room < float(a.vram))
-            if use_room:
-                # planner map fix 1, "real room on every path": the MoE plan used the Vulkan budget (PC, desktop on the card: 15.4 GiB "free", 13.1-13.5 GiB kept); without the plugin's
-                # block on the stock path that alone put every expert of the 35B on the card at 32k (the 2.2 GiB spill of LAUNCHER-1152). The room already leaves the other programs
-                # their memory and a growth reserve, so the desk reserve below is not added on top of it.
-                free = max(room * 2**30 - ((mm_bytes + MMPROJ_VRAM_HEADROOM) if mm_bytes else 0), 0.0)
-            if a.gpu_margin is None and not use_room:
-                # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
-                from gguf_plan import desk_reserve_gb
-                tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else machine.gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
-                if tf and getattr(a, "room_used_gib", None) is not None and a.vram and gpu and tf[0]:
-                    tf = (tf[0], max(tf[0] - a.room_used_gib * 2**30, 0.0))       # LAUNCHER-1133: "used" = the other programs' dedicated use from the counters, not total minus the driver's budget figure
-                if tf:
-                    res, used = desk_reserve_gb(*tf)
-                    if res > 0.5:
-                        desk_kw = kw["reserve_gb"] = res
-                        if not getattr(a, "lp_retune", False):
-                            say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
-                                f"(--gpu-margin GiB to change)")
-                if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
-                    desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
-                    say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
+            inp = gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None if getattr(a, "lp_retune", False) else say, say_leave=say)
+            free, kw, desk_kw, use_room = inp["free"], inp["kw"], inp["desk_kw"], inp["use_room"]
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
             from gguf_plan import plan_rule_on
@@ -3177,11 +3222,7 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
                 kw["long_prompt"] = True
             kw["plugin"] = getattr(a, "plan_plugin", True)          # the long-prompt GPU block only when the plugin runs (LAUNCHER-1177)
             kw["mtp"] = "draft-mtp" in extra
-            kw["free_source"] = ("user" if getattr(a, "vram_user", a.vram) else "llama-server" if a.vram else
-                                 (machine.free_vram_source() if hasattr(machine, "free_vram_source") else None))
-            if use_room:
-                kw["free_source"] = "room"
-            kw["measured"] = measured_loads(a, ls, model, ctx, kv_q8, machine, kw["plugin"], kw["mtp"], ub_asked)
+            kw["measured"] = measured_loads(a, ls, model, ctx, kv_q8, machine, kw["plugin"], kw["mtp"], ub_asked, kw["free_source"])
             a.plan_free_mib = (free / 2**20) if free else None
             a.plan_free_source = kw["free_source"]
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
@@ -3222,7 +3263,7 @@ def load_record_on():
     return os.environ.get("MOE_CACHE_LOAD_RECORD", "1") != "0"
 
 
-def measured_loads(a, ls, model, ctx, kv_q8, machine, plugin, mtp, ub_asked=None):
+def measured_loads(a, ls, model, ctx, kv_q8, machine, plugin, mtp, ub_asked=None, free_source=None):
     """What the last real loads of this model on this machine and llama.cpp build measured (planner/load_record.py), in the form gguf_plan.tune takes; {} when
     nothing was recorded, the record is off (MOE_CACHE_LOAD_RECORD=0), --vram was given (another figure than the one measured against) or the GPU is unknown."""
     if not load_record_on() or getattr(a, "vram_user", a.vram):
@@ -3239,8 +3280,8 @@ def measured_loads(a, ls, model, ctx, kv_q8, machine, plugin, mtp, ub_asked=None
         engine = "plugin" if plugin else "stock"
         out, bufs = {}, {}
         for u in sorted({512, 1024, 2048, 4096} | ({int(ub_asked)} if (ub_asked or "").isdigit() else set())):
-            m = lr.lookup(CACHE_DIR, gid, build, mid, ctx, u, kv_q8, engine, mtp)
-            for k in ("non_expert_mib", "gap_mib"):
+            m = lr.lookup(CACHE_DIR, gid, build, mid, ctx, u, kv_q8, engine, mtp, free_source)
+            for k in ("non_expert_mib", "gap_mib", "draft_mib"):
                 if k in m:
                     out[k] = m[k]
             b = {k: m[k] for k in ("compute_mib", "context_mib") if k in m}
@@ -3608,7 +3649,7 @@ def auto_gpu_device(extra, listing, cpu_only=False, multi_gpu=False):
     return ",".join(d[0] for d in real), ", ".join(d[1].strip() for d in real), [d[0] for d in devs]
 
 
-def plugin_for_partial_offload(a, ls, model, ctx, machine):
+def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0):
     """v0.3.8, laptop evidence (RTX 4060 8 GB, Qwen3.6-35B-A3B IQ3_XXS, 30 expert layers on the CPU, 32k chat, A B B A): a model that fits in RAM but not in VRAM decodes
     faster through the plugin's executor than through stock llama-server: +10 to +29 % in all six paired band comparisons (mean +15 %; 8k probe +26 %), prompt speed about 10 %
     lower (-22 % in the short-answer chat); NOT reproduced on the release code (audit 2026-11-12: decode -4 %, prompt -19 %): the user-facing text no longer claims the gain (LAUNCHER-1129). Returns the line to say when the plugin should run although the model fits in RAM, else None. --stock turns it off.
@@ -3632,11 +3673,12 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine):
         ram_gib = float(f"{(avail_reserve_gib(a, machine) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import tune
-        free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()
-        src = "user" if a.vram else (machine.free_vram_source() if hasattr(machine, "free_vram_source") else None)
+        # the same GPU room and reserve as the plan itself (gpu_room_inputs: the room figure on Windows AMD / Intel, the desk reserve for the desktop, --gpu-margin, --leave-room): the
+        # engine is chosen after the GPU facts are known and with the memory the plan will really have (follow-ups 5 and 9)
+        inp = gpu_room_inputs(a, machine, gpu, mm_bytes)
         lay_n = machine.planner_answer(model, ctx, ram_gib, float(a.vram) if a.vram else None)["layers"]       # raises for a dense model: stock stays
-        t = tune(model, ctx, free=free, want_cache=False, plugin=False, free_source=src,
-                 measured=measured_loads(a, ls, model, ctx, False, machine, False, False))      # as stock runs it: does every expert fit the GPU?
+        t = tune(model, ctx, free=inp["free"], want_cache=False, plugin=False, **inp["kw"],
+                 measured=measured_loads(a, ls, model, ctx, False, machine, False, False, None, inp["kw"]["free_source"]))      # as stock runs it: does every expert fit the GPU?
         ncmoe = min(int(t["n_cpu_moe"]), int(lay_n))
     except Exception:
         return None                                       # dense, unreadable or no planner answer: stock stays
@@ -4384,27 +4426,36 @@ AUTOTUNE_PROMPT = ("The lighthouse keeper had kept a logbook for thirty-one year
                    "he sat at his small wooden table for a long while before he picked up the pen. ")
 
 
-def autotune_probe(cmd, env, left_s, decode_n):
-    """(see _autotune_probe) plus LAUNCHER-1042: a probe the memory guard stopped says so in "guard_stop", which aborts the whole tune."""
+def autotune_probe(cmd, env, left_s, decode_n, record=None):
+    """(see _autotune_probe) plus LAUNCHER-1042: a probe the memory guard stopped says so in "guard_stop", which aborts the whole tune. record: a function cmd -> Recorder
+    (load_recorder_for): the probe's load is a measurement like a real start's (follow-up 2)."""
     holder = {}
-    r = _autotune_probe(cmd, env, left_s, decode_n, holder)
+    r = _autotune_probe(cmd, env, left_s, decode_n, holder, record)
     g = holder.get("guard")
     if not r.get("ok") and g is not None and getattr(g, "stopped", None):
         r["guard_stop"] = str(g.stopped)
     return r
 
 
-def _autotune_probe(cmd, env, left_s, decode_n, holder):
+def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None):
     """The real runner for moe_cache_autotune.tune: start llama-server with `cmd` on a free local port, wait until it is healthy (its load time), send one request that
     reads a ~1.5k-token prompt (prompt tok/s) and one that writes decode_n tokens (decode tok/s), stop the server. Never raises; a failure is {"ok": False, "error": ...}."""
     import moe_cache_autotune as at
+    rec = None
+    if record is not None:
+        try:
+            rec = record(cmd)           # reads the free memory once (nvidia-smi): before the probe's clock starts
+        except Exception:
+            rec = None
+        if rec is not None and not user_set_log_verbosity(cmd, env):
+            env = dict(env, LLAMA_ARG_LOG_VERBOSITY="4")        # the buffer lines only come at verbosity 4; the probe's log is never shown
     t0 = time.monotonic()
     left = lambda: left_s - (time.monotonic() - t0)
     with socket.socket() as sk:
         sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
     cmd = at.set_flag(at.set_flag(list(cmd), "--port", port), "--host", "127.0.0.1")
     key = dict(env).get("LLAMA_API_KEY")
-    errf = tempfile.TemporaryFile()       # stderr is kept (never shown) to recognise llama.cpp's known load abort (kv_abort below); closed in the finally
+    errf = tempfile.TemporaryFile()       # stderr is kept (never shown) to recognise llama.cpp's known load abort (kv_abort below) and to record the load; closed in the finally
     kw = {"env": env, "stdout": subprocess.DEVNULL, "stderr": errf}
     if sys.platform.startswith("linux"):
         kw["preexec_fn"] = _die_with_parent_linux
@@ -4462,6 +4513,14 @@ def _autotune_probe(cmd, env, left_s, decode_n, holder):
         except Exception:
             try:
                 p.kill(); p.wait(timeout=10)
+            except Exception:
+                pass
+        if rec is not None:
+            try:
+                errf.seek(0)
+                for ln in errf.read().decode("utf-8", "replace").splitlines():
+                    rec.feed(ln)
+                rec.finish()            # after the server ended: the exit table is in the log too; a load that ran out of GPU memory records its failed edge
             except Exception:
                 pass
         try:
@@ -4611,7 +4670,13 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
             stored = fresh(at.load(CACHE_DIR, parts))
             if stored:
                 return apply_stored(stored)
-        return _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=autotune_free_vram(a, machine))
+        try:
+            recorder = load_recorder_for(a, cmd, machine, ls, model, ctx, engine)
+        except Exception:
+            recorder = None
+        failed_at = known_failed_edge(a, machine, ls, model, ctx, cmd, engine)       # a load that ran out of GPU memory at this --n-cpu-moe before: the walk stops one step above
+        return _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=autotune_free_vram(a, machine), recorder=recorder,
+                                 edge_floor=(failed_at + 2) if failed_at is not None else None)       # F failed, F + 1 was its edge: loaded with the reserve eaten, never picked; neither is loaded again
     finally:
         at.release_lock(CACHE_DIR)
 
@@ -4627,8 +4692,9 @@ def autotune_free_vram(a, machine):
         return None
 
 
-def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=None):
+def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=None, recorder=None, edge_floor=None):
     import moe_cache_autotune as at
+    probe = runner or (lambda c, e, l, n: autotune_probe(c, e, l, n, record=recorder) if recorder is not None else autotune_probe(c, e, l, n))
     walk = at.walk_start(cmd, locked)          # planner map fix 2: --n-cpu-moe is walked down from the plan to the edge, one layer per load
     cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None)
     if fits is not None and len(cands) > 1:          # LAUNCHER-1042: every command that would be loaded has passed the commit check first
@@ -4674,16 +4740,17 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
                 if not ok:
                     return {"ok": False, "error": f"not loaded: the commit check does not pass this plan with the f16 KV cache ({why[:120]})"}
         t_start = time.monotonic()
-        r = (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
+        r = probe(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
         if not r.get("ok") and r.get("kv_abort") and not kv_f16[0] and "kv" not in locked:       # a KV type the user gave (or --exact) is never changed
             new_cmd, was = kv_retry_cmd(c_cmd)
             if was and (fits is None or fits(new_cmd, c_env)[0]):
                 say_fn(f"moe-cache: auto-tune: llama.cpp aborted at load with the {was} KV cache (known: stock llama-server on Granite 1B): the plans are measured with the f16 KV cache from here, like the start's own retry")
                 kv_f16[0] = True
-                r = (runner or autotune_probe)(new_cmd, dict(os.environ, **dict(c_env + key_env)), left_s - (time.monotonic() - t_start), n)
+                r = probe(new_cmd, dict(os.environ, **dict(c_env + key_env)), left_s - (time.monotonic() - t_start), n)
         return r
     res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t), progress=lambda t: say_fn("moe-cache: auto-tune: " + t),
-                  walk=walk, check=walk_check, floor=getattr(a, "walk_floor", None))
+                  walk=walk, check=walk_check, floor=_max_floor(getattr(a, "walk_floor", None), edge_floor),
+                  floor_edge=edge_floor if (edge_floor is not None and (getattr(a, "walk_floor", None) is None or edge_floor > a.walk_floor)) else None)
     if free_vram:
         res["free_vram_mib"] = int(free_vram / 2**20)       # what a pick that puts more on the GPU is later compared with (apply_stored)
     if walk is not None:
@@ -4698,6 +4765,31 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     for l in lines:
         say_fn(l)
     return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
+
+
+def _max_floor(*floors):
+    """The highest of the fit limits given (None = none)."""
+    f = [x for x in floors if x is not None]
+    return max(f) if f else None
+
+
+def known_failed_edge(a, machine, ls, model, ctx, cmd, engine):
+    """Follow-up 7: the highest --n-cpu-moe a load of this model failed at here (the recorded failed edge, planner/load_record.lookup_edge), or None. The auto-tune walk
+    does not load it again: it stops one step above, as at a failed load. Never raises."""
+    try:
+        if not load_record_on() or getattr(a, "vram_user", a.vram):
+            return None
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        import load_record as lr
+        gid = (machine.gpu_identity() if hasattr(machine, "gpu_identity") else "") or getattr(a, "plan_gpu_ident", "")
+        build, mid = lr.build_id(ls), lr.model_id(model)
+        ub = arg_after(cmd, "-ub", "--ubatch-size")
+        kv = (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16")
+        free = free_before_load(machine, getattr(a, "plan_free_mib", None))        # the same kind of reading as the one stored with the edge
+        return lr.lookup_edge(CACHE_DIR, gid, build, mid, int(arg_after(cmd, "-c", "--ctx-size") or ctx), int(ub) if (ub or "").isdigit() else 0, kv, engine,
+                              "draft-mtp" in cmd, free_now_mib=free)
+    except Exception:
+        return None
 
 
 def cuda_backend(ls):
@@ -4819,14 +4911,19 @@ def _launch_plan(a, extra, argv, machine):
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock, machine=machine)
     mm_file, mm_bytes, dense = None, 0, False
     mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
+    vram_user, listing, gpu = gpu_stage(a, ls, win, machine)         # the GPU facts first: the engine below is chosen with the memory the plan will have (follow-up 5)
+    a.vram_user = vram_user           # a.vram may now be the launcher's own reading (Windows --list-devices, --multi-gpu): only this one is the user's
+    a.plan_gpu_ident = f"listdev:{gpu[1]}:{int(gpu[3])}" if gpu and len(gpu) > 3 and gpu[3] else ""        # Windows AMD / Intel: no nvidia-smi, no sysfs
+    if a.plan_gpu_ident:
+        try:
+            a.plan_gpu_ident += ";driver " + (machine.win_driver_version(gpu[1]) or "?")         # a new driver changes the buffer sizes: measured anew (follow-up 6)
+        except Exception:
+            pass
     if stock and not dense and not a.stock:
-        why = plugin_for_partial_offload(a, ls, model, ctx, machine)
+        why = plugin_for_partial_offload(a, ls, model, ctx, machine, gpu, mm_bytes)
         if why:
             say(why); stock = False
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
-    vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
-    a.vram_user = vram_user           # a.vram may now be the launcher's own reading (Windows --list-devices, --multi-gpu): only this one is the user's
-    a.plan_gpu_ident = f"listdev:{gpu[1]}:{int(gpu[3])}" if gpu and len(gpu) > 3 and gpu[3] else ""        # Windows AMD / Intel: no nvidia-smi, no sysfs
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
     except Exception:

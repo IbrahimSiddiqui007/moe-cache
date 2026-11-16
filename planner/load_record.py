@@ -12,10 +12,16 @@ The launcher raises the verbosity to 4 through the environment for its own loads
 terminal (bin/moe_cache.py: extra_log_line); MOE_CACHE_LOAD_RECORD=0 turns all of this off.
 
 Stored (one JSON file, <cache dir>/loads.json, newest 400 entries per kind):
-  weights  [machine, build, model]                       -> non_expert_mib: the model's GPU weights minus the expert layers placed there (does not depend on the context)
+  weights  [machine, build, model, mtp]                  -> non_expert_mib: the model's GPU weights minus the expert layers placed there (does not depend on the context; with MTP on llama.cpp also loads the NextN layer, so the MTP loads have their own entry)
   buffers  [machine, build, model, ctx, ub, kv]          -> compute_mib (also from a failed load's size), context_mib (KV + recurrent state)
-  overhead [machine, build, engine, mtp]                 -> gap_mib: what the free figure the plan used overstates the memory llama.cpp can fill
-                                                            (driver total vs CUDA total, CUDA context, growth after load, MTP's draft context)
+  overhead [machine, build, engine, mtp, free_source]    -> gap_mib: what the free figure the plan used overstates the memory llama.cpp can fill
+                                                            (driver total vs CUDA total, CUDA context, growth after load); the key carries where the free figure came
+                                                            from, because the gap of nvidia-smi's figure is not the gap of llama-server's or the room figure (follow-up 3)
+  drafts   [machine, build, model, ctx, ub, kv]          -> draft_mib: the MTP draft context's own buffers (KV + recurrent state + compute + any weights), told apart from
+                                                            the target's by the line "creating MTP draft context" llama-server prints between the two (follow-up 1)
+  edges    [machine, build, model, ctx, ub, kv, engine, mtp] -> fail_ncmoe: the highest --n-cpu-moe whose load failed for lack of GPU memory (any lower value fails too),
+                                                            with the free figure then; the auto-tune walk does not load a value it knows fails (follow-up 7)
+The GPU identity (machine) carries the driver version, so a new driver measures anew (follow-up 6).
 """
 import hashlib
 import json
@@ -26,8 +32,10 @@ import time
 
 KEEP = 400
 GROWTH_CAP_MIB = 512        # growth after load counted at most (laptop 35B: 79 MiB of CUDA work buffers); more is other programs growing over a long run, not this server
+EDGE_MAX_AGE_DAYS = 30
 FILE_NAME = "loads.json"
 SCHEMA = 1
+KINDS = ("weights", "buffers", "overhead", "drafts", "edges")
 _LOCK = threading.Lock()
 
 _NUM = r"([0-9]+(?:\.[0-9]+)?)"
@@ -38,6 +46,7 @@ RS_RE = re.compile(r"llama_memory_recurrent:\s+" + _DEV + r" RS buffer size\s*=\
 COMPUTE_RE = re.compile(r"sched_reserve:\s+" + _DEV + r" compute buffer size\s*=\s*" + _NUM + r" MiB")
 # | - CUDA0 (RTX 4060 Laptop GPU) |  7857 = 983 + (6668 =  5116 +     891 +     660) +         205 |
 BREAKDOWN_RE = re.compile(r"memory_breakdown_print: \|\s+- " + _DEV + r"[^|]*\|\s*([0-9]+)\s*=\s*([0-9]+)\s*\+\s*\(\s*([0-9]+)\s*=\s*([0-9]+)\s*\+\s*([0-9]+)\s*\+\s*([0-9]+)\s*\)\s*\+\s*(-?[0-9]+)\s*\|")
+MTP_DRAFT_RE = re.compile(r"creating MTP draft context")
 OOM_ALLOC_RE = re.compile(r"allocating " + _NUM + r" MiB on device ([0-9]+): \w+ failed")
 COMPUTE_FAIL_RE = re.compile(r"failed to allocate compute|graph_reserve: failed to allocate")
 NCTX_RE = re.compile(r"llama_context: n_ctx\s*=\s*([0-9]+)")
@@ -87,29 +96,38 @@ class LineFilter:
 
 def parse_log(lines):
     """The GPU figures of one load (MiB) from llama-server's log lines. Returns a dict with any of:
-    device, model_mib, kv_mib, rs_mib, compute_mib, context_mib, total_mib, free_start_mib, free_end_mib, unaccounted_mib, failed_compute_mib, n_ctx, n_ubatch, kv_type;
-    {} when nothing was found. With more than one GPU only the one holding the most model weights counts."""
+    device, model_mib, kv_mib, rs_mib, compute_mib, context_mib, total_mib, free_start_mib, free_end_mib, unaccounted_mib, failed_compute_mib, n_ctx, n_ubatch, kv_type,
+    oom (a GPU allocation failed), mtp_draft (the load made an MTP draft context), draft_mib (that context's buffers, on the same device);
+    {} when nothing was found. With more than one GPU only the one holding the most model weights counts. With MTP the target's figures are the lines before
+    "creating MTP draft context" and the draft's the lines after it; the memory tables hold both, so they are not used for the target's buffers."""
     models, kv, rs, comp, bds = {}, {}, {}, {}, []
+    d_models, d_kv, d_rs, d_comp = {}, {}, {}, {}
     out = {}
     pending_oom = None
+    draft = False
     for line in lines:
         if isinstance(line, bytes):
             line = line.decode("utf-8", "replace")
+        if MTP_DRAFT_RE.search(line):
+            draft = True
+            out["mtp_draft"] = True
+            continue
+        mm, mk, mr, mc = (d_models, d_kv, d_rs, d_comp) if draft else (models, kv, rs, comp)
         m = MODEL_RE.search(line)
         if m:
-            models[m.group(1)] = models.get(m.group(1), 0.0) + float(m.group(2))
+            mm[m.group(1)] = mm.get(m.group(1), 0.0) + float(m.group(2))
             continue
         m = KV_RE.search(line)
         if m:
-            kv[m.group(1)] = kv.get(m.group(1), 0.0) + float(m.group(2))
+            mk[m.group(1)] = mk.get(m.group(1), 0.0) + float(m.group(2))
             continue
         m = RS_RE.search(line)
         if m:
-            rs[m.group(1)] = rs.get(m.group(1), 0.0) + float(m.group(2))
+            mr[m.group(1)] = mr.get(m.group(1), 0.0) + float(m.group(2))
             continue
         m = COMPUTE_RE.search(line)
         if m:
-            comp[m.group(1)] = max(comp.get(m.group(1), 0.0), float(m.group(2)))
+            mc[m.group(1)] = max(mc.get(m.group(1), 0.0), float(m.group(2)))
             continue
         m = BREAKDOWN_RE.search(line)
         if m:
@@ -119,11 +137,14 @@ def parse_log(lines):
         m = OOM_ALLOC_RE.search(line)
         if m:
             pending_oom = float(m.group(1))
+            out["oom"] = True
             continue
         if pending_oom is not None and COMPUTE_FAIL_RE.search(line):
             out["failed_compute_mib"] = pending_oom          # the failed allocation was the compute buffer (a model buffer fails in load_tensors)
             pending_oom = None
             continue
+        if draft:
+            continue                                         # the draft context's own n_ctx / n_ubatch / KV type are not the target's
         for rx, key in ((NCTX_RE, "n_ctx"), (NUB_RE, "n_ubatch")):
             m = rx.search(line)
             if m:
@@ -146,6 +167,9 @@ def parse_log(lines):
         out["compute_mib"] = round(comp[dev], 2)
     if dev in kv or dev in rs:
         out["context_mib"] = round(kv.get(dev, 0.0) + rs.get(dev, 0.0), 2)
+    dsum = sum(x.get(dev, 0.0) for x in (d_models, d_kv, d_rs, d_comp))
+    if dsum > 0:
+        out["draft_mib"] = round(dsum, 2)
     mine = [b for b in bds if b["device"] == dev]
     if mine:
         first, last = mine[0], mine[-1]
@@ -154,9 +178,10 @@ def parse_log(lines):
         if len(mine) > 1:                                # the second table is printed at exit: what was really held
             out["free_end_mib"] = last["free"]
             out["unaccounted_mib"] = last["unaccounted"]
-        out.setdefault("model_mib", float(last["model"]))
-        out.setdefault("context_mib", float(last["context"]))
-        out.setdefault("compute_mib", float(last["compute"]))
+        if not out.get("mtp_draft"):                     # with a draft context the tables add the draft's buffers to the target's
+            out.setdefault("model_mib", float(last["model"]))
+            out.setdefault("context_mib", float(last["context"]))
+            out.setdefault("compute_mib", float(last["compute"]))
     return out
 
 
@@ -199,10 +224,13 @@ def _read(cache_dir):
         with open(store_path(cache_dir), encoding="utf-8") as f:
             d = json.load(f)
         if isinstance(d, dict) and d.get("schema") == SCHEMA:
+            for k in KINDS:
+                if not isinstance(d.get(k), dict):
+                    d[k] = {}
             return d
     except (OSError, ValueError):
         pass
-    return {"schema": SCHEMA, "weights": {}, "buffers": {}, "overhead": {}}
+    return {"schema": SCHEMA, **{k: {} for k in KINDS}}
 
 
 def _key(*parts):
@@ -220,36 +248,68 @@ def kv_name(kv):
     return f"{kv}/{kv}"
 
 
-def lookup(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp):
-    """The measured parts for this plan: {"non_expert_mib", "compute_mib", "context_mib", "gap_mib"} (any may be missing), each with its record time under
-    "<name>_at". {} when nothing was recorded, or the machine, build or model is unknown."""
+def lookup(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, free_source=None):
+    """The measured parts for this plan: {"non_expert_mib", "compute_mib", "context_mib", "gap_mib", "draft_mib"} (any may be missing), each with its record time
+    under "<name>_at". {} when nothing was recorded, or the machine, build or model is unknown. free_source: where the plan's free GPU figure comes from; the gap is
+    only taken from loads planned against the same kind of figure. draft_mib is looked up when mtp is on."""
     if not (machine and build and model):
         return {}
     d = _read(cache_dir)
     out = {}
-    w = d["weights"].get(_key(machine, build, model))
+    w = d["weights"].get(_key(machine, build, model, bool(mtp)))
     if w and isinstance(w.get("non_expert_mib"), (int, float)):
         out["non_expert_mib"], out["non_expert_mib_at"] = float(w["non_expert_mib"]), w.get("at")
-    b = d["buffers"].get(_key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv)))
+    bkey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv))
+    b = d["buffers"].get(bkey)
     for k in ("compute_mib", "context_mib"):
         if b and isinstance(b.get(k), (int, float)) and b[k] > 0:
             out[k], out[k + "_at"] = float(b[k]), b.get("at")
-    o = d["overhead"].get(_key(machine, build, engine, False))        # MTP loads are not recorded; the draft context is the plan's own constant (critic M2)
+    o = d["overhead"].get(_key(machine, build, engine, False, free_source))        # the gap is learned from loads without MTP (the exit tables of an MTP load hold two contexts)
     if o and isinstance(o.get("gap_mib"), (int, float)):
         out["gap_mib"], out["gap_mib_at"] = float(o["gap_mib"]), o.get("at")
+    if mtp:
+        dr = d["drafts"].get(bkey)
+        if dr and isinstance(dr.get("draft_mib"), (int, float)) and dr["draft_mib"] > 0:
+            out["draft_mib"], out["draft_mib_at"] = float(dr["draft_mib"]), dr.get("at")
     return out
 
 
-def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_source):
-    """The store entries one parsed load gives: {"weights": {...}, "buffers": {...}, "overhead": {...}} (each may be missing).
+def lookup_edge(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, free_now_mib=None, drift_mib=256):
+    """The highest --n-cpu-moe whose load failed for lack of GPU memory with this plan (a lower value needs more GPU memory and fails too), or None. An edge
+    recorded with less free GPU memory than there is now (more than drift_mib less) is not trusted: the memory it ran out of may be there now."""
+    if not (machine and build and model):
+        return None
+    e = _read(cache_dir)["edges"].get(_key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv), engine, bool(mtp)))
+    if not e or not isinstance(e.get("fail_ncmoe"), int):
+        return None
+    if free_now_mib is not None and e.get("free_mib") is not None and free_now_mib > e["free_mib"] + drift_mib:
+        return None
+    try:
+        if time.time() - time.mktime(time.strptime(e.get("at", ""), "%Y-%m-%d %H:%M")) > EDGE_MAX_AGE_DAYS * 86400:
+            return None                              # a failure from long ago (other programs, a driver update that kept the key): measured again
+    except (ValueError, OverflowError):
+        return None
+    return e["fail_ncmoe"]
+
+
+def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_source, n_cpu_moe=None, free_now_mib=None):
+    """The store entries one parsed load gives: {"weights": {...}, "buffers": {...}, "overhead": {...}, "drafts": {...}, "edges": {...}, "edge_ok": n} (each may be missing).
     gpu_expert_mib: the expert bytes this load placed on the GPU (from the model header and the --n-cpu-moe it ran with); free_plan_mib: the free GPU figure the
-    plan used and free_source where it came from (the gap is only learned against the same kind of figure)."""
+    plan used and free_source where it came from (the gap is only learned against the same kind of figure). mtp: the load ran with MTP: its draft context is
+    told apart in the log (no marker, nothing is recorded: the target's and the draft's buffers could not be separated), the draft is stored on its own and no gap
+    is learned. n_cpu_moe: with a GPU allocation that failed, this value is stored as a failed edge (free_now_mib: the free figure then)."""
     now = time.strftime("%Y-%m-%d %H:%M")
     out = {}
+    if mtp and not rec.get("mtp_draft"):
+        return out
+    if rec.get("oom") and n_cpu_moe is not None:
+        out["edges"] = {"fail_ncmoe": int(n_cpu_moe), "free_mib": round(free_now_mib) if free_now_mib else None, "at": now}
+    elif n_cpu_moe is not None and rec.get("model_mib") and (rec.get("compute_mib") or rec.get("context_mib")):
+        out["edge_ok"] = int(n_cpu_moe)                    # a load that came up: an older failed edge at or above this value is out of date
     if rec.get("model_mib") and gpu_expert_mib is not None and rec["model_mib"] - gpu_expert_mib > 0:
         out["weights"] = {"non_expert_mib": round(rec["model_mib"] - gpu_expert_mib, 1), "at": now}
     comp = rec.get("compute_mib") or rec.get("failed_compute_mib")
-    if comp or rec.get("context_mib"):
+    if (comp or rec.get("context_mib")) and not (mtp and not rec.get("draft_mib")):      # an MTP log without a draft figure may have the draft's lines mixed into the target's
         if (rec.get("n_ctx") in (None, int(ctx))) and (rec.get("n_ubatch") in (None, int(ub or 0))):     # the log must be the plan's own load
             b = {"at": now}
             if comp:
@@ -257,9 +317,11 @@ def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_s
             if rec.get("context_mib"):
                 b["context_mib"] = round(float(rec["context_mib"]), 1)
             out["buffers"] = b
-    if free_plan_mib and rec.get("free_start_mib") is not None and rec.get("total_mib"):
+            if mtp and rec.get("draft_mib"):
+                out["drafts"] = {"draft_mib": round(float(rec["draft_mib"]), 1), "at": now}
+    if not mtp and free_plan_mib and rec.get("free_start_mib") is not None and rec.get("total_mib"):
         # what the plan's free figure overstates: the plan's figure minus what the device really had free when this process started loading, plus what was
-        # held at exit beyond the context made at start and llama's own buffers (CUDA work buffers, MTP's draft context, the plugin's block)
+        # held at exit beyond the context made at start and llama's own buffers (CUDA work buffers, the plugin's block)
         held_at_start = rec["total_mib"] - rec["free_start_mib"]
         growth = min(GROWTH_CAP_MIB, max(0.0, float(rec["unaccounted_mib"]) - held_at_start)) if rec.get("unaccounted_mib") is not None else None
         if growth is not None:
@@ -269,20 +331,26 @@ def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_s
     return out
 
 
-def save(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, ent):
+def save(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, ent, free_source=None):
     """Write the entries (atomic, private); returns True when something was written. Never raises."""
     if not (machine and build and model) or not ent:
         return False
     try:
         with _LOCK:
             d = _read(cache_dir)
-            for kind, key in (("weights", _key(machine, build, model)), ("buffers", _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv))),
-                              ("overhead", _key(machine, build, engine, bool(mtp)))):
+            bkey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv))
+            ekey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv), engine, bool(mtp))
+            for kind, key in (("weights", _key(machine, build, model, bool(mtp))), ("buffers", bkey), ("overhead", _key(machine, build, engine, bool(mtp), free_source)),
+                              ("drafts", bkey), ("edges", ekey)):
                 if kind in ent:
                     d[kind].pop(key, None)
                     d[kind][key] = ent[kind]
                     for old in list(d[kind])[:-KEEP]:
                         del d[kind][old]
+            if "edge_ok" in ent:                                   # a load at this value came up: a failure recorded at this value or a higher one is out of date
+                e = d["edges"].get(ekey)
+                if e and isinstance(e.get("fail_ncmoe"), int) and e["fail_ncmoe"] >= ent["edge_ok"]:
+                    del d["edges"][ekey]
             os.makedirs(cache_dir, exist_ok=True)
             p = store_path(cache_dir)
             tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -299,12 +367,16 @@ class Recorder:
     """Collects one llama-server's log lines (feed) and stores what they measured (finish). ctx: the plan's dict with cache_dir, machine, build, model, ctx, ub,
     kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_source. Writes at most twice: when the server is ready (load figures) and at exit (the exit table)."""
     def __init__(self, ctx):
-        self.ctx, self.lines, self.saved = ctx, [], 0
+        self.ctx, self.lines, self.saved, self.loaded = ctx, [], 0, False
 
     def feed(self, line):
         if isinstance(line, bytes):
             line = line.decode("utf-8", "replace")
-        if ("buffer size" in line or "memory_breakdown" in line or "llama_context: n_" in line or "llama_kv_cache: size" in line
+        if "model loaded" in line:
+            self.loaded = True                 # from here on an allocation failure is the running server's (the plugin's long-prompt block), not a failed load
+        if self.loaded and ("MiB on device" in line or "failed to allocate" in line):
+            return
+        if ("buffer size" in line or "memory_breakdown" in line or "creating MTP draft context" in line or "llama_context: n_" in line or "llama_kv_cache: size" in line
                 or "MiB on device" in line or "failed to allocate" in line):
             self.lines.append(line)
 
@@ -313,7 +385,8 @@ class Recorder:
         rec = parse_log(self.lines)
         if not rec:
             return {}
-        ent = entries(rec, c["ctx"], c.get("ub"), c.get("kv"), c.get("engine"), c.get("mtp"), c.get("gpu_expert_mib"), c.get("free_plan_mib"), c.get("free_source"))
-        if save(c["cache_dir"], c["machine"], c["build"], c["model"], c["ctx"], c.get("ub"), c.get("kv"), c.get("engine"), c.get("mtp"), ent):
+        ent = entries(rec, c["ctx"], c.get("ub"), c.get("kv"), c.get("engine"), c.get("mtp"), c.get("gpu_expert_mib"), c.get("free_plan_mib"), c.get("free_source"),
+                      n_cpu_moe=c.get("n_cpu_moe"), free_now_mib=c.get("free_now_mib"))
+        if save(c["cache_dir"], c["machine"], c["build"], c["model"], c["ctx"], c.get("ub"), c.get("kv"), c.get("engine"), c.get("mtp"), ent, free_source=c.get("free_source")):
             self.saved += 1
         return ent
