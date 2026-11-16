@@ -1075,7 +1075,7 @@ def room_bytes(free, compute_mib, reserve_gb, block=0):
 
 
 def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False, plugin=True, measured=None,
-         free_source=None, mtp=False):
+         free_source=None, mtp=False, keep_ub=False):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left. The only placement
     function of the launcher (planner map fix 1; planner/plan.py's formula no longer decides).
 
@@ -1089,6 +1089,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     loads on this machine measured (planner/load_record.py lookup): {"non_expert_mib", "gap_mib", "draft_mib", "buffers": {ub: {"compute_mib", "context_mib"}}}; a missing part
     falls back to the header (weights, KV) or our tables (compute buffer, gap). free_source: where `free` came from ("nvidia-smi" overstates it by the CUDA
     reserve and context, SMI_GAP_GIB until measured). mtp: MTP drafting is on (its draft context needs GPU memory, MTP_DRAFT_GIB until a load with MTP was recorded).
+    keep_ub: a stock cache on a CUDA llama-server keeps -ub 2048 (CACHE-1187; measured on one NVIDIA laptop only), see the cache branch below.
     """
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
@@ -1178,7 +1179,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     block = block_for(ub)
     if fixed_ub:
         why.append(f"micro-batch {ub} as asked")
-    elif want_cache and ub > 1024 and room > 0:
+    elif want_cache and ub > 1024 and room > 0 and (plugin or not keep_ub or room < 1536 * 1048576):
+        # plugin path and every non-CUDA stock path (keep_ub False): unchanged. Stock CUDA llama-server (CACHE-1187/LAUNCHER-1188, laptop 4060, 35B, b12207, one machine): -ub 1024 cost 14-34 % of the prompt
+        # speed for no decode gain, so a stock cache keeps -ub 2048 as long as the cache still gets 1.5 GiB at that batch; below that the smaller batch buys the room
         ub = 1024
         buf = cbm(1024, False) or 0
         block = block_for(1024)
