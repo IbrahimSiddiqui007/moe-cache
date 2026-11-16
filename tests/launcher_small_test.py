@@ -21,8 +21,8 @@ if os.name != "nt":
           "exit status: -9 -> 137, -15 -> 143, others unchanged")
 
 # A3-22 / LAUNCHER-005: MOE_CACHE_MAX_RAM_GB is read like the plugin's mcargs::parse_number (whole text, finite decimal, 0..1e9)
-check(mc.leading_number(" 1.5e1 ") == "1.5e1" and mc.leading_number(".5") == ".5" and mc.leading_number("20") == "20", "max-ram number: 1.5e1, .5, 20 are numbers")
-for bad in ("GB", "", "0x10", "inf", "nan", "abc20", "20GB", "1e999", "-1", "1_0", "2e9"):
+check(mc.leading_number("\v20\f") == "20" and mc.leading_number(" 1.5e1 ") == "1.5e1" and mc.leading_number(".5") == ".5" and mc.leading_number("20") == "20", "max-ram number: 1.5e1, .5, 20 are numbers")
+for bad in ("GB", "", "0x10", "inf", "nan", "abc20", "20GB", "1e999", "-1", "1_0", "2e9", "\uff12\uff10", "\u0663"):
     try:
         mc.leading_number(bad); ok = False
     except ValueError:

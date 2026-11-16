@@ -991,8 +991,8 @@ def ram_gib(ram_gb):
 def leading_number(v):
     """LAUNCHER-005 (A3-22, redone 2026-11-16): the number a MOE_CACHE_MAX_RAM_GB text means, the way the plugin's mcargs::parse_number reads it: ALL of the text
     (white space around it allowed), a finite decimal, 0..1e9. "20GB", hex, inf, nan, "1_0" are typos here and there (the default cap is used). Raises ValueError."""
-    t = str(v).strip(" \t\r\n")
-    if not re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", t) or not 0 <= float(t) <= 1e9:
+    t = str(v).strip(" \t\n\v\f\r")
+    if not re.fullmatch(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", t) or not 0 <= float(t) <= 1e9:
         raise ValueError(v)
     return t
 

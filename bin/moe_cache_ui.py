@@ -1980,19 +1980,20 @@ AUDIT_MAX_TOKENS_LIMIT = 65536
 def audit_need(model_size, model_path=None, ctx=None):
     """GUI-1156 (Fable audit item 7): bytes a second, exact-mode server needs next to the running one. Was model x 1.10 + 1.5 GiB for every model and context. Now, when the
     model's header is readable: the file + the KV cache llama-server sizes for this context (gguf_plan.kv_bytes: attention layers only on hybrid models, f16 as exact mode
-    runs it) + the compute buffer the planner has measured for the context (compute_buffer_guess_mib at -ub 512) + 1 GiB for the process. Unreadable header (or no path): the old rule."""
+    runs it) + the compute buffer the planner has measured for the context (compute_buffer_guess_mib at -ub 512) + 1 GiB for the process. The old rule stays as the floor (the audit server runs at max(setting, conversation) context, not known here). Unreadable header (or no path): the old rule."""
     if not model_size:
         return None
     old = int(model_size * 1.10 + 1.5 * GIB)
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        if os.path.join(HERE, "planner") not in sys.path:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
         import gguf_plan as gp
         c = max(512, int(ctx or 8192))
         kv = gp.kv_bytes(model_path, c, kv_q8=False)
         mib = gp.compute_buffer_guess_mib(c, 512)
         if kv is None or not mib:
             return old
-        return int(model_size + kv + mib * 1048576 + 1.0 * GIB)
+        return max(old, int(model_size + kv + mib * 1048576 + 1.0 * GIB))      # never below the old rule: the audit server may run at a longer context than the setting
     except Exception:
         return old
 

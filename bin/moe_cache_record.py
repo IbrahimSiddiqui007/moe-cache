@@ -34,6 +34,8 @@ def rnd(x, n=1):
 def round_half_up(x, n=1):
     """CLEANUP-795: THE rounding rule for a printed mean: half up on the 6-digit value, the same as bin/moe_cache_claims.py fmt(), so the record and the generated
     board print the same last digit (a mean of 68.675 was 68.67 here with Python's round and 68.68 on the board)."""
+    if x != x or x in (float("inf"), float("-inf")):
+        return x
     return float(decimal.Decimal(repr(round(x, 6))).quantize(decimal.Decimal(1).scaleb(-n), rounding=decimal.ROUND_HALF_UP))
 
 
@@ -1168,7 +1170,7 @@ def assemble(env, settings, conditions, protocol, runs, reproduce=None, notes=No
 
 
 def conditions_now(pr=None, cold=None, baseline=None, other_programs=None, temps=True):
-    """Conditions at the start: uptime, free RAM and VRAM in use, CPU busy over one second, temperatures. cold: True / False / None; baseline / other_programs: text the
+    """Conditions at the start: uptime, available RAM and VRAM in use, CPU busy over one second, temperatures. cold: True / False / None; baseline / other_programs: text the
     person or harness gives (a baseline guard result like 'PASS 49.4 tok/s')."""
     pr = pr or probe()
     c0 = pr.sys_cpu(); time.sleep(1.0); c1 = pr.sys_cpu()

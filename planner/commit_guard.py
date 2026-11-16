@@ -239,21 +239,22 @@ def _val(cmd, *names):
 
 def table_on_gpu(cmd):
     """LAUNCHER-1163: True when an -ot / --override-tensor rule sends the per-layer token-embedding table (per_layer_token_embd) to a GPU buffer. Rules are
-    PATTERN=BUFFER, several per option separated by commas, the option may repeat; the pattern is a regex searched in the tensor name (llama.cpp); the last rule that matches wins."""
+    PATTERN=BUFFER (split at the FIRST "="), several per option separated by commas, the option may repeat; the pattern is a regex searched in the tensor name; the FIRST rule
+    that matches wins (llama-model-loader.cpp stops at the first match)."""
     on_gpu = False
     for i, x in enumerate(cmd):
         v = cmd[i + 1] if x in ("-ot", "--override-tensor") and i + 1 < len(cmd) else x.split("=", 1)[1] if x.startswith("--override-tensor=") else None
         for rule in (v or "").split(","):
-            pat, _, buf = rule.rpartition("=")
-            if not pat:
+            pat, eq, buf = rule.partition("=")
+            if not eq or not pat:
                 continue
             try:
                 hit = re.search(pat, "per_layer_token_embd.weight") is not None
             except re.error:
                 continue
             if hit:
-                on_gpu = not buf.strip().upper().startswith("CPU")
-    return on_gpu
+                return not buf.strip().upper().startswith("CPU")
+    return False
 
 
 def layout_from_cmd(cmd, env, f, vram_free=None, mm_bytes=0):
