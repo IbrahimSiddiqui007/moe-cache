@@ -59,6 +59,25 @@ python3 tools/conversation_bench.py table record.json --turns
 python3 bin/moe_cache.py bench-record ingest record.json --machine pc
 ```
 
+**Linux, the whole A B B A through the launcher (`tools/conversation_bench_pair.sh`)**: the Linux twin of the PowerShell driver, for any two arms of the
+launcher itself (two flags, two environments, or two checkouts of the code), one server at a time. Each arm gets its own `XDG_CACHE_HOME`, the server is
+started in its own process group, `/health` is awaited, `conversation_bench.py run` plays the conversation with llama-server's pid (VRAM, RAM, CPU peaks),
+an independent sampler writes `peaks-N-label.json` (whole-card VRAM peak, lowest MemAvailable), and the server is stopped with SIGTERM (SIGKILL after 40 s);
+a trap does the same on SIGTERM to the driver (SIGINT is ignored in background jobs; `kill -9` of the driver cannot be trapped: a thermal wrapper that runs it in its own cgroup scope catches whatever is left; otherwise check `ps` for a llama-server). At the end `assemble` writes one record and `spread` prints the run-by-run table
+and the spread between the two runs of each arm (give both arms the same arguments and `--prep`, so both start from one stored plan, and that is a rough spread, two runs per arm: A's runs 1 and 4 bracket the drift, B's 2 and 3 are adjacent; without `--prep` each arm's tuning walk adds noise it does not contain). On a laptop, run it inside a thermal wrapper if you have one (the driver does not manage heat); the commands below show a wrapper as `THERMAL_WRAPPER --`, drop it if you have none:
+
+```bash
+# two flags (same code):
+THERMAL_WRAPPER -- tools/conversation_bench_pair.sh --out OUT --model M.gguf --llama-server LS --ctx 65536 \
+    --args-a "" --args-b "--n-cpu-moe 24"
+# two code versions (two worktrees, same flags):
+THERMAL_WRAPPER -- tools/conversation_bench_pair.sh --out OUT --model M.gguf --llama-server LS --ctx 65536 \
+    --root-a /path/to/worktree-old --root-b /path/to/worktree-new
+```
+
+`--prep` lets the launcher tune once per distinct setup before the arms (otherwise every arm tunes in its own empty cache); `--env-a/--env-b "K=V"` set environment per arm; `--cache-seed DIR` starts every arm from a copy of the same planner cache; `--help` lists the rest.
+Test (no model): `tests/conversation_bench_pair_test.py`.
+
 **Windows PowerShell, the whole A B B A on a PC with one model** (the PC cannot hold two servers, so the driver starts and stops one per run, flushes the
 file cache before each, waits for a quiet CPU, runs the conversation and assembles the record). The first line is a short trial, the second the real run with
 the Flash-Next IQ3_XXS file:
