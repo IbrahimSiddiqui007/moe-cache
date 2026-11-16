@@ -110,7 +110,14 @@ def plan_env(*extra_args):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         return dict(mc.launch_plan(a, ex, argv, machine=M(tmp2), quiet=True).env)
 check("MOE_CACHE_SCHED_TUNING" not in plan_env(), "the scheduling tuning is gone: nothing is set by default")
-check("MOE_CACHE_SCHED_TUNING" not in plan_env("--no-sched-tuning"), "--no-sched-tuning is accepted and does nothing (kept for one release so old commands still run)")
+def refused(*extra_args):
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            a, ex, argv = mc.parse_server([m, "--llama-server", os.path.join(tmp2, "llama-server"), *extra_args])
+        return "--no-sched-tuning" not in (ex or []) and "--no-sched-tuning" not in (argv or [])
+    except SystemExit:
+        return True
+check(refused("--no-sched-tuning"), "WINDOWS-888: --no-sched-tuning is no longer an option of the launcher (not accepted silently)")
 n2 = notes("--", "-t", "4")
 check(not any("CPU cores left free" in t for t in n2), "leave-room: with your own -t no cores claim")
 # CACHE-181: the loading line names the size and a seconds range; a missing file still gives a line
