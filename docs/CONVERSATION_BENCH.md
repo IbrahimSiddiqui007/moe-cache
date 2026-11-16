@@ -62,7 +62,7 @@ python3 bin/moe_cache.py bench-record ingest record.json --machine pc
 **Linux, the whole A B B A through the launcher (`tools/conversation_bench_pair.sh`)**: the Linux twin of the PowerShell driver, for any two arms of the
 launcher itself (two flags, two environments, or two checkouts of the code), one server at a time. Each arm gets its own `XDG_CACHE_HOME`, the server is
 started in its own process group, `/health` is awaited, `conversation_bench.py run` plays the conversation with llama-server's pid (VRAM, RAM, CPU peaks),
-an independent sampler writes `peaks-N-label.json` (whole-card VRAM peak, lowest MemAvailable), and the server is stopped with SIGINT (SIGKILL after 40 s);
+an independent sampler writes `peaks-N-label.json` (whole-card VRAM peak, lowest MemAvailable), and the server is stopped with SIGTERM (SIGKILL after 40 s);
 a trap does the same on Ctrl-C/SIGTERM, so a stopped run leaves nothing behind. At the end `assemble` writes one record and `spread` prints the run-by-run table
 and the spread between the two runs of each arm (give both arms the same arguments and that spread is the noise floor). On the laptop run it through the heat guard:
 
@@ -75,7 +75,7 @@ handover/tools/cool_run.sh -c 16 -m 28 -- moe-cache/tools/conversation_bench_pai
     --root-a /path/to/worktree-old --root-b /path/to/worktree-new
 ```
 
-`--env-a/--env-b "K=V"` set environment per arm; `--cache-seed DIR` starts every arm from a copy of the same planner cache; `--help` lists the rest.
+`--prep` lets the launcher tune once per distinct setup before the arms (otherwise every arm tunes in its own empty cache); `--env-a/--env-b "K=V"` set environment per arm; `--cache-seed DIR` starts every arm from a copy of the same planner cache; `--help` lists the rest.
 Test (no model): `tests/conversation_bench_pair_test.py`.
 
 **Windows PowerShell, the whole A B B A on a PC with one model** (the PC cannot hold two servers, so the driver starts and stops one per run, flushes the

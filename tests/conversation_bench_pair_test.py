@@ -32,6 +32,7 @@ a = sys.argv[1:]
 port = a[a.index("--port") + 1]; ctx = a[a.index("--ctx") + 1]
 with open(os.path.join(os.path.dirname(__file__), "calls.jsonl"), "a") as f:
     f.write(json.dumps({{"root": {name!r}, "argv": a, "xdg": os.environ.get("XDG_CACHE_HOME"), "fake_d": os.environ.get("FAKE_D_TPS")}}) + "\\n")
+open(os.path.join(os.environ["XDG_CACHE_HOME"], "tuned-by-" + {name!r}), "w").write("x")     # what a prep start leaves in the cache (the stored auto-tune plan)
 ch = subprocess.Popen([sys.executable, {FAKE!r}, port, ctx])
 def stop(*_):
     ch.terminate()      # the outer ch.wait() below then returns (waiting again inside the handler would deadlock on Popen's lock)
@@ -78,6 +79,30 @@ tables = open(os.path.join(out, "tables.md")).read()
 check("Spread between the runs of one arm" in tables and "| A | 2 |" in tables, "tables.md has the spread table")
 check(all(os.path.exists(os.path.join(out, f"peaks-{i}-{l}.json")) for i, l in enumerate("ABBA", 1)), "peak files exist per arm")
 check(not alive(PORT), "no server is left on the port")
+
+# ---- --prep: each distinct setup starts once alone, its cache is copied to the arms; identical setups share one prep
+def calls_of(root):
+    f = os.path.join(root, "bin", "calls.jsonl")
+    return [json.loads(l) for l in open(f)] if os.path.exists(f) else []
+for root in (ROOT_A, ROOT_B):
+    if os.path.exists(os.path.join(root, "bin", "calls.jsonl")):
+        os.remove(os.path.join(root, "bin", "calls.jsonl"))
+out4 = os.path.join(tmp, "out4")
+c4 = cmd[:3] + [out4] + cmd[4:] + ["--prep", "--order", "A,B"]
+r = subprocess.run(c4, capture_output=True, text=True, timeout=200)
+check(r.returncode == 0, f"--prep: the driver finishes ({r.returncode})")
+check(len(calls_of(ROOT_A)) == 2 and len(calls_of(ROOT_B)) == 2, "--prep: each distinct setup starts twice (once alone to tune, once as the arm)")
+check(os.path.exists(os.path.join(out4, "cache-1-A", "tuned-by-rootA")) and os.path.exists(os.path.join(out4, "cache-2-B", "tuned-by-rootB")), "--prep: each arm's cache holds what its prep start stored")
+check(os.path.exists(os.path.join(out4, "server-prep-A.log")) and not alive(PORT), "--prep: the prep server is stopped before the arm starts")
+for root in (ROOT_A, ROOT_B):
+    os.remove(os.path.join(root, "bin", "calls.jsonl")) if os.path.exists(os.path.join(root, "bin", "calls.jsonl")) else None
+out5 = os.path.join(tmp, "out5")
+same = ["bash", DRV, "--out", out5, "--model", model, "--llama-server", ls, "--ctx", "4096", "--port", str(PORT), "--max-tokens", "32", "--no-evict", "--no-cool",
+        "--root-a", ROOT_A, "--root-b", ROOT_A, "--ready-s", "60", "--settle-s", "0", "--prep", "--order", "A,B,B,A"]
+r = subprocess.run(same, capture_output=True, text=True, timeout=250)
+check(r.returncode == 0 and len(calls_of(ROOT_A)) == 5, f"--prep: two arms with the same setup share one prep start (5 starts: 1 prep + 4 runs, got {len(calls_of(ROOT_A))})")
+rec5 = json.load(open(os.path.join(out5, "record.json")))
+check(rec5["protocol"]["order"] == "ABBA", "A = B (the noise-floor case) gives an ABBA record too")
 
 # ---- a busy port is refused (nothing started)
 busy = socket.socket(); busy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); busy.bind(("127.0.0.1", PORT)); busy.listen(1)
