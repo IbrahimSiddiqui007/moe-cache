@@ -62,7 +62,7 @@ Rule of 2026-11-09: there is no opt-in for a speed-up that changes tokens but ke
 | Skip rarely picked experts | `--fast` | lost | PC, 64k screen of 2026-11-09: prompt slower, no decode gain beyond noise; quality gate passed |
 | Skip up to 4 experts | `--fast=2` | lost | PC, 64k screen of 2026-11-09: prompt slower, decode not faster (the laptop gain at 12 GB RAM is a different case) |
 | Drop the 2 lowest experts on CPU layers | `--fast=fewer` | lost | PC, 64k screen of 2026-11-09: prompt and decode slower; quality gate failed |
-| Named groups of the rows above | `--approx safe\|careful\|aggressive` | lost | a group is as good as its rows; the PC screen of 2026-11-09 showed no speed win |
+| Named groups of the rows above | `--approx safe\|careful\|aggressive` | lost (careful, aggressive) | a group is as good as its rows; the PC screen of 2026-11-09 ran careful and aggressive and showed no speed win. `safe` is the q8_0 KV row above; it was not part of that screen |
 
 `--fast`, `--fast=2`, `--fast=fewer` and `--approx` are **deprecated aliases**: they still work and force their modes on, whatever the status.
 

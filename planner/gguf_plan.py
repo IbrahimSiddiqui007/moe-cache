@@ -37,7 +37,7 @@ def _read_str(f):
 
 def _skip_str_array(f, n):
     """Skip n length-prefixed strings (the tokenizer: ~150k entries) by walking the lengths in 1 MiB blocks: one read per block, not one read and seek per entry
-    (LAUNCHER-1186: that was about 4 s per start on the laptop 35B). The file size is taken once (one fstat per entry made a dry run take 16 s on Windows)."""
+    (LAUNCHER-1186: about 4 s per start on the laptop 35B per the 2026-11-16 laptop measurement, one machine). The file size is taken once (one fstat per entry made a dry run take 16 s on Windows)."""
     size = os.fstat(f.fileno()).st_size
     pos = f.tell()
     if n * 8 > size - pos:
@@ -79,7 +79,7 @@ _KV = {}
 
 def _kv_index(path):
     """-> (n_tensors, [(key, type, value offset)], offset after the key/value block) or None when the file is not GGUF. The header is walked ONCE per file
-    (kept by path, size and modification time) and the readers below seek to the values they want: model_key, sampling_meta, mtp_layers, read_meta and
+    (kept by path, size and modification time; a file rewritten in place to the same size with the same mtime would be served stale) and the readers below seek to the values they want: model_key, sampling_meta, mtp_layers, read_meta and
     read_tensors used to walk the tokenizer arrays one pass each (LAUNCHER-1186). Hostile headers raise ValueError exactly as before (nothing is cached then)."""
     st = os.stat(path)
     k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)

@@ -66,13 +66,13 @@ TOKEN_MODES = [
     {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",
      "reason": "Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s; prompt processing 5-8 % slower; GLM-5.3 code text differed slightly"},
     {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "lost",
-     "reason": "PC, 64k, kit kapprox, 2026-11-09 screen: prompt -13.4 %, decode +8.4 % (inside the 26 % decode noise of 128-token runs); quality gate passed (KL 0.0196); a speed-up needs +5 % with the other side not worse than -3 %"},
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: prompt -13.4 %, decode +8.4 % (inside the 26 % decode noise of 128-token runs); quality gate passed (KL 0.0196); a speed-up needs +5 % with the other side not worse than -3 %"},
     {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "lost",
-     "reason": "PC, 64k, kit kapprox, 2026-11-09 screen: prompt -13.7 %, decode -8.6 % (noise-level); quality gate passed (KL 0.0233). The laptop +43 % at 12 GB RAM (no gain at 24 GB) is a different scope: memory far below the model"},
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: prompt -13.7 %, decode -8.6 % (noise-level); quality gate passed (KL 0.0233). The laptop +43 % at 12 GB RAM (no gain at 24 GB) is a different scope: memory far below the model"},
     {"id": "fewer", "what": "drop the 2 lowest-ranked experts of every token on the CPU-held layers", "switch": "--fast=fewer", "status": "lost",
-     "reason": "PC, 64k, kit kapprox, 2026-11-09 screen: prompt -12.6 %, decode -5.2 %; quality gate failed (KL 0.0637 > 0.060)"},
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: prompt -12.6 %, decode -5.2 %; quality gate failed (KL 0.0637 > 0.060)"},
     {"id": "approx-tiers", "what": "the named groups of the modes above", "switch": "--approx safe|careful|aggressive", "status": "lost", "group": True,
-     "reason": "a tier is only a group of the rows above; PC, 64k, 2026-11-09 screen: careful prompt -14.1 %, aggressive -12.1 %, decode gains inside the noise"},
+     "reason": "a tier is only a group of the rows above; PC, 64k, 2026-11-09 screen of careful (prompt -14.1 %) and aggressive (-12.1 %), decode gains inside the noise; safe (= kv8 + own drafting) was not in that screen, see the kv8 row. Kit kapprox d3b32ea predates LAUNCHER-985 (the arms may have differed in more than expert skipping): recheck on a current kit before treating the prompt loss as the cost of the mode"},
 ]
 DEPRECATED_SWITCHES = ("--fast", "--fast=2", "--fast=fewer", "--approx")        # still work as aliases that force the mode on; the table decides the default
 
