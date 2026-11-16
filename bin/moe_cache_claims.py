@@ -302,7 +302,9 @@ def compute_status(claims, runs, version=None, pin=None):
         if c.get("withdrawn"):
             continue
         for cell in c["cells"]:
-            by_key.setdefault(cell_key(c, cell, runs), []).append(cid)
+            ids_k = by_key.setdefault(cell_key(c, cell, runs), [])
+            if cid not in ids_k:          # DOCS-885: one claim with two cells of one cell-key (two single-run records) is ONE claim there, not a conflict with itself
+                ids_k.append(cid)
     out, conflicts = {}, []
     for key, ids in by_key.items():
         vals = {round(arm_stats(runs[cell["run"]], cell["arm"], cell["metric"])[0] or 0, 2) for cid in ids for cell in claims[cid]["cells"]

@@ -280,6 +280,20 @@ claims["second"]["withdrawn"] = "measured while a game was running"
 st, _ = cc.compute_status(claims, runs, version="0.3.5", pin=11966)
 check(st["second"][0] == "withdrawn" and st["first"][0] == "current", "status: withdrawn (with a reason) frees the older claim again")
 claims["second"]["withdrawn"] = ""
+# DOCS-885: one claim made of two single-run records of the same cell is not a conflict with itself
+_cl = copy.deepcopy(claims)
+_one = copy.deepcopy(_cl["second"]); _one["runs"] = [rid1, rid2]; _one["cells"] = _cl["first"]["cells"] + _cl["second"]["cells"]
+_cl = {"both": _one}
+_st, _conf = cc.compute_status(_cl, runs, version="0.3.5", pin=11966)
+check(_conf == [] and _st["both"][0] == "current", f"DOCS-885: one claim over two records of a cell is no conflict with itself ({_conf})")
+_runs2 = dict(runs); _rid3 = rid2.rsplit("_", 1)[0] + "_other0"; _runs2[_rid3] = copy.deepcopy(runs[rid2])
+for _r in _runs2[_rid3]["runs"]:
+    if _r["arm"] == "moe-cache":
+        _r["decode_tps"] += 5.0
+_cl = {"a": copy.deepcopy(claims["second"]), "b": copy.deepcopy(claims["second"])}
+_cl["b"]["runs"] = [_rid3]; _cl["b"]["cells"] = [dict(c, run=_rid3) for c in _cl["b"]["cells"]]
+_st2, _conf2 = cc.compute_status(_cl, _runs2, version="0.3.5", pin=11966)
+check(_conf2 and all(len(ids) == len(set(ids)) >= 2 for _, ids in _conf2), f"DOCS-885: two different claims of the same date and different numbers are still a conflict ({_conf2})")
 board = cc.board_text(claims, runs, version="0.3.5", pin=11966)
 check("| moe-cache | 300.0 (+0.0 % vs stock) | 23.50 (+130.4 % vs stock) | 2026-11-02 | current | [second](claims/second.md) |" in board,
       "board: one row per machine, model, setting, arm with the newest claim's number")
