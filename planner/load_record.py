@@ -367,11 +367,15 @@ class Recorder:
     """Collects one llama-server's log lines (feed) and stores what they measured (finish). ctx: the plan's dict with cache_dir, machine, build, model, ctx, ub,
     kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_source. Writes at most twice: when the server is ready (load figures) and at exit (the exit table)."""
     def __init__(self, ctx):
-        self.ctx, self.lines, self.saved = ctx, [], 0
+        self.ctx, self.lines, self.saved, self.loaded = ctx, [], 0, False
 
     def feed(self, line):
         if isinstance(line, bytes):
             line = line.decode("utf-8", "replace")
+        if "model loaded" in line:
+            self.loaded = True                 # from here on an allocation failure is the running server's (the plugin's long-prompt block), not a failed load
+        if self.loaded and ("MiB on device" in line or "failed to allocate" in line):
+            return
         if ("buffer size" in line or "memory_breakdown" in line or "creating MTP draft context" in line or "llama_context: n_" in line or "llama_kv_cache: size" in line
                 or "MiB on device" in line or "failed to allocate" in line):
             self.lines.append(line)

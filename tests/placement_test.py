@@ -621,6 +621,17 @@ check(lr.lookup_edge(cache2, GID, BUILD, MID, 4096, 512, ("f16", "f16"), "stock"
 class _M6(_M2):
     def free_vram_bytes(self): return 7000 * MIB
 check(mc.free_before_load(_M6(), 8161.0) == 7000.0 and mc.free_before_load(types.SimpleNamespace(), 8161.0) == 8161.0, "the edge's free figure: read just before the load, the plan's when unreadable")
+# round 2 F1: an allocation failure after "model loaded" (the plugin's long-prompt block at run time) is not a failed load
+rr = lr.Recorder({"cache_dir": cache2, "machine": GID, "build": BUILD, "model": MID, "ctx": 32768, "ub": 2048, "kv": ("f16", "f16"), "engine": "stock", "mtp": False,
+                  "gpu_expert_mib": gguf_plan.gpu_expert_bytes(lay, 27) / MIB, "n_cpu_moe": 27, "free_now_mib": FREE_PLAN, "free_plan_mib": None, "free_source": "nvidia-smi"})
+for l_ in L:
+    rr.feed(l_)
+    if "model loaded" in l_ or "server is listening" in l_:
+        pass
+rr.feed("0.30.000.000 I srv  load_model: model loaded")
+rr.feed("0.31.000.000 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 900.00 MiB on device 0: cudaMalloc failed: out of memory")
+rr.feed("0.31.000.001 E graph_reserve: failed to allocate compute buffers")
+check("oom" not in lr.parse_log(rr.lines) and rr.finish().get("edge_ok") == 27 and "edges" not in rr.finish(), "an allocation failure after the server was ready is not stored as a failed load")
 # F4: no edge from a plan with a GPU cache
 mk4 = mc.load_recorder_for(a5, ["x", "--n-cpu-moe", "32"], _M5(), LS, TWIN, 32768, "plugin")
 check(mk4(["x", "--n-cpu-moe", "32", "--moe-cache-mib", "2000"]).ctx["n_cpu_moe"] is None and mk4(["x", "--n-cpu-moe", "32"]).ctx["n_cpu_moe"] == 32, "a load with a GPU cache records no failed edge")

@@ -3143,9 +3143,9 @@ def plan_placement(a, model, ctx, ncmoe, machine):
 def gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None, say_leave=None):
     """The GPU memory the placement plans with, the one place it is worked out (follow-ups 4, 5, 9, 11): the free figure (--vram, the Windows AMD / Intel room, or the machine's
     own reading; the projector's share off), the reserve to keep free next to everything the tuner places (the user's --gpu-margin, else what the desktop and other programs
-    hold, else --leave-room's 2 GB, else the tuner's own 0.5 GB), and where the figure came from. On the room figure the reserve is NOT the default 0.5 GB on top: the room
-    already keeps its own growth reserve (ROOM_RESERVE_MIB) for the other programs; a --gpu-margin is the user's number and stays as given, --leave-room keeps its
-    2 GB in all (the room's own reserve counts toward them). say_desk / say_leave: called with the line about the desk reserve / --leave-room's reserve (None: not said).
+    hold, else --leave-room's 2 GB, else the tuner's own 0.5 GB), and where the figure came from. On the room figure the tuner's default 0.5 GB stays on top of the room's own
+    growth reserve (ROOM_RESERVE_MIB): dropping it (follow-up 4) is HELD for the owner (decision (b)); a --gpu-margin is the user's number and stays as given, --leave-room
+    keeps its 2 GB in all (the room's own reserve counts toward them). say_desk / say_leave: called with the line about the desk reserve / --leave-room's reserve (None: not said).
     Returns {"free": bytes or None, "kw": the tune() arguments reserve_gb / free_source, "desk_kw": GB the desktop forced or None, "use_room": bool}."""
     sys.path.insert(0, os.path.join(HERE, "planner"))
     free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
@@ -3158,7 +3158,7 @@ def gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None, say_leave=None):
     if use_room:
         # planner map fix 1, "real room on every path": the MoE plan used the Vulkan budget (PC, desktop on the card: 15.4 GiB "free", 13.1-13.5 GiB kept); without the plugin's
         # block on the stock path that alone put every expert of the 35B on the card at 32k (the 2.2 GiB spill of LAUNCHER-1152). The room already leaves the other programs
-        # their memory and a growth reserve, so neither the desk reserve nor the tuner's 0.5 GB is added on top of it (follow-up 4).
+        # their memory and a growth reserve, so the desk reserve is not added on top of it; the tuner's default 0.5 GB still is (follow-up 4 is held, owner decision (b)).
         free = max(room * 2**30 - ((mm_bytes + MMPROJ_VRAM_HEADROOM) if mm_bytes else 0), 0.0)
         from gguf_plan import ROOM_RESERVE_MIB
         room_reserve_gb = ROOM_RESERVE_MIB * 2**20 / 1e9
@@ -4441,20 +4441,20 @@ def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None):
     """The real runner for moe_cache_autotune.tune: start llama-server with `cmd` on a free local port, wait until it is healthy (its load time), send one request that
     reads a ~1.5k-token prompt (prompt tok/s) and one that writes decode_n tokens (decode tok/s), stop the server. Never raises; a failure is {"ok": False, "error": ...}."""
     import moe_cache_autotune as at
+    rec = None
+    if record is not None:
+        try:
+            rec = record(cmd)           # reads the free memory once (nvidia-smi): before the probe's clock starts
+        except Exception:
+            rec = None
+        if rec is not None and not user_set_log_verbosity(cmd, env):
+            env = dict(env, LLAMA_ARG_LOG_VERBOSITY="4")        # the buffer lines only come at verbosity 4; the probe's log is never shown
     t0 = time.monotonic()
     left = lambda: left_s - (time.monotonic() - t0)
     with socket.socket() as sk:
         sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
     cmd = at.set_flag(at.set_flag(list(cmd), "--port", port), "--host", "127.0.0.1")
     key = dict(env).get("LLAMA_API_KEY")
-    rec = None
-    if record is not None:
-        try:
-            rec = record(cmd)
-        except Exception:
-            rec = None
-        if rec is not None and not user_set_log_verbosity(cmd, env):
-            env = dict(env, LLAMA_ARG_LOG_VERBOSITY="4")        # the buffer lines only come at verbosity 4; the probe's log is never shown
     errf = tempfile.TemporaryFile()       # stderr is kept (never shown) to recognise llama.cpp's known load abort (kv_abort below) and to record the load; closed in the finally
     kw = {"env": env, "stdout": subprocess.DEVNULL, "stderr": errf}
     if sys.platform.startswith("linux"):
@@ -4749,7 +4749,8 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
                 r = probe(new_cmd, dict(os.environ, **dict(c_env + key_env)), left_s - (time.monotonic() - t_start), n)
         return r
     res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t), progress=lambda t: say_fn("moe-cache: auto-tune: " + t),
-                  walk=walk, check=walk_check, floor=_max_floor(getattr(a, "walk_floor", None), edge_floor), floor_edge=edge_floor)
+                  walk=walk, check=walk_check, floor=_max_floor(getattr(a, "walk_floor", None), edge_floor),
+                  floor_edge=edge_floor if (edge_floor is not None and (getattr(a, "walk_floor", None) is None or edge_floor > a.walk_floor)) else None)
     if free_vram:
         res["free_vram_mib"] = int(free_vram / 2**20)       # what a pick that puts more on the GPU is later compared with (apply_stored)
     if walk is not None:
@@ -4784,7 +4785,7 @@ def known_failed_edge(a, machine, ls, model, ctx, cmd, engine):
         build, mid = lr.build_id(ls), lr.model_id(model)
         ub = arg_after(cmd, "-ub", "--ubatch-size")
         kv = (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16")
-        free = getattr(a, "plan_free_mib", None)
+        free = free_before_load(machine, getattr(a, "plan_free_mib", None))        # the same kind of reading as the one stored with the edge
         return lr.lookup_edge(CACHE_DIR, gid, build, mid, int(arg_after(cmd, "-c", "--ctx-size") or ctx), int(ub) if (ub or "").isdigit() else 0, kv, engine,
                               "draft-mtp" in cmd, free_now_mib=free)
     except Exception:
