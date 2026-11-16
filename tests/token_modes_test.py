@@ -21,7 +21,7 @@ ids = [m["id"] for m in ax.TOKEN_MODES]
 check(len(ids) == len(set(ids)), "mode ids are unique")
 check(all(m["status"] in ("won", "lost", "unmeasured") and m["reason"] and m["what"] and m["switch"] for m in ax.TOKEN_MODES), "every row has a status (won / lost / unmeasured), a reason, a description and its switch")
 check(ax.default_ids() == ["kv8", "long-prompt", "mtp"], f"today's won rows: q8_0 KV from 128k, long-prompt from 32k, MTP in agent mode ({ax.default_ids()})")
-check(all(m["status"] == "unmeasured" for m in ax.TOKEN_MODES if m["id"] in ("fast1", "fast2", "fewer", "approx-tiers")), "expert skipping and the tiers are unmeasured, so off by default")
+check(all(m["status"] == "lost" and "2026-11-09" in m["reason"] for m in ax.TOKEN_MODES if m["id"] in ("fast1", "fast2", "fewer", "approx-tiers")), "expert skipping and the tiers are marked lost with the 2026-11-09 screen as the reason, so off by default")
 
 def cmd(r):
     return next((l for l in (r["stdout"] + r["stderr"]).split("\n") if " -m " in l and "llama-server" in l), "")
@@ -95,7 +95,7 @@ with tempfile.TemporaryDirectory() as t:
         ax.token_mode("fast2")["status"] = "won"
         check(on(run("--ctx", "8192"))["drop"], "fast2 marked won as well: the stronger level is the default")
     finally:
-        ax.token_mode("fast1")["status"] = "unmeasured"; ax.token_mode("fast2")["status"] = "unmeasured"
+        ax.token_mode("fast1")["status"] = "lost"; ax.token_mode("fast2")["status"] = "lost"
     check(cmd(run("--ctx", "65536")) == cmd(d64), "the table is back to today's state after the flips")
 
 # --- MTP: default in agent mode follows the table; --exact turns it off ---

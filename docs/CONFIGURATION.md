@@ -59,10 +59,10 @@ Rule of 2026-11-09: there is no opt-in for a speed-up that changes tokens but ke
 | q8_0 KV cache from 128k context | `--fast=kv` (default from 128k) | won | about 2x prompt speed at 256k on a 16 GB card; gate level `kv` passed, KL 0.0045-0.015 |
 | Long-prompt mode from 32k context | `--long-prompt` (default from 32k) | won | Flash-Next IQ3_XXS, 65k, A C C A: prompts +77.0 %, answers +1.8 %; meaning kept 10 of 10 at 55k |
 | MTP draft head (agent mode, MoE model has the head; a dense model only with `--mtp`: slower there) | `--mtp` | won | Qwen3.6 on the PC: decode 45.6 to 70.3 tok/s; prompt processing 5-8 % slower |
-| Skip rarely picked experts | `--fast` | unmeasured | about +10 % where memory is far below the model; no paired run with a quality check at 64k on the PC yet |
-| Skip up to 4 experts | `--fast=2` | unmeasured | laptop 12 GB +43 %, no gain at 24 GB; not measured on the PC |
-| Drop the 2 lowest experts on CPU layers | `--fast=fewer` | unmeasured | nothing measured |
-| Named groups of the rows above | `--approx safe\|careful\|aggressive` | unmeasured | a group is as good as its rows |
+| Skip rarely picked experts | `--fast` | lost | PC, 64k screen of 2026-11-09: prompt slower, no decode gain beyond noise; quality gate passed |
+| Skip up to 4 experts | `--fast=2` | lost | PC, 64k screen of 2026-11-09: prompt slower, decode not faster (the laptop gain at 12 GB RAM is a different case) |
+| Drop the 2 lowest experts on CPU layers | `--fast=fewer` | lost | PC, 64k screen of 2026-11-09: prompt and decode slower; quality gate failed |
+| Named groups of the rows above | `--approx safe\|careful\|aggressive` | lost | a group is as good as its rows; the PC screen of 2026-11-09 showed no speed win |
 
 `--fast`, `--fast=2`, `--fast=fewer` and `--approx` are **deprecated aliases**: they still work and force their modes on, whatever the status.
 

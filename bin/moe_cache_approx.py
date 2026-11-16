@@ -65,14 +65,14 @@ TOKEN_MODES = [
      "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: prompts +77.0 %, answers +1.8 % (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
     {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",
      "reason": "Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s; prompt processing 5-8 % slower; GLM-5.3 code text differed slightly"},
-    {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "unmeasured",
-     "reason": "about +10 % where memory is much smaller than the model; no paired run with a quality check at 64k on the PC yet"},
-    {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "unmeasured",
-     "reason": "Flash-Next at 12 GB on the laptop +43 %, no gain at 24 GB; not measured on the PC"},
-    {"id": "fewer", "what": "drop the 2 lowest-ranked experts of every token on the CPU-held layers", "switch": "--fast=fewer", "status": "unmeasured",
-     "reason": "gate level fewer (KL 0.060) set, nothing measured"},
-    {"id": "approx-tiers", "what": "the named groups of the modes above", "switch": "--approx safe|careful|aggressive", "status": "unmeasured", "group": True,
-     "reason": "a tier is only a group of the rows above; it is as good as its rows"},
+    {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "lost",
+     "reason": "PC, 64k, kit kapprox, 2026-11-09 screen: prompt -13.4 %, decode +8.4 % (inside the 26 % decode noise of 128-token runs); quality gate passed (KL 0.0196); a speed-up needs +5 % with the other side not worse than -3 %"},
+    {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "lost",
+     "reason": "PC, 64k, kit kapprox, 2026-11-09 screen: prompt -13.7 %, decode -8.6 % (noise-level); quality gate passed (KL 0.0233). The laptop +43 % at 12 GB RAM (no gain at 24 GB) is a different scope: memory far below the model"},
+    {"id": "fewer", "what": "drop the 2 lowest-ranked experts of every token on the CPU-held layers", "switch": "--fast=fewer", "status": "lost",
+     "reason": "PC, 64k, kit kapprox, 2026-11-09 screen: prompt -12.6 %, decode -5.2 %; quality gate failed (KL 0.0637 > 0.060)"},
+    {"id": "approx-tiers", "what": "the named groups of the modes above", "switch": "--approx safe|careful|aggressive", "status": "lost", "group": True,
+     "reason": "a tier is only a group of the rows above; PC, 64k, 2026-11-09 screen: careful prompt -14.1 %, aggressive -12.1 %, decode gains inside the noise"},
 ]
 DEPRECATED_SWITCHES = ("--fast", "--fast=2", "--fast=fewer", "--approx")        # still work as aliases that force the mode on; the table decides the default
 
@@ -91,7 +91,7 @@ def default_ids():
 
 
 def default_expert_level():
-    """The --fast level the default launch uses: the strongest expert-skipping row whose status is "won" (fewer, then fast2, then fast1), else None. All three are "unmeasured" today."""
+    """The --fast level the default launch uses: the strongest expert-skipping row whose status is "won" (fewer, then fast2, then fast1), else None. All three are "lost" today (2026-11-09 screen)."""
     for mid, lvl in (("fewer", "fewer"), ("fast2", "2"), ("fast1", "1")):
         if default_on(mid):
             return lvl
