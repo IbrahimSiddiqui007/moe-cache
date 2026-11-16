@@ -4085,10 +4085,10 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
 
 
 def cuda_only_listing(listing):
-    """True when the server's own device list (`llama-server --list-devices`) shows CUDA devices and no other backend's: the only setup the GPU expert cache default was measured on
+    """True when the server's own device list (`llama-server --list-devices`) shows one CUDA device and nothing else: the only setup the GPU expert cache default was measured on
     (CACHE-1187, one NVIDIA laptop, Linux). Read from the listing, never guessed from the machine."""
-    kinds = set(re.findall(r"^\s+([A-Za-z]+)\d+: ", listing or "", re.M))
-    return kinds == {"CUDA"}
+    kinds = re.findall(r"^\s+([A-Za-z]+)\d+: ", listing or "", re.M)
+    return kinds == ["CUDA"]            # exactly one CUDA device: two cards (cache split across them) were not measured
 
 
 def default_gpu_cache_stage(a, extra, ls, machine, listing, dense, stock_engine, gcache, ncmoe_user):
