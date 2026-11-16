@@ -140,7 +140,7 @@ struct tinfo_t {
     int     fdi = 0;          // model file index (split GGUF)
     bool    direct = false;   // can be read straight into place
     bool    repack = false;   // stored in llama.cpp's repacked CPU layout (faster CPU kernels)
-    int     pack_rec = -1;    // BO-1: layer record of the .moepack file this tensor is stored in (-1: not in the pack) and its slot in the expert block
+    int     pack_rec = -1;    // expert pack: layer record of the .moepack file this tensor is stored in (-1: not in the pack) and its slot in the expert block
     int     pack_k = -1;
     bool    view = false;     // Windows file-view cache: data points into the plugin's read-only view of the model file (no reads, no commit)
     char *  buf_addr = nullptr;   // view: the address the buffer gave this tensor (forget_range matches the buffer by it)
@@ -351,7 +351,7 @@ struct io_job_t {
     struct pack_job_t * pk = nullptr;   // set: a read from the .moepack file that fills several slices of one expert (owned by whoever dequeues the job)
 };
 
-// BO-1: one expert's slices (gate, up, down...) read from the pack file with ONE unbuffered read, then copied to their destinations.
+// expert pack: one expert's slices (gate, up, down...) read from the pack file with ONE unbuffered read, then copied to their destinations.
 struct pack_job_t {
     uint64_t off = 0;        // pack file offset of the first byte to read (4096-aligned)
     size_t   len = 0;        // bytes to read (multiple of 4096)

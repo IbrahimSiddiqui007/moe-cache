@@ -310,17 +310,17 @@ Same PC. The buffered row comes from the night chain of 10-31, when the PC ran a
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-30 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 | not stated | mentioned in the text: b11669 | BO-2; BO-1b; Windows PC; "not clean": the owner's programs were running | No (heading says not clean) |
+| 2026-10-30 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 | not stated | mentioned in the text: b11669 | idle refill; expert pack with file views; Windows PC; "not clean": the owner's programs were running | No (heading says not clean) |
 
-<sub>Old heading: 74. Idle cache refill (BO-2) and the expert pack with file views (BO-1b) (Windows PC, 2026-10-30 evening; "not clean": the owner's programs were running)</sub>
+<sub>Old heading: 74. Idle cache refill and the expert pack with file views (Windows PC, 2026-10-30 evening; "not clean": the owner's programs were running)</sub>
 
 Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan b11669, Flash-Next Q2_0, ABBA pairs, text compared in every run.
 
 | Test | Result | Kept |
 |---|---|---|
-| BO-2 idle refill (`MOE_CACHE_IDLE_REBALANCE`), the recorded OpenCode session with its tool pauses x4 | decode 12.6 -> 13.0 and 13.2 -> 13.5 tok/s; wait for the follow-up answers 26.3 -> 26.1 and 32.0 -> 23.9 s; text identical | **yes**: on by default since 0.3.3 (it only changes which experts sit in RAM) |
-| BO-1 expert pack, private-memory cache | reader speed 0.21 -> 1.19 GB/s per thread, decode 1.7-2.1 -> 5.7-6.6 tok/s | opt-in only: the private-memory cache is not the default |
-| BO-1b expert pack with the default file-view cache | reader speed 1.11 -> 1.17, decode 15.6-16.1 -> 14.5-15.1 tok/s, short prompts slower | **no**: views already read near full speed |
+| Idle refill (`MOE_CACHE_IDLE_REBALANCE`), the recorded OpenCode session with its tool pauses x4 | decode 12.6 -> 13.0 and 13.2 -> 13.5 tok/s; wait for the follow-up answers 26.3 -> 26.1 and 32.0 -> 23.9 s; text identical | **yes**: on by default since 0.3.3 (it only changes which experts sit in RAM) |
+| Expert pack, private-memory cache | reader speed 0.21 -> 1.19 GB/s per thread, decode 1.7-2.1 -> 5.7-6.6 tok/s | opt-in only: the private-memory cache is not the default |
+| Expert pack with the default file-view cache | reader speed 1.11 -> 1.17, decode 15.6-16.1 -> 14.5-15.1 tok/s, short prompts slower | **no**: views already read near full speed |
 
 ## Result 73. v0.3.2 checks on the Windows PC
 
@@ -340,7 +340,7 @@ Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan b11669 (C:\llama-vk) 
 | D5 lookahead 122B, ctx 40960 (MOE_CACHE_LOOKAHEAD=2) | pair 1 9.36 -> 9.77, pair 2 13.32 -> 10.86: not kept |
 | E3 fused gate+up (MOE_CACHE_EXEC_FUSE) | water 17.31 -> 17.62 / 17.29 -> 17.34; code 17.61 -> 18.06 / 17.57 -> 17.69; timing run 17.26 -> 17.64 / 17.22 -> 17.52: **all 6 pairs**, text identical: on by default |
 | ClassLRU (MOE_CACHE_POLICY=classlru) | 122B: water 10.93 -> 11.21 / 10.89 -> 11.02, code 10.45 -> 10.75 / 10.40 -> 10.60, hit +1.5-2.1 points; Flash-Next (95 % hits): -0.4 to +1.4 %, mixed; text identical everywhere: opt-in |
-| BO-1 read size (tests/win_read_bench.cpp, random unbuffered reads, Flash-Next Q2_0 file on D:) | 896 KiB 1.90 GB/s (~2,070 ops/s at 4 and 8 threads), 1792 KiB 3.04, 2688 KiB 3.47 GB/s: whole-expert reads +83 % |
+| Expert pack read size (tests/win_read_bench.cpp, random unbuffered reads, Flash-Next Q2_0 file on D:) | 896 KiB 1.90 GB/s (~2,070 ops/s at 4 and 8 threads), 1792 KiB 3.04, 2688 KiB 3.47 GB/s: whole-expert reads +83 % |
 | Final kit (b3a6e45 CI zip, unzipped fresh) | version, control page, pick, server without a model, on-demand status, check --run (granite), bench-report (granite, forced, warm): 7/7 pass |
 
 ## Result 72. Approximate package B behind a quality gate: q8_0 KV and fewer experts on Flash-Next Q2_0

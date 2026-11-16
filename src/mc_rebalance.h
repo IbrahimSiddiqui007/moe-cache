@@ -1,4 +1,4 @@
-// moe-cache plugin: the choice made by the idle rebalance (BO-2), kept free of ggml so tests/rebalance_test.cpp can check it without a model.
+// moe-cache plugin: the choice made by the idle rebalance, kept free of ggml so tests/rebalance_test.cpp can check it without a model.
 // A unit is one (layer, expert): all of its tensors (gate, up, down). score = decayed use count. The rebalance reads the best-scoring missing units
 // into free room first, then into the room of the worst-scoring resident units, but only while a missing unit scores `gain` times more than
 // the unit it replaces (that margin is the guard against swapping back and forth), and never more than cap_bytes in one idle period.

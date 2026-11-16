@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit test of `moe_cache.py pack` (BO-1) on a synthetic GGUF: layout, byte-identical slices, --verify, refusal of a changed model, resume.
+"""Unit test of `moe_cache.py pack` on a synthetic GGUF: layout, byte-identical slices, --verify, refusal of a changed model, resume.
    python3 tests/pack_test.py            (standard library only; runs in a second)
    python3 tests/pack_test.py --make-gguf OUT.gguf   write the synthetic model only (CI uses it next to the real tiny model)"""
 import os, struct, sys, tempfile, unittest, zlib, random

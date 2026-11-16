@@ -35,6 +35,26 @@ def _read_str(f):
     return f.read(n).decode("utf-8", "replace")
 
 
+def _skip_str_array(f, n):
+    """Skip n length-prefixed strings (the tokenizer: ~150k entries) by walking the lengths in 1 MiB blocks: one read per block, not one read and seek per entry
+    (LAUNCHER-1186: about 4 s per start on the laptop 35B per the 2026-11-16 laptop measurement, one machine). The file size is taken once (one fstat per entry made a dry run take 16 s on Windows)."""
+    size = os.fstat(f.fileno()).st_size
+    pos = f.tell()
+    if n * 8 > size - pos:
+        raise ValueError("GGUF header: array past the end of the file")
+    buf, base = b"", pos
+    for _ in range(n):
+        if pos + 8 - base > len(buf):
+            f.seek(pos)
+            buf, base = f.read(1 << 20), pos
+            if len(buf) < 8:
+                raise ValueError("GGUF header: array past the end of the file")
+        pos += 8 + struct.unpack_from("<Q", buf, pos - base)[0]
+        if pos > size:
+            raise ValueError("GGUF header: length past the end of the file")
+    f.seek(pos)
+
+
 def _skip_value(f, t):
     if t in _FMT:
         _skip(f, struct.calcsize(_FMT[t]))
@@ -47,41 +67,55 @@ def _skip_value(f, t):
         if it in _FMT:
             _skip(f, n * struct.calcsize(_FMT[it]))
         elif it == 8:
-            # string arrays (the tokenizer: ~150k entries): the file size once, not one fstat per entry (that made a dry run take 16 s on Windows)
-            size = os.fstat(f.fileno()).st_size
-            if n * 8 > size - f.tell():
-                raise ValueError("GGUF header: array past the end of the file")
-            for _ in range(n):
-                k = struct.unpack("<Q", f.read(8))[0]
-                if k > size - f.tell():
-                    raise ValueError("GGUF header: length past the end of the file")
-                f.seek(k, 1)
+            _skip_str_array(f, n)
         else:          # arrays of arrays: no GGUF writer makes them, and they would recurse as deep as the file says
             raise ValueError(f"GGUF header: array of type {it}")
     else:
         raise ValueError(f"unknown GGUF value type {t}")
 
 
+_KV = {}
+
+
+def _kv_index(path):
+    """-> (n_tensors, [(key, type, value offset)], offset after the key/value block) or None when the file is not GGUF. The header is walked ONCE per file
+    (kept by path, size and modification time; a file rewritten in place to the same size with the same mtime would be served stale) and the readers below seek to the values they want: model_key, sampling_meta, mtp_layers, read_meta and
+    read_tensors used to walk the tokenizer arrays one pass each (LAUNCHER-1186). Hostile headers raise ValueError exactly as before (nothing is cached then)."""
+    st = os.stat(path)
+    k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    if k not in _KV:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                _KV[k] = None
+            else:
+                f.read(4)
+                n_t, n_kv = struct.unpack("<QQ", f.read(16))
+                ents = []
+                for _ in range(n_kv):
+                    key = _read_str(f)
+                    t = struct.unpack("<I", f.read(4))[0]
+                    ents.append((key, t, f.tell()))
+                    _skip_value(f, t)
+                _KV[k] = (n_t, ents, f.tell())
+    return _KV[k]
+
+
 def model_key(path):
     """'<architecture>-<layers>x<experts>' from the GGUF header (e.g. 'qwen4exp-48x512'): names the shipped starter usage profile for a model family,
     shared by all quants of it; None when the header lacks these keys."""
     meta = {}
+    idx = _kv_index(path)
+    if idx is None:
+        return None
     with open(path, "rb") as f:
-        if f.read(4) != b"GGUF":
-            return None
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in idx[1]:
+            f.seek(off)
             if key == "general.architecture" and t == 8:
                 meta["arch"] = _read_str(f)
                 if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}", meta["arch"]) or ".." in meta["arch"]:
                     return None        # it becomes part of a file name (profiles/<key>.usage): no / \\ or ..
             elif (key.endswith(".block_count") or key.endswith(".expert_count")) and t in (4, 5, 10, 11):
                 meta[key.rsplit(".", 1)[1]] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
-            else:
-                _skip_value(f, t)
     if not all(k in meta for k in ("arch", "block_count", "expert_count")):
         return None
     return f"{meta['arch']}-{meta['block_count']}x{meta['expert_count']}"
@@ -100,21 +134,19 @@ def read_tensors(path):
 
 
 def _read_tensors(path):
+    idx = _kv_index(path)
+    if idx is None:
+        raise ValueError("not a GGUF file")
+    n_t, ents, kv_end = idx
     with open(path, "rb") as f:
-        if f.read(4) != b"GGUF":
-            raise ValueError("not a GGUF file")
-        struct.unpack("<I", f.read(4))
-        n_t, n_kv = struct.unpack("<QQ", f.read(16))
         align = 32
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in ents:
             if key == "general.alignment" and t in (4, 5):
+                f.seek(off)
                 align = struct.unpack(_FMT[t], f.read(4))[0]
                 if not (1 <= align <= 1 << 16 and align & (align - 1) == 0):
                     raise ValueError(f"GGUF header: alignment {align}")
-            else:
-                _skip_value(f, t)
+        f.seek(kv_end)
         infos = []
         for _ in range(n_t):
             name = _read_str(f)
@@ -138,14 +170,13 @@ def sampling_meta(path):
     """-> {"arch", "name", "basename", "file_type", "sampling": {key: value}} from the GGUF header: what picks the model card's sampling defaults
     (general.sampling.* are the publisher's own, which llama.cpp already applies unless a flag is given)."""
     out = {"arch": "", "name": "", "basename": "", "file_type": None, "sampling": {}}
-    with open(shards(path)[0], "rb") as f:
-        if f.read(4) != b"GGUF":
-            return out
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+    first = shards(path)[0]
+    idx = _kv_index(first)
+    if idx is None:
+        return out
+    with open(first, "rb") as f:
+        for key, t, off in idx[1]:
+            f.seek(off)
             if key in ("general.architecture", "general.name", "general.basename") and t == 8:
                 out[{"general.architecture": "arch"}.get(key, key.split(".")[1])] = _read_str(f)
             elif (key == "general.file_type" or key.startswith("general.sampling.")) and t in _FMT:
@@ -154,8 +185,6 @@ def sampling_meta(path):
                     out["file_type"] = v
                 else:
                     out["sampling"][key[len("general.sampling."):]] = v
-            else:
-                _skip_value(f, t)
     return out
 
 
@@ -164,18 +193,14 @@ def mtp_layers(path):
     <arch>.nextn_predict_layers from the header (0 when absent). A quant can keep the key but drop the tensors; only `head` says the head is there."""
     declared = 0
     files = shards(path)
+    idx = _kv_index(files[0])
+    if idx is None:
+        return 0, 0
     with open(files[0], "rb") as f:
-        if f.read(4) != b"GGUF":
-            return 0, 0
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in idx[1]:
             if key.endswith(".nextn_predict_layers") and t in (4, 5, 10, 11):
+                f.seek(off)
                 declared = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
-            else:
-                _skip_value(f, t)
     head = {m.group(1) for p in files for name, _ in read_tensors(p) for m in [re.match(r"blk\.(\d+)\.nextn\.", name)] if m}
     return len(head), declared
 
@@ -354,31 +379,23 @@ def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0
 def read_meta(path):
     """-> {key: value} of the GGUF header: numbers and strings, arrays of numbers up to 4096 entries as lists (longer arrays are skipped)."""
     out = {}
+    idx = _kv_index(path)
+    if idx is None:
+        raise ValueError("not a GGUF file")
     with open(path, "rb") as f:
-        if f.read(4) != b"GGUF":
-            raise ValueError("not a GGUF file")
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in idx[1]:
+            f.seek(off)
             if t in _FMT:
                 out[key] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
             elif t == 8:
                 out[key] = _read_str(f)
             elif t == 9:
-                pos = f.tell()
                 it, n = struct.unpack("<I", f.read(4))[0], struct.unpack("<Q", f.read(8))[0]
                 if it in _FMT and n <= 4096:
                     size = struct.calcsize(_FMT[it])
                     if n * size > _left(f):
                         raise ValueError("GGUF header: array past the end of the file")
                     out[key] = [struct.unpack(_FMT[it], f.read(size))[0] for _ in range(n)]
-                else:
-                    f.seek(pos)
-                    _skip_value(f, t)
-            else:
-                _skip_value(f, t)
     return out
 
 

@@ -102,6 +102,24 @@ for arch, want in (("../../etc/x", None), ("/tmp/x", None), ("a\\b", None), ("x.
     got = gguf_plan.model_key(p)
     check(got == want, f"model_key with architecture {arch!r}: {got!r}")
 
+
+# LAUNCHER-1186: a tokenizer-sized string array is walked once per file (not once per reader), in blocks, and the readers still see the keys after it
+toks = b"".join(s(f"tok{i}" * (1 + i % 7)) for i in range(200000))       # spans many 1 MiB blocks, entries of mixed length
+tarr = s("tokenizer.ggml.tokens") + struct.pack("<I", 9) + struct.pack("<IQ", 8, 200000) + toks
+p = write("tok.gguf", gguf([kv_str("general.architecture", "qwen3moe"), tarr, kv_u32("qwen3moe.block_count", 48), kv_u32("qwen3moe.expert_count", 128), kv_u32("general.file_type", 15)]))
+walks = []
+orig = gguf_plan._skip_str_array
+gguf_plan._skip_str_array = lambda f, n: (walks.append(n), orig(f, n))[1]
+try:
+    check(gguf_plan.model_key(p) == "qwen3moe-48x128", "keys after a 200k-entry string array are found")
+    gguf_plan.read_tensors(p); gguf_plan.read_meta(p); gguf_plan.sampling_meta(p); gguf_plan.mtp_layers(p)
+    check(gguf_plan.read_meta(p)["qwen3moe.expert_count"] == 128 and gguf_plan.sampling_meta(p)["file_type"] == 15, "read_meta / sampling_meta agree after the array")
+    check(walks == [200000], f"the tokenizer array was walked once for five readers ({len(walks)} walk(s))")
+finally:
+    gguf_plan._skip_str_array = orig
+p = write("tokcut.gguf", gguf([tarr[:len(tarr) - 3]]))
+check(refused(gguf_plan.read_tensors, p), "a string array cut off inside its last entry is refused")
+
 # the planner's own reader (used when the gguf package is missing or fails): same files, clean error, small memory
 plan = os.path.join(HERE, "..", "planner", "plan.py")
 for name in ("bigstr.gguf", "bigarr.gguf", "strarr.gguf", "nested.gguf", "align0.gguf", "dims.gguf"):

@@ -1,4 +1,4 @@
-// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): the expert pack file (BO-1).
+// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): the expert pack file.
 // bin/moe_cache_pack.py writes MODEL.moepack: for every (layer, expert) one 4 KiB-aligned block with that expert's slices of all its tensors (gate, up, down).
 // A missing expert is then ONE large unbuffered read (the PC's SSD reads 2688 KiB at 3.47 GB/s but 896 KiB at 1.90 GB/s, RESULTS 73) followed by a copy of each
 // slice to the place the per-tensor read would have written: the same bytes, so the output cannot change. Format: see the docstring of bin/moe_cache_pack.py.
