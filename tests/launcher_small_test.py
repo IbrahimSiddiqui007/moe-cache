@@ -20,18 +20,20 @@ if os.name != "nt":
     check(mc.exit_status(-9) == 137 and mc.exit_status(-15) == 143 and mc.exit_status(0) == 0 and mc.exit_status(3) == 3 and mc.exit_status(None) is None,
           "exit status: -9 -> 137, -15 -> 143, others unchanged")
 
-# A3-22: MOE_CACHE_MAX_RAM_GB read like the plugin's strtod
-check(mc.leading_number("20GB") == "20" and mc.leading_number(" 1.5e1x") == "1.5e1" and mc.leading_number(".5") == ".5", "leading number: 20GB -> 20, 1.5e1x -> 1.5e1, .5")
-for bad in ("GB", "", "0x10", "inf", "nan", "abc20"):
+# A3-22 / LAUNCHER-005: MOE_CACHE_MAX_RAM_GB is read like the plugin's mcargs::parse_number (whole text, finite decimal, 0..1e9)
+check(mc.leading_number("\v20\f") == "20" and mc.leading_number(" 1.5e1 ") == "1.5e1" and mc.leading_number(".5") == ".5" and mc.leading_number("20") == "20", "max-ram number: 1.5e1, .5, 20 are numbers")
+for bad in ("GB", "", "0x10", "inf", "nan", "abc20", "20GB", "1e999", "-1", "1_0", "2e9", "\uff12\uff10", "\u0663"):
     try:
         mc.leading_number(bad); ok = False
     except ValueError:
         ok = True
-    check(ok, f"leading number: {bad!r} is a typo (default cap)")
+    check(ok, f"max-ram number: {bad!r} is a typo (default cap), as in the plugin")
+os.environ["MOE_CACHE_MAX_RAM_GB"] = "20"
+check(mc.mem_cap() == 20e9, "mem_cap(): MOE_CACHE_MAX_RAM_GB=20 is 20 GB")
 os.environ["MOE_CACHE_MAX_RAM_GB"] = "20GB"
-check(mc.mem_cap() == 20e9, "mem_cap(): MOE_CACHE_MAX_RAM_GB=20GB is 20 GB, as in the plugin")
-os.environ["MOE_CACHE_MAX_RAM_GB"] = "0.0GB"
-check(mc.mem_cap() is None, "mem_cap(): 0GB means no cap")
+check(mc.mem_cap() != 20e9, "mem_cap(): MOE_CACHE_MAX_RAM_GB=20GB is a typo and keeps the default cap, as in the plugin")
+os.environ["MOE_CACHE_MAX_RAM_GB"] = "0.0"
+check(mc.mem_cap() is None, "mem_cap(): 0 means no cap")
 os.environ.pop("MOE_CACHE_MAX_RAM_GB")
 
 # A3-23: the folder above the kit is not searched
@@ -108,7 +110,14 @@ def plan_env(*extra_args):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         return dict(mc.launch_plan(a, ex, argv, machine=M(tmp2), quiet=True).env)
 check("MOE_CACHE_SCHED_TUNING" not in plan_env(), "the scheduling tuning is gone: nothing is set by default")
-check("MOE_CACHE_SCHED_TUNING" not in plan_env("--no-sched-tuning"), "--no-sched-tuning is accepted and does nothing (kept for one release so old commands still run)")
+def refused(*extra_args):
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            a, ex, argv = mc.parse_server([m, "--llama-server", os.path.join(tmp2, "llama-server"), *extra_args])
+        return "--no-sched-tuning" not in (ex or []) and "--no-sched-tuning" not in (argv or [])
+    except SystemExit:
+        return True
+check(refused("--no-sched-tuning"), "WINDOWS-888: --no-sched-tuning is no longer an option of the launcher (not accepted silently)")
 n2 = notes("--", "-t", "4")
 check(not any("CPU cores left free" in t for t in n2), "leave-room: with your own -t no cores claim")
 # CACHE-181: the loading line names the size and a seconds range; a missing file still gives a line

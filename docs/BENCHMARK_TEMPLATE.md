@@ -77,7 +77,7 @@ The drive that holds the model matters more than the CPU for the cache's misses:
 | baseline check (`baseline_check`) | yes | the stock llama.cpp speed check before the run, e.g. "PASS 49.4 tok/s at 12:29" (`--baseline "..."`); `not recorded` if none was run |
 | other programs on the GPU/CPU (`other_programs`) | yes | text you give (`--other-programs "browser closed, nothing else"`); the numbers below show what the machine was doing |
 | file cache (`file_cache`) | yes | cold or warm (bench-report drops the model from the cache before each run unless `--warm`) |
-| CPU busy before, free RAM before, VRAM in use before | optional | sampled for one second before the run (system-wide) |
+| CPU busy before, available RAM before (`system_ram_free_before_mib`, `MemAvailable` / `ullAvailPhys`), VRAM in use before | optional | sampled for one second before the run (system-wide) |
 | temperatures (`cpu_temp_c`, `gpu_temp_c`) | optional | Linux: hwmon k10temp/coretemp, `nvidia-smi`; **Windows: not collected** (no standard source without a vendor tool); write it by hand if you have one |
 
 ### Environment block (`runs[].environment`, `conditions.environment`; optional, schema 1 unchanged)
@@ -117,7 +117,7 @@ Rendering: `bench-record card RECORD --as env` prints the one-line text, the car
 | whole-card VRAM peak (`vram_system_peak_mib`) | optional | as above | as above |
 | process RAM peak (`process_ram_peak_mib`) | yes | RSS of llama-server and its children, peak of 0.5 s samples and `VmHWM`. **Includes the mapped model file**, so a memory-mapped run can show far more than the cache's own memory | working set (`GetProcessMemoryInfo`) |
 | process private RAM peak (`process_private_peak_mib`) | optional | `RssAnon` (anonymous memory: the cache, buffers) | private bytes |
-| system RAM free minimum (`system_ram_free_min_mib`) | yes | lowest `MemAvailable` | lowest `ullAvailPhys` |
+| system RAM available minimum (`system_ram_free_min_mib`; the field name says "free", the value is the *available* RAM, not `MemFree`) | yes | lowest `MemAvailable` | lowest `ullAvailPhys` |
 | CPU % average and peak (`cpu_avg_pct`, `cpu_peak_pct`) | yes | CPU time of the process tree per 0.5 s interval, as % of **all logical CPUs** (100 = every CPU busy); average over the run, highest interval | same, `GetProcessTimes` |
 | system CPU % average, peak (`system_cpu_*`) | optional | `/proc/stat` | `GetSystemTimes`; shows other programs competing |
 | cache hit % (`cache_hit_pct`) | optional | plugin stats (`MOE_CACHE_STATS_SIGNAL`) | same |
@@ -208,7 +208,7 @@ Run `collect --out env.json` once per session and pass `--env env.json` to `asse
 ```
 GPU expert layers: 9 (n-cpu-moe 39) · -ub 2048
 ctx 65536 · prompt 34000 tokens · 2 runs each, order ABBA · cold file cache
-VRAM peak 7.8 GiB · process RAM peak 9.0 GiB (system free min 4.2 GiB) · CPU 22.5 % avg, 61.0 % peak
+VRAM peak 7.8 GiB · process RAM peak 9.0 GiB (system available min 4.2 GiB) · CPU 22.5 % avg, 61.0 % peak
 launcher abc123def, DLL 0123456 · llama.cpp 11966 (ff0d396e3, Vulkan) · 11-03 · §80
 ```
 

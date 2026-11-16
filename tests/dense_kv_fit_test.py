@@ -16,7 +16,7 @@ def check(ok, what):
     if not ok:
         fails.append(what)
 
-def make_dense(path, n_layers=24, d=2048, nextn=0):
+def make_dense(path, n_layers=24, d=2048, nextn=0, ple_gib=0):
     def string(x):
         b = x.encode(); return struct.pack("<Q", len(b)) + b
     infos, off = [], 0
@@ -24,6 +24,8 @@ def make_dense(path, n_layers=24, d=2048, nextn=0):
         nonlocal off
         infos.append((name, dims, ty, off)); off += (nbytes + 31) // 32 * 32
     add("token_embd.weight", [d, 32000], 1, d * 32000 * 2)
+    if ple_gib:                                                  # LAUNCHER-1162: Gemma-style per-layer token-embedding table (f16, ple_gib GiB; a sparse file)
+        add("per_layer_token_embd.weight", [256, ple_gib * 2**30 // 512], 1, ple_gib * 2**30)
     for l in range(n_layers):
         add(f"blk.{l}.attn_q.weight", [d, d], 12, d // 256 * 144 * d)
         add(f"blk.{l}.ffn_up.weight", [d, 4 * d], 12, d // 256 * 144 * 4 * d)
@@ -45,6 +47,20 @@ def make_dense(path, n_layers=24, d=2048, nextn=0):
 
 with tempfile.TemporaryDirectory() as tmp:
     model = os.path.join(tmp, "dense-7b-Q4.gguf"); make_dense(model)
+    # --- LAUNCHER-1162: the per-layer token-embedding table is host memory, not GPU weights ---
+    ple = os.path.join(tmp, "dense-ple.gguf"); make_dense(ple, ple_gib=3)
+    b0, b1 = gp.dense_gpu_fit(model, 8192, 64 * GIB, False), gp.dense_gpu_fit(ple, 8192, 64 * GIB, False)
+    check(b0 and b1 and abs(b1["model_gib"] - b0["model_gib"]) < 0.01, f"dense_gpu_fit: a 3 GiB per_layer_token_embd table adds nothing to the GPU weights ({b0 and b0['model_gib']:.2f} vs {b1 and b1['model_gib']:.2f} GiB)")
+    f0, f1 = gp.dense_ffn_split(model, 8192, 2 * GIB, False), gp.dense_ffn_split(ple, 8192, 2 * GIB, False)
+    check(f0 and f1 and abs(f1["need_gib"] - f0["need_gib"]) < 0.01, "dense_ffn_split: the same table adds nothing to the need")
+    # --- GUI-1156: the control page's "does a second exact-mode server fit" need counts the KV cache of the context, not a flat 10 % + 1.5 GiB ---
+    import moe_cache_ui as ui      # noqa: E402
+    sz = os.path.getsize(model)
+    old = int(sz * 1.10 + 1.5 * GIB)
+    n_small, n_big = ui.audit_need(sz, model, 4096), ui.audit_need(sz, model, 65536)
+    check(n_big > n_small and n_big > old + 1.5 * GIB, f"audit_need: the need grows with the context ({n_small / GIB:.2f} GiB at 4k, {n_big / GIB:.2f} at 64k; the old flat rule said {old / GIB:.2f})")
+    junk = os.path.join(tmp, "junk.gguf"); open(junk, "wb").write(b"GGUF" + b"\0" * 64)
+    check(ui.audit_need(sz, junk, 65536) == old and ui.audit_need(sz, None, 8192) == old and ui.audit_need(None, model, 8192) is None, "audit_need: unreadable header or no path keeps the old rule; no size -> None")
     # --- the planner function ---
     ctx = 8192
     a16 = gp.dense_gpu_fit(model, ctx, 64 * GIB, False); a8 = gp.dense_gpu_fit(model, ctx, 64 * GIB, True)

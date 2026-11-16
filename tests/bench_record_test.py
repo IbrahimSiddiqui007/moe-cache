@@ -197,6 +197,7 @@ check(rr.outputs_from(runs2)["identical_to_baseline"] == "no", "a different text
 d = rr.details_lines(rec, section=80, date="11-03")
 check(len(d) == 4 and d[0].startswith("GPU expert layers: 9 (n-cpu-moe 39) · -ub 2048") and "VRAM peak 7.8 GiB" in d[2] and "launcher abc123def, DLL 0123456" in d[3] and d[3].endswith("11-03 · §80")
       and "ctx 65536" in d[1] and "order ABBA" in d[1] and "cold file cache" in d[1], f"card detail lines: {d}")
+check("system available min" in d[2] and "system free min" not in d[2], "TEST-748: the report says available RAM (MemAvailable), not free")
 check("not recorded" not in " ".join(d), "no gaps in this filled record's card lines")
 check(rr.card_row(rec).endswith("| 2.21x | yes |"), f"card row: ratio and identity ({rr.card_row(rec)})")
 sec = rr.results_section(rec, "Fake run (Windows PC)", 80)
@@ -279,6 +280,20 @@ claims["second"]["withdrawn"] = "measured while a game was running"
 st, _ = cc.compute_status(claims, runs, version="0.3.5", pin=11966)
 check(st["second"][0] == "withdrawn" and st["first"][0] == "current", "status: withdrawn (with a reason) frees the older claim again")
 claims["second"]["withdrawn"] = ""
+# DOCS-885: one claim made of two single-run records of the same cell is not a conflict with itself
+_cl = copy.deepcopy(claims)
+_one = copy.deepcopy(_cl["second"]); _one["runs"] = [rid1, rid2]; _one["cells"] = _cl["first"]["cells"] + _cl["second"]["cells"]
+_cl = {"both": _one}
+_st, _conf = cc.compute_status(_cl, runs, version="0.3.5", pin=11966)
+check(_conf == [] and _st["both"][0] == "current", f"DOCS-885: one claim over two records of a cell is no conflict with itself ({_conf})")
+_runs2 = dict(runs); _rid3 = rid2.rsplit("_", 1)[0] + "_other0"; _runs2[_rid3] = copy.deepcopy(runs[rid2])
+for _r in _runs2[_rid3]["runs"]:
+    if _r["arm"] == "moe-cache":
+        _r["decode_tps"] += 5.0
+_cl = {"a": copy.deepcopy(claims["second"]), "b": copy.deepcopy(claims["second"])}
+_cl["b"]["runs"] = [_rid3]; _cl["b"]["cells"] = [dict(c, run=_rid3) for c in _cl["b"]["cells"]]
+_st2, _conf2 = cc.compute_status(_cl, _runs2, version="0.3.5", pin=11966)
+check(_conf2 and all(len(ids) == len(set(ids)) >= 2 for _, ids in _conf2), f"DOCS-885: two different claims of the same date and different numbers are still a conflict ({_conf2})")
 board = cc.board_text(claims, runs, version="0.3.5", pin=11966)
 check("| moe-cache | 300.0 (+0.0 % vs stock) | 23.50 (+130.4 % vs stock) | 2026-11-02 | current | [second](claims/second.md) |" in board,
       "board: one row per machine, model, setting, arm with the newest claim's number")
@@ -439,6 +454,11 @@ check(envr["model"]["file"] == "m.gguf" and envr["model"]["sha256_head16MiB"] !=
 check(not [e for e in rr.validate({"hardware": envr["hardware"], "software": envr["software"], "model": envr["model"]},
                                   {"type": "object", "properties": {k: schema["properties"][k] for k in ("software", "model")}, "$defs": schema["$defs"]}) if "required" in e and "plugin" not in e],
       "collect: the Software and Model sections have every required field (values may say not recorded)")
+
+# CLEANUP-795: one rounding rule (half up on the 6-digit value) in the record and the board
+import moe_cache_claims as _mcc
+check(rr.round_half_up(68.675, 2) == 68.68 and round(68.675, 2) == 68.67, "CLEANUP-795: a mean of 68.675 prints 68.68 (Python round() gives 68.67)")
+check(all(str(rr.round_half_up(v, 2)) == _mcc.fmt("decode_tps", v) for v in (68.675, 22.155, 21.735, 5.005, 12.3449)), "CLEANUP-795: record rounding equals the board's fmt() for decode")
 
 print("bench-record test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)

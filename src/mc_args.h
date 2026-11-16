@@ -26,6 +26,11 @@ inline bool parse_number(const char * txt, double lo, double hi, double & out) {
     if (!txt) {
         return false;
     }
+    for (const char * c = txt; *c; c++) {
+        if (*c == 'x' || *c == 'X') {        // LAUNCHER-005: strtod reads "0x10" as 16; the launcher (Python float) does not, so neither side takes hex
+            return false;
+        }
+    }
     char * end = nullptr;
     const double v = strtod(txt, &end);
     if (end == txt) {

@@ -185,6 +185,13 @@ def shards(path):
     return sorted(glob.glob(glob.escape(m.group(1)) + f"-*-of-{m.group(3)}.gguf")) if m else [path]      # the folder and name are the user's text
 
 
+def is_host_side(name):
+    """LAUNCHER-1162: tensors llama.cpp keeps in host memory (the input layer) and never puts on the GPU: the token embedding and the per-layer token-embedding
+    table (Gemma-3n style per_layer_token_embd, Flash-Next's n-gram table). The dense planners (dense_ffn_split, dense_gpu_fit) subtract them from the weights
+    they count; model_layout() and planner/commit_guard.py already did, by the same name rule."""
+    return name == "token_embd.weight" or "per_layer_token_embd" in name
+
+
 def model_layout(path):
     """-> dict(n_layers, expert_bytes_per_layer, other_bytes, total_bytes, mtp_blocks). n_layers counts the MTP head's block (blk.N.nextn.*) when it
     has experts (Qwen3.6: 41 = 40 + 1); mtp_blocks says how many of the highest blocks are that head."""
@@ -258,7 +265,7 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
         for pth in shards(path):
             for name, size in read_tensors(pth):
                 total += size
-                emb += size if name == "token_embd.weight" else 0
+                emb += size if is_host_side(name) else 0
                 mm = re.match(r"blk\.(\d+)\.ffn_(up|down|gate|gate_up)\.weight$", name)
                 if mm:
                     ffn[int(mm.group(1))] = ffn.get(int(mm.group(1)), 0) + size
@@ -318,7 +325,7 @@ def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0
         for pth in shards(path):
             for name, size in read_tensors(pth):
                 total += size
-                emb += size if name == "token_embd.weight" else 0
+                emb += size if is_host_side(name) else 0
         kv = kv_bytes(path, ctx, kv_q8=kv_q8)
         if kv is None:
             return None

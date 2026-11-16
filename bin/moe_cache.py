@@ -989,12 +989,12 @@ def ram_gib(ram_gb):
 
 
 def leading_number(v):
-    """LAUNCHER-005 (A3-22): the leading decimal number of a text, the way the plugin's strtod reads MOE_CACHE_MAX_RAM_GB ("20GB" is 20 there, so it must be 20
-    here too, or the two sides plan with different caps). Raises ValueError when the text does not start with a number (hex, inf and nan count as typos here)."""
-    m = re.match(r"\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", str(v))
-    if not m or re.match(r"\s*[+-]?0[xX]", str(v)):
+    """LAUNCHER-005 (A3-22, redone 2026-11-16): the number a MOE_CACHE_MAX_RAM_GB text means, the way the plugin's mcargs::parse_number reads it: ALL of the text
+    (white space around it allowed), a finite decimal, 0..1e9. "20GB", hex, inf, nan, "1_0" are typos here and there (the default cap is used). Raises ValueError."""
+    t = str(v).strip(" \t\n\v\f\r")
+    if not re.fullmatch(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", t) or not 0 <= float(t) <= 1e9:
         raise ValueError(v)
-    return m.group(1)
+    return t
 
 
 def write_text_atomic(path, text):
@@ -2419,7 +2419,6 @@ SERVER_HELP = """\
 --stock    run stock llama-server without the plugin whatever the model's size (to compare stock and moe-cache on the same model)
 --allow-sleep  let the machine sleep while the server runs (by default it is kept awake without changing a power setting: Windows power request,
            Linux systemd-inhibit; MOE_CACHE_ALLOW_SLEEP=1 does the same)
---no-sched-tuning  accepted and ignored (the Windows scheduling tuning was removed in v0.3.8: it cost 7 % decode; archive/README.md); kept for one release so old commands still run
 --no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
 --agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
            (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
@@ -2688,7 +2687,7 @@ def parse_server(argv):
     ap.add_argument("--no-long-prompt", action="store_true")   # opt out of the default long-prompt mode: -ub 2048 and the f16 KV cache, as before v0.3.8
     ap.add_argument("--retune", action="store_true")    # LAUNCHER-994: measure the candidate plans again and replace the stored auto-tune pick (bin/moe_cache_autotune.py)
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
-    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true"); ap.add_argument("--no-sched-tuning", action="store_true", help=argparse.SUPPRESS)      # no-op since v0.3.8 (WINDOWS-013 removed); accepted for one release
+    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
