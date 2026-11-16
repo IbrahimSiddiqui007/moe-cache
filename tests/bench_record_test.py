@@ -441,5 +441,10 @@ check(not [e for e in rr.validate({"hardware": envr["hardware"], "software": env
                                   {"type": "object", "properties": {k: schema["properties"][k] for k in ("software", "model")}, "$defs": schema["$defs"]}) if "required" in e and "plugin" not in e],
       "collect: the Software and Model sections have every required field (values may say not recorded)")
 
+# CLEANUP-795: one rounding rule (half up on the 6-digit value) in the record and the board
+import moe_cache_claims as _mcc
+check(rr.round_half_up(68.675, 2) == 68.68 and round(68.675, 2) == 68.67, "CLEANUP-795: a mean of 68.675 prints 68.68 (Python round() gives 68.67)")
+check(all(str(rr.round_half_up(v, 2)) == _mcc.fmt("decode_tps", v) for v in (68.675, 22.155, 21.735, 5.005, 12.3449)), "CLEANUP-795: record rounding equals the board's fmt() for decode")
+
 print("bench-record test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)

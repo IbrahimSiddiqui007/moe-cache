@@ -12,7 +12,7 @@
 A value that could not be read is written "not recorded" (NR), never guessed. bench-report (bin/moe_cache_bench.py) uses the Sampler and the record
 builder, so its report carries the same fields. The OS-specific readers are small probes (LinuxProbe, WindowsProbe) that tests drive with fake files
 and fake command output (tests/bench_record_test.py)."""
-import argparse, csv, datetime, glob, hashlib, io, json, os, platform, re, shutil, subprocess, sys, threading, time
+import argparse, csv, datetime, decimal, glob, hashlib, io, json, os, platform, re, shutil, subprocess, sys, threading, time
 
 NR = "not recorded"
 RECORD_SCHEMA = 1
@@ -29,6 +29,12 @@ def nr(v):
 
 def rnd(x, n=1):
     return NR if x is None else round(x, n)
+
+
+def round_half_up(x, n=1):
+    """CLEANUP-795: THE rounding rule for a printed mean: half up on the 6-digit value, the same as bin/moe_cache_claims.py fmt(), so the record and the generated
+    board print the same last digit (a mean of 68.675 was 68.67 here with Python's round and 68.68 on the board)."""
+    return float(decimal.Decimal(repr(round(x, 6))).quantize(decimal.Decimal(1).scaleb(-n), rounding=decimal.ROUND_HALF_UP))
 
 
 # ---------------------------------------------------------------- OS access (tests replace RUN and READ)
@@ -929,7 +935,7 @@ class Sampler(threading.Thread):
         return self.result()
 
     def result(self):
-        avg = lambda xs: round(sum(xs) / len(xs), 1) if xs else NR
+        avg = lambda xs: round_half_up(sum(xs) / len(xs), 1) if xs else NR
         top = lambda xs: round(max(xs), 1) if xs else NR
         have_proc = self.vram_proc_peak is not None
         vram = self.vram_proc_peak if have_proc else self.vram_sys_peak
@@ -1133,7 +1139,7 @@ def summarize_runs(runs):
         d = {"runs": len(rs)}
         for k in ("prompt_tps", "decode_tps", "ttft_s", "vram_used_peak_mib", "process_ram_peak_mib", "system_ram_free_min_mib", "cpu_avg_pct", "cache_hit_pct"):
             xs = [r[k] for r in rs if isinstance(r[k], (int, float))]
-            d[k] = round(sum(xs) / len(xs), 2) if xs else NR
+            d[k] = round_half_up(sum(xs) / len(xs), 2) if xs else NR
         d["cpu_peak_pct"] = max([r["cpu_peak_pct"] for r in rs if isinstance(r["cpu_peak_pct"], (int, float))], default=NR)
         out[arm] = d
     return out
@@ -1187,7 +1193,7 @@ def details_lines(rec, section=None, date=None, arm="moe-cache"):
     s, sw, p, c = rec["settings"], rec["software"], rec["protocol"], rec["conditions"]
     runs = [r for r in rec["runs"] if r["arm"] == arm and r["ok"]] or [r for r in rec["runs"] if r["ok"]]
     pick = lambda k: max([r[k] for r in runs if isinstance(r.get(k), (int, float))], default=NR)
-    avg = lambda k: (lambda xs: round(sum(xs) / len(xs), 1) if xs else NR)([r[k] for r in runs if isinstance(r.get(k), (int, float))])
+    avg = lambda k: (lambda xs: round_half_up(sum(xs) / len(xs), 1) if xs else NR)([r[k] for r in runs if isinstance(r.get(k), (int, float))])
     n_runs = max([sum(1 for r in rec["runs"] if r["arm"] == a) for a in {r["arm"] for r in rec["runs"]}] or [0])
     pct = lambda x: f"{x} %" if isinstance(x, (int, float)) else NR
     plen = p.get("prompt_tokens", NR)
