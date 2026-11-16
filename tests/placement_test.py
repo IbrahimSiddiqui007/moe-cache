@@ -626,12 +626,11 @@ rr = lr.Recorder({"cache_dir": cache2, "machine": GID, "build": BUILD, "model": 
                   "gpu_expert_mib": gguf_plan.gpu_expert_bytes(lay, 27) / MIB, "n_cpu_moe": 27, "free_now_mib": FREE_PLAN, "free_plan_mib": None, "free_source": "nvidia-smi"})
 for l_ in L:
     rr.feed(l_)
-    if "model loaded" in l_ or "server is listening" in l_:
-        pass
 rr.feed("0.30.000.000 I srv  load_model: model loaded")
 rr.feed("0.31.000.000 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 900.00 MiB on device 0: cudaMalloc failed: out of memory")
 rr.feed("0.31.000.001 E graph_reserve: failed to allocate compute buffers")
-check("oom" not in lr.parse_log(rr.lines) and rr.finish().get("edge_ok") == 27 and "edges" not in rr.finish(), "an allocation failure after the server was ready is not stored as a failed load")
+ent_rr = rr.finish()
+check("oom" not in lr.parse_log(rr.lines) and ent_rr.get("edge_ok") == 27 and "edges" not in ent_rr, "an allocation failure after the server was ready is not stored as a failed load")
 # F4: no edge from a plan with a GPU cache
 mk4 = mc.load_recorder_for(a5, ["x", "--n-cpu-moe", "32"], _M5(), LS, TWIN, 32768, "plugin")
 check(mk4(["x", "--n-cpu-moe", "32", "--moe-cache-mib", "2000"]).ctx["n_cpu_moe"] is None and mk4(["x", "--n-cpu-moe", "32"]).ctx["n_cpu_moe"] == 32, "a load with a GPU cache records no failed edge")

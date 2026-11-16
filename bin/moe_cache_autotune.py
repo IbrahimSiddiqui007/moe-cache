@@ -318,7 +318,7 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             known = floor_edge is not None and floor == floor_edge             # the stricter limit is the recorded failed edge, not the planner's figure
             if known:
                 walk_state["done"], walk_state["end"] = True, (f"a load at --n-cpu-moe {floor - 2} ran out of GPU memory before (recorded): the walk does not go below {floor}"
-                                                               + ("" if k > 1 else " (the plan is already there: no walk here)"))
+                                                               + ("" if k > 1 else (" (the plan is at or below that: no walk here)" if walk <= floor else "")))
             else:
                 walk_state["done"], walk_state["end"] = True, (f"--n-cpu-moe {walk - k} is past the planner's fit limit ({floor}) for this GPU" if k > 1 else
                                                                f"the plan is already at the planner's fit limit ({floor}) for this GPU and reserve: no walk here")
