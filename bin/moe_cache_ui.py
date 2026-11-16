@@ -1977,13 +1977,33 @@ AUDIT_MAX_TOKENS = 16384        # R15-01: was 4096; the audit module has the sam
 AUDIT_MAX_TOKENS_LIMIT = 65536
 
 
+def audit_need(model_size, model_path=None, ctx=None):
+    """GUI-1156 (Fable audit item 7): bytes a second, exact-mode server needs next to the running one. Was model x 1.10 + 1.5 GiB for every model and context. Now, when the
+    model's header is readable: the file + the KV cache llama-server sizes for this context (gguf_plan.kv_bytes: attention layers only on hybrid models, f16 as exact mode
+    runs it) + the compute buffer the planner has measured for the context (compute_buffer_guess_mib at -ub 512) + 1 GiB for the process. Unreadable header (or no path): the old rule."""
+    if not model_size:
+        return None
+    old = int(model_size * 1.10 + 1.5 * GIB)
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        import gguf_plan as gp
+        c = max(512, int(ctx or 8192))
+        kv = gp.kv_bytes(model_path, c, kv_q8=False)
+        mib = gp.compute_buffer_guess_mib(c, 512)
+        if kv is None or not mib:
+            return old
+        return int(model_size + kv + mib * 1048576 + 1.0 * GIB)
+    except Exception:
+        return old
+
+
 def audit_plan(runner, model_size):
     """How an audit would run for the server this page runs: {ok, mode: beside | pause, why, free, need}. `beside`: a second, exact-mode server next to the running
     one when the RAM allows it; `pause`: the running server is stopped for the audit and started again with its own settings."""
     if runner.state != "ready":
         return {"ok": False, "why": "start the model first: the audit asks an exact-mode server about the answer, which needs the same model"}
     tot, avail = ram_now()
-    need = int(model_size * 1.10 + 1.5 * GIB) if model_size else None
+    need = audit_need(model_size, runner.settings.get("model"), runner.settings.get("ctx"))
     if need and avail and avail >= need:
         return {"ok": True, "mode": "beside", "free": avail, "need": need, "why": f"a second, exact-mode server starts next to the running one ({avail / GIB:.1f} GiB free, about {need / GIB:.1f} GiB needed)"}
     return {"ok": True, "mode": "pause", "free": avail, "need": need,
