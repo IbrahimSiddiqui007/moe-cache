@@ -1844,7 +1844,7 @@ def slow_path_note(line):
 
 
 GPU_OOM_RE = re.compile(r"ErrorOutOfDeviceMemory|Device memory allocation .* failed|cudaMalloc failed|CUDA error: out of memory|hipMalloc failed|"
-                        r"(failed to allocate|unable to allocate) (Vulkan|CUDA|ROCm|HIP|SYCL)\w* (compute )?buffer", re.I)
+                        r"(failed to allocate|unable to allocate) (Vulkan|CUDA|ROCm|HIP|SYCL)\w* (compute )?buffer|failed to allocate buffer for MoE cache", re.I)
 
 
 # llama.cpp's own abort when its scheduler's hash set is full ("ggml-impl.h:330: fatal error", ggml_backend_sched_split_graph, found in llama.cpp's --fit probe):
@@ -1869,6 +1869,21 @@ def kv_retry_cmd(cmd):
     if not was:
         return list(cmd), ""
     return new, " / ".join(f"{k} {was[k]}" for k in ("K", "V") if k in was)
+
+
+def cache_fallback_cmd(cmd, n_cpu_moe, ub=None):
+    """LAUNCHER-1200: llama-server could not load with the cache the LAUNCHER chose (--gpu-cache auto / MIB, also the default): the same command without --moe-cache-mib, with the
+    static plan (n_cpu_moe expert layers on the CPU, a smaller -ub when the static plan needs it). None when the command has no cache flag."""
+    if "--moe-cache-mib" not in cmd or "--n-cpu-moe" not in cmd:
+        return None
+    new = list(cmd)
+    i = new.index("--moe-cache-mib"); del new[i:i + 2]
+    new[new.index("--n-cpu-moe") + 1] = str(n_cpu_moe)
+    if ub and "-ub" in new and int(ub) < int(new[new.index("-ub") + 1]):
+        new[new.index("-ub") + 1] = str(ub)
+        if "-b" in new:
+            new[new.index("-b") + 1] = str(max(int(ub), 2048))
+    return new
 
 
 def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None, kv_retry=None, tune_retry=None):
@@ -5186,9 +5201,28 @@ def run_launch_plan(plan):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
+    launcher_cache = LAUNCHER_CACHE[0]          # LAUNCHER-1200: the cache in this command is the launcher's own choice, not yours
     def oom_retry():
         """llama-server could not allocate GPU memory at load: measure the free memory again, plan again with it (never fewer CPU expert layers than
         before + 1) and return the new command; None when nothing can be changed (the user fixed --n-cpu-moe, or there is no GPU figure)."""
+        if launcher_cache and "--moe-cache-mib" in cmd and not a.exact:
+            # LAUNCHER-1200: the cache is the launcher's own (--gpu-cache or the CUDA default), not yours: start once more with the static plan and no cache
+            try:
+                sys.path.insert(0, os.path.join(HERE, "planner"))
+                from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes
+                tf = gpu_total_free_bytes()
+                if tf:
+                    reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
+                    t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd,
+                             free_source=getattr(a, "plan_free_source", None))
+                    new = cache_fallback_cmd(cmd, t["n_cpu_moe"], t["ub"])
+                    if new:
+                        say(f"moe-cache: llama-server could not load with the GPU expert cache of {arg_after(cmd, '--moe-cache-mib')} MiB (not enough free GPU memory): starting again once without "
+                            f"the cache, with {t['n_cpu_moe']} layers of experts on the CPU. --gpu-cache off keeps it off", err=True)
+                        return new
+            except Exception as e:
+                say(f"moe-cache: llama-server could not load with the GPU expert cache; the retry without it could not be planned ({e})", err=True)
+            return None
         if "--n-cpu-moe" not in cmd and ncmoe_user is None:       # LAUNCHER-850: a dense model
             free = float(a.vram) * 2**30 if a.vram else None
             if free is None:

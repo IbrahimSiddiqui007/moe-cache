@@ -126,4 +126,42 @@ rc, asked, n = run_guard(None)
 check(rc == 0 and asked == ["oom"] and n == 2, f"control: the same failure with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
 rc, asked, n = run_guard(None, kind="kv")
 check(rc == 0 and asked == ["kv"] and n == 2, f"control: the KV abort with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
+
+# LAUNCHER-1200: the cache the launcher chose does not fit at load -> one retry without it (static plan); never for your own --moe-cache-mib or --exact
+check(bool(mc.GPU_OOM_RE.search("llama_init_from_model: failed to initialize the context: failed to allocate buffer for MoE cache")), "recognised: the cache buffer failure line")
+base = ["llama-server", "-m", "m.gguf", "-ngl", "99", "--n-cpu-moe", "999", "-c", "65536", "--load-mode", "none", "-ub", "2048", "-b", "2048", "--moe-cache-mib", "6500", "--cache-ram", "2048"]
+new = mc.cache_fallback_cmd(base, 30, 2048)
+check(new is not None and "--moe-cache-mib" not in new and "6500" not in new and new[new.index("--n-cpu-moe") + 1] == "30" and "--cache-ram" in new and new[new.index("-ub") + 1] == "2048",
+      "fallback command: cache flag and its value gone, static --n-cpu-moe 30, the rest kept")
+new = mc.cache_fallback_cmd(base, 33, 1024)
+check(new[new.index("-ub") + 1] == "1024" and new[new.index("-b") + 1] == "2048", "fallback command: a smaller -ub when the static plan needs it, -b stays 2048")
+check(mc.cache_fallback_cmd([c for c in base if c not in ("--moe-cache-mib", "6500")], 30, 2048) is None, "no cache flag in the command: nothing to fall back from")
+# end to end with a fake server: first start dies with the cache buffer failure, the retry (what oom_retry returns) starts without the cache
+fake_cache = os.path.join(TMP, "fake_cache.py")
+open(fake_cache, "w").write('''
+import os, sys
+mark = sys.argv[1]
+n = int(open(mark).read()) if os.path.exists(mark) else 0
+open(mark, "w").write(str(n + 1))
+if "--moe-cache-mib" in sys.argv:
+    sys.stderr.write("ggml_backend_cuda_buffer_type_alloc_buffer: allocating 6500.00 MiB on device 0: cudaMalloc failed: out of memory\\nllama_init_from_model: failed to initialize the context: failed to allocate buffer for MoE cache\\n"); sys.exit(1)
+sys.stderr.write("fake ok without cache\\n"); sys.exit(0)
+''')
+def run_cache(launcher_choice, exact=False):
+    mark = os.path.join(TMP, f"mc_{launcher_choice}_{exact}")
+    start = [sys.executable, fake_cache, mark, "--n-cpu-moe", "999", "-ub", "2048", "--moe-cache-mib", "6500"]
+    asked = []
+    def oom_retry():
+        asked.append(1)
+        if not launcher_choice or exact:
+            return None                     # what the launcher's oom_retry does for your own cache flag or --exact: the old behaviour, no cache fallback
+        return mc.cache_fallback_cmd(start, 30, 2048)
+    rc = mc.run_child(start, dict(os.environ), oom_retry=oom_retry)
+    return rc, len(asked), int(open(mark).read())
+rc, asked, n = run_cache(True)
+check(rc == 0 and asked == 1 and n == 2, f"the launcher's cache fails at load: one retry without it starts (rc {rc}, asked {asked}, started {n}x)")
+rc, asked, n = run_cache(False)
+check(rc != 0 and n == 1, f"your own --moe-cache-mib: no cache fallback (rc {rc}, started {n}x)")
+rc, asked, n = run_cache(True, exact=True)
+check(rc != 0 and n == 1, f"--exact: no cache fallback (rc {rc}, started {n}x)")
 sys.exit(1 if fails else 0)
