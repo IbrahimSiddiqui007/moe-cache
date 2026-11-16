@@ -2,7 +2,7 @@
 """moe_cache_record.py: the one benchmark record (docs/BENCHMARK_TEMPLATE.md, docs/bench_record.schema.json). Linux and Windows; standard library only.
 
   collect   machine, software and model facts as JSON (no run)               python3 bin/moe_cache_record.py collect --model M.gguf --llama-server LS
-  monitor   watch a running llama-server (--pid N) or run a command (-- CMD) and sample VRAM, process RAM, free RAM and CPU until it ends
+  monitor   watch a running llama-server (--pid N) or run a command (-- CMD) and sample VRAM, process RAM, available RAM (MemAvailable / ullAvailPhys, not MemFree) and CPU until it ends
   assemble  build the full record from the facts, the runs a harness measured and the protocol
   validate  check a record against the schema (required fields present, every value a number / text or "not recorded")
   ingest, claim, board, lint, replay   runs, claims and the board of benchmarks/ (bin/moe_cache_claims.py)
@@ -1194,7 +1194,7 @@ def details_lines(rec, section=None, date=None, arm="moe-cache"):
     d = rec["created_utc"][5:10]
     return [f"GPU expert layers: {s['gpu_expert_layers']} (n-cpu-moe {s['n_cpu_moe']}) · -ub {s['ubatch']}",
             f"ctx {s['ctx']} · prompt {plen} tokens · {n_runs} runs each, order {p.get('order', NR)} · {c['file_cache']} file cache",
-            f"VRAM peak {_gib(pick('vram_used_peak_mib'))} · process RAM peak {_gib(pick('process_ram_peak_mib'))} (system free min {_gib(pick('system_ram_free_min_mib'))}) · "
+            f"VRAM peak {_gib(pick('vram_used_peak_mib'))} · process RAM peak {_gib(pick('process_ram_peak_mib'))} (system available min {_gib(pick('system_ram_free_min_mib'))}) · "
             f"CPU {pct(avg('cpu_avg_pct'))} avg, {pct(pick('cpu_peak_pct'))} peak",
             f"launcher {sw['moe_cache_commit']}, DLL {sw['plugin_sha256_prefix'][:7] if sw['plugin_sha256_prefix'] != NR else NR} · llama.cpp {sw['llama_build']} "
             f"({sw['llama_commit']}, {sw['llama_backend']}) · {date or d}" + (f" · §{section}" if section else "")] + \
