@@ -2152,6 +2152,15 @@ def make_load_recorder(plan):
     return load_recorder_for(plan.a, plan.cmd, plan.machine, plan.ls, plan.model, plan.ctx, plan.engine)
 
 
+def free_before_load(machine, fallback):
+    """The free GPU memory (MiB) read now, just before a load starts; the plan's figure when the machine cannot read it."""
+    try:
+        v = machine.free_vram_bytes()
+        return v / 2**20 if v else fallback
+    except Exception:
+        return fallback
+
+
 def load_recorder_for(a, plan_cmd, machine, ls, model, ctx, engine):
     """A function cmd -> Recorder that stores what one load of llama-server measured (planner/load_record.py), keyed by this machine's GPU and driver, the llama.cpp
     build and the model; None when the record is off (MOE_CACHE_LOAD_RECORD=0), --vram was given, the GPU or build is unknown, or the plan places no experts. Used for the
@@ -2190,7 +2199,9 @@ def load_recorder_for(a, plan_cmd, machine, ls, model, ctx, engine):
                             "ub": int(ub) if (ub or "").isdigit() else 0,
                             "kv": (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16"),
                             "engine": engine, "mtp": mtp, "gpu_expert_mib": gpu_expert_bytes(lay, min(int(n), lay["n_layers"])) / 2**20,
-                            "n_cpu_moe": int(n), "free_now_mib": getattr(a, "plan_free_mib", None),       # a load that runs out of GPU memory is a failed edge at this value (follow-up 7)
+                            # a load that runs out of GPU memory is a failed edge at this value (follow-up 7): with the free memory read just before this load, not the plan's
+                            # (a plan with a GPU cache does not walk --n-cpu-moe: no edge from it)
+                            "n_cpu_moe": None if "--moe-cache-mib" in cmd else int(n), "free_now_mib": free_before_load(machine, getattr(a, "plan_free_mib", None)),
                             # the gap is learned only on the first load against the figure the plan used (a retry re-reads the memory; a projector's memory is not llama's)
                             # and only on the stock engine without a GPU cache: the plugin's long-prompt block and llama.cpp's cache banks are allocated after load and would
                             # read as overhead (the plan counts them itself)
@@ -3152,8 +3163,10 @@ def gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None, say_leave=None):
         from gguf_plan import ROOM_RESERVE_MIB
         room_reserve_gb = ROOM_RESERVE_MIB * 2**20 / 1e9
         if a.gpu_margin is None:
-            kw["reserve_gb"] = max(LEAVE_ROOM_VRAM_GB - room_reserve_gb, 0.0) if a.leave_room else 0.0
+            # follow-up 4 (the tuner's 0.5 GB on top of the room's own 300 MiB) is HELD: dropping it moves every Windows AMD / Intel plan one layer onto the GPU and leaves the
+            # auto-tune walk no room (owner decision (b), LAUNCHER-1182). Without --leave-room the tuner's own 0.5 GB stays, as in 404dfd5.
             if a.leave_room:
+                kw["reserve_gb"] = max(LEAVE_ROOM_VRAM_GB - room_reserve_gb, 0.0)
                 desk_kw = kw["reserve_gb"]
                 if say_leave:
                     say_leave(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop (the room's own {ROOM_RESERVE_MIB} MiB reserve counts toward them)")

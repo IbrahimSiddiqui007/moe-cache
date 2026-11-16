@@ -839,18 +839,20 @@ def drm_driver_version():
             names.add(os.path.basename(os.path.realpath(card + "/driver")))
         except OSError:
             pass
-    parts = []
+    parts, versioned = [], False
     for n in sorted(x for x in names if x and x != "driver"):
         v = ""
         try:
             v = open(f"/sys/module/{n}/version").read().strip()
         except OSError:
             pass
+        versioned = versioned or bool(v)
         parts.append(n + (f" {v}" if v else ""))
-    try:
-        parts.append("kernel " + os.uname().release)
-    except AttributeError:
-        pass
+    if not versioned:                      # the amdgpu / i915 driver ships with the kernel and has no version of its own: the kernel release stands for it
+        try:
+            parts.append("kernel " + os.uname().release)
+        except AttributeError:
+            pass
     return ", ".join(parts)
 
 

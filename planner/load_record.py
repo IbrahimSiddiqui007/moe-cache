@@ -12,7 +12,7 @@ The launcher raises the verbosity to 4 through the environment for its own loads
 terminal (bin/moe_cache.py: extra_log_line); MOE_CACHE_LOAD_RECORD=0 turns all of this off.
 
 Stored (one JSON file, <cache dir>/loads.json, newest 400 entries per kind):
-  weights  [machine, build, model]                       -> non_expert_mib: the model's GPU weights minus the expert layers placed there (does not depend on the context)
+  weights  [machine, build, model, mtp]                  -> non_expert_mib: the model's GPU weights minus the expert layers placed there (does not depend on the context; with MTP on llama.cpp also loads the NextN layer, so the MTP loads have their own entry)
   buffers  [machine, build, model, ctx, ub, kv]          -> compute_mib (also from a failed load's size), context_mib (KV + recurrent state)
   overhead [machine, build, engine, mtp, free_source]    -> gap_mib: what the free figure the plan used overstates the memory llama.cpp can fill
                                                             (driver total vs CUDA total, CUDA context, growth after load); the key carries where the free figure came
@@ -32,6 +32,7 @@ import time
 
 KEEP = 400
 GROWTH_CAP_MIB = 512        # growth after load counted at most (laptop 35B: 79 MiB of CUDA work buffers); more is other programs growing over a long run, not this server
+EDGE_MAX_AGE_DAYS = 30
 FILE_NAME = "loads.json"
 SCHEMA = 1
 KINDS = ("weights", "buffers", "overhead", "drafts", "edges")
@@ -255,7 +256,7 @@ def lookup(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, free_sour
         return {}
     d = _read(cache_dir)
     out = {}
-    w = d["weights"].get(_key(machine, build, model))
+    w = d["weights"].get(_key(machine, build, model, bool(mtp)))
     if w and isinstance(w.get("non_expert_mib"), (int, float)):
         out["non_expert_mib"], out["non_expert_mib_at"] = float(w["non_expert_mib"]), w.get("at")
     bkey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv))
@@ -283,6 +284,11 @@ def lookup_edge(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, free
         return None
     if free_now_mib is not None and e.get("free_mib") is not None and free_now_mib > e["free_mib"] + drift_mib:
         return None
+    try:
+        if time.time() - time.mktime(time.strptime(e.get("at", ""), "%Y-%m-%d %H:%M")) > EDGE_MAX_AGE_DAYS * 86400:
+            return None                              # a failure from long ago (other programs, a driver update that kept the key): measured again
+    except (ValueError, OverflowError):
+        return None
     return e["fail_ncmoe"]
 
 
@@ -303,7 +309,7 @@ def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_s
     if rec.get("model_mib") and gpu_expert_mib is not None and rec["model_mib"] - gpu_expert_mib > 0:
         out["weights"] = {"non_expert_mib": round(rec["model_mib"] - gpu_expert_mib, 1), "at": now}
     comp = rec.get("compute_mib") or rec.get("failed_compute_mib")
-    if comp or rec.get("context_mib"):
+    if (comp or rec.get("context_mib")) and not (mtp and not rec.get("draft_mib")):      # an MTP log without a draft figure may have the draft's lines mixed into the target's
         if (rec.get("n_ctx") in (None, int(ctx))) and (rec.get("n_ubatch") in (None, int(ub or 0))):     # the log must be the plan's own load
             b = {"at": now}
             if comp:
@@ -334,7 +340,7 @@ def save(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, ent, free_s
             d = _read(cache_dir)
             bkey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv))
             ekey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv), engine, bool(mtp))
-            for kind, key in (("weights", _key(machine, build, model)), ("buffers", bkey), ("overhead", _key(machine, build, engine, bool(mtp), free_source)),
+            for kind, key in (("weights", _key(machine, build, model, bool(mtp))), ("buffers", bkey), ("overhead", _key(machine, build, engine, bool(mtp), free_source)),
                               ("drafts", bkey), ("edges", ekey)):
                 if kind in ent:
                     d[kind].pop(key, None)

@@ -316,9 +316,12 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             return None
         if floor is not None and walk - k < floor:
             known = floor_edge is not None and floor == floor_edge             # the stricter limit is the recorded failed edge, not the planner's figure
-            what = (f"the load at --n-cpu-moe {floor - 2} failed for lack of GPU memory before (recorded)" if known else f"the planner's fit limit ({floor}) for this GPU")
-            walk_state["done"], walk_state["end"] = True, (f"--n-cpu-moe {walk - k} is past {what}" if k > 1 else
-                                                           f"the plan is already at {what}" + ("" if known else " and reserve") + ": no walk here")
+            if known:
+                walk_state["done"], walk_state["end"] = True, (f"a load at --n-cpu-moe {floor - 2} ran out of GPU memory before (recorded), so nothing below {floor} is loaded"
+                                                               + ("" if k > 1 else ": no walk here"))
+            else:
+                walk_state["done"], walk_state["end"] = True, (f"--n-cpu-moe {walk - k} is past the planner's fit limit ({floor}) for this GPU" if k > 1 else
+                                                               f"the plan is already at the planner's fit limit ({floor}) for this GPU and reserve: no walk here")
             if k > 1 and not known and last["id"] == f"ncmoe-{k - 1}" and last["status"] == "measured":
                 last["edge"] = True         # the step at the fit limit keeps no reserve: at the edge like the step before a failed load, not picked
                 walk_state["end"] += f"; {last['id']} is at the edge and is not picked"

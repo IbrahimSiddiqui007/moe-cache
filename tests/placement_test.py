@@ -447,7 +447,7 @@ check(lr.lookup(cache2, GID, BUILD, MID, 32768, 2048, False, "stock", False, "nv
       "the gap learned against nvidia-smi's figure is not used for llama-server's or the room figure")
 
 # 6. the driver is in the GPU identity
-check("kernel" in gguf_plan.drm_driver_version() or gguf_plan.drm_driver_version() == "", "Linux AMD / Intel identity carries the driver and kernel (nvidia-smi's identity already has the driver version)")
+check(any(ch.isdigit() for ch in gguf_plan.drm_driver_version()) or gguf_plan.drm_driver_version() == "", "Linux AMD / Intel identity carries the driver's module version, else the kernel release (nvidia-smi's identity already has the driver version)")
 check(lr.lookup(cache2, GID.replace("580.95", "590.01"), BUILD, MID, 32768, 2048, False, "stock", False, "nvidia-smi") == {}, "a new driver version is a new key: measured again")
 
 # 7. failed edges: a load that ran out of GPU memory is remembered per key, and the walk does not retry it
@@ -539,7 +539,7 @@ check(not r6["ok"] and lr.lookup_edge(cache3, GID, build, MID, 32768, 2048, ("f1
       "a probe that ran out of GPU memory records its --n-cpu-moe (23) as the failed edge")
 check(maker(["x", "--n-cpu-moe", "23", "-ot", "a=CPU"]) is None, "a probe with the user's own tensor placement is not recorded")
 
-# 4 + 11. the room figure: no second 0.5 GB reserve on top; --leave-room keeps its 2 GB in all
+# 4 (HELD) + 11. the room figure: the default reserve is unchanged; --leave-room keeps its 2 GB in all
 class _PMach:
     def __init__(self, free=14.65 * 2**30, tf=None, src="llama-server"): self.f, self.tf, self.src = free, tf, src
     def free_vram_bytes(self): return self.f
@@ -549,7 +549,8 @@ mc.say = lambda *a_, **k_: None
 def room_a(**kw): return types.SimpleNamespace(**{**dict(vram="14.65", vram_user=None, room_gib=12.9, room_used_gib=2.4, gpu_margin=None, leave_room=False), **kw})
 gpu_w = (0, "Vulkan0", 15000, 16304)
 i0 = mc.gpu_room_inputs(room_a(), _PMach(), gpu_w, 0)
-check(i0["use_room"] and i0["kw"]["reserve_gb"] == 0.0 and i0["kw"]["free_source"] == "room" and abs(i0["free"] / 2**30 - 12.9) < 0.01, f"room path: the tuner's own 0.5 GB reserve is not added on top of the room's (reserve {i0['kw'].get('reserve_gb')} GB)")
+check(i0["use_room"] and "reserve_gb" not in i0["kw"] and i0["kw"]["free_source"] == "room" and abs(i0["free"] / 2**30 - 12.9) < 0.01,
+      "room path, follow-up 4 HELD (owner decision (b)): the tuner's own 0.5 GB stays on top of the room, as in 404dfd5")
 i1 = mc.gpu_room_inputs(room_a(leave_room=True), _PMach(), gpu_w, 0)
 check(abs(i1["kw"]["reserve_gb"] - (mc.LEAVE_ROOM_VRAM_GB - 300 * MIB / 1e9)) < 1e-6 and i1["desk_kw"] == i1["kw"]["reserve_gb"], f"room path with --leave-room: 2 GB kept free in all, the room's 300 MiB counting toward them ({i1['kw']['reserve_gb']:.2f} GB), not 0.5 GB")
 i2 = mc.gpu_room_inputs(room_a(gpu_margin=1.0), _PMach(), gpu_w, 0)
@@ -582,7 +583,7 @@ check(seen_t.get("reserve_gb", 0.5) > 0.5 and seen_t.get("free_source") == "nvid
 seen_t.clear()
 _a9w = types.SimpleNamespace(**{**vars(_a9), "vram": "14.65", "room_gib": 12.9, "room_used_gib": 2.4})
 mc.plugin_for_partial_offload(_a9w, LS, TWIN, 32768, _PM2(), gpu_w, 0)
-check(abs(seen_t["free"] / 2**30 - 12.9) < 0.01 and seen_t.get("free_source") == "room" and seen_t.get("reserve_gb") == 0.0, "engine check on Windows AMD: the room figure, not llama-server's 14.65 GiB, and no second reserve")
+check(abs(seen_t["free"] / 2**30 - 12.9) < 0.01 and seen_t.get("free_source") == "room" and "reserve_gb" not in seen_t, "engine check on Windows AMD: the room figure, not llama-server's 14.65 GiB")
 gguf_plan.tune = real_tune
 src_order = open(os.path.join(HERE, "bin", "moe_cache.py"), encoding="utf-8").read()
 i_g, i_p = src_order.index("vram_user, listing, gpu = gpu_stage(a, ls, win, machine)"), src_order.index("why = plugin_for_partial_offload(a, ls, model, ctx, machine, gpu, mm_bytes)")
@@ -603,6 +604,26 @@ check(n_mg >= 2 and mg_sh is not None, f"...(block formula called {n_mg} times f
 sync1 = multigpu.plan(TWIN, 32768, [8000 * MIB])
 sync2 = gguf_plan.tune(TWIN, 32768, free=8000 * MIB, want_cache=False, plugin=True)
 check(sync1 is not None and sync1["n_cpu_moe"] == sync2["n_cpu_moe"], f"one card: multigpu and tune place the same ({sync1 and sync1['n_cpu_moe']} vs {sync2['n_cpu_moe']})")
+
+# critic round 1: F1 weights of an MTP load are their own entry (llama.cpp loads the NextN layer only with MTP on)
+ent_mw = dict(ent_m); ent_mw["weights"] = {"non_expert_mib": 1596.8 + 340.0, "at": "2026-11-16 09:00"}
+lr.save(cache2, GID, BUILD, MID, 32768, 2048, ("f16", "f16"), "stock", True, ent_mw, free_source="nvidia-smi")
+check(lr.lookup(cache2, GID, BUILD, MID, 32768, 2048, False, "stock", True, "nvidia-smi")["non_expert_mib"] > lr.lookup(cache2, GID, BUILD, MID, 32768, 2048, False, "stock", False, "nvidia-smi")["non_expert_mib"] + 300,
+      "weights: an MTP load's figure (with the NextN layer) and a plain load's figure are separate entries and do not overwrite each other")
+# F7: an MTP log whose draft lines came before the marker (no draft figure) stores no buffers
+nd = lr.entries(dict(mtp_rec, draft_mib=None), 32768, 2048, ("f16", "f16"), "stock", True, 1.0, FREE_PLAN, "nvidia-smi")
+check("buffers" not in nd and "drafts" not in nd, "an MTP load without a draft figure stores no buffers (they may hold the draft's lines)")
+# F3: an old failed edge is not trusted
+e_old = dict(ent_f["edges"], at="2026-09-01 00:00")
+lr.save(cache2, GID, BUILD, MID, 4096, 512, ("f16", "f16"), "stock", False, {"edges": e_old}, free_source="nvidia-smi")
+check(lr.lookup_edge(cache2, GID, BUILD, MID, 4096, 512, ("f16", "f16"), "stock", False) is None, "a failed edge older than 30 days is not used")
+# F3: the free memory stored with an edge is the reading just before the load
+class _M6(_M2):
+    def free_vram_bytes(self): return 7000 * MIB
+check(mc.free_before_load(_M6(), 8161.0) == 7000.0 and mc.free_before_load(types.SimpleNamespace(), 8161.0) == 8161.0, "the edge's free figure: read just before the load, the plan's when unreadable")
+# F4: no edge from a plan with a GPU cache
+mk4 = mc.load_recorder_for(a5, ["x", "--n-cpu-moe", "32"], _M5(), LS, TWIN, 32768, "plugin")
+check(mk4(["x", "--n-cpu-moe", "32", "--moe-cache-mib", "2000"]).ctx["n_cpu_moe"] is None and mk4(["x", "--n-cpu-moe", "32"]).ctx["n_cpu_moe"] == 32, "a load with a GPU cache records no failed edge")
 
 # 10. a working fit limit versus a no-op: simulate a card where a load that does not fit spills (Windows): the real truth is loads(); the limit must keep the walk out of the spill
 def spill_runner(truth_floor, seen):
