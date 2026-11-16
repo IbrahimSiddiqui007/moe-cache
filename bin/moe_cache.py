@@ -2399,6 +2399,7 @@ SERVER_HELP = """\
 --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 --project NAME  its own profile plus a saved prompt state (KV cache) restored at start; save it with: moe_cache.py project save NAME
 --gpu-cache off|auto|MIB  (Linux, preload method only) llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
+           Default: auto on Linux with a CUDA llama-server for a MoE model that fits in RAM (stock engine, experts on the CPU side); off everywhere else. --gpu-cache off, --exact, --stock, --hybrid, your own --n-cpu-moe / --moe-cache-mib / -ot / -md turn it off.
            Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
 --leave-room  I use this PC while the model runs: RAM for the server = total minus max(8 GiB, 25 %) instead of max(4 GiB, 12.5 %), at least 2 GB of
            GPU memory kept free for the desktop (not with --gpu-margin), 2 CPU cores left free (not with pinned hybrid cores or your own -t), lower priority; the start-up
@@ -2680,7 +2681,7 @@ def parse_server(argv):
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=default_llama_server())
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
-    ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
+    ap.add_argument("--gpu-cache", default=""); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
     ap.add_argument("--long-prompt", action="store_true")      # long-prompt mode (v0.3.8): -ub 4096 + --fast=kv when the memory plan allows; since 2026-11-08 also the DEFAULT (see kv_stage); the flag asks for it at any context
@@ -3220,6 +3221,7 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             if getattr(a, "long_prompt", False) and not (ub_asked or "").isdigit() and getattr(a, "lp_kv", False):
                 kw["long_prompt"] = True
             kw["plugin"] = getattr(a, "plan_plugin", True)          # the long-prompt GPU block only when the plugin runs (LAUNCHER-1177)
+            kw["keep_ub"] = bool(getattr(a, "cuda_listing", False))        # CUDA llama-server: a stock cache keeps -ub 2048 (CACHE-1187); other backends keep the old 1024 rule
             kw["mtp"] = "draft-mtp" in extra
             kw["measured"] = measured_loads(a, ls, model, ctx, kv_q8, machine, kw["plugin"], kw["mtp"], ub_asked, kw["free_source"])
             a.plan_free_mib = (free / 2**20) if free else None
@@ -3568,7 +3570,7 @@ def load_mode_cache_none(a, cmd, extra, machine, model, cram):
     if need > avail / 2**30:
         return None
     return (f"GPU expert cache: the {size / 2**30:.1f} GiB model fits the {avail / 2**30:.1f} GiB of RAM this server may use (with the prompt cache and a {margin:.1f} GiB reserve): "
-            "--load-mode none (laptop: prompt +14-20 %, decode +8-11 % against mmap; llama.cpp warns that mmap is slow with CPU-side experts; --exact or --load-mode after -- keeps mmap)")
+            "--load-mode none (llama.cpp warns that mmap is slow with CPU-side experts; --exact or --load-mode after -- keeps mmap)")
 
 
 def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
@@ -4082,6 +4084,36 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
     return ub, ncmoe, no_vram
 
 
+def cuda_only_listing(listing):
+    """True when the server's own device list (`llama-server --list-devices`) shows CUDA devices and no other backend's: the only setup the GPU expert cache default was measured on
+    (CACHE-1187, one NVIDIA laptop, Linux). Read from the listing, never guessed from the machine."""
+    kinds = set(re.findall(r"^\s+([A-Za-z]+)\d+: ", listing or "", re.M))
+    return kinds == {"CUDA"}
+
+
+def default_gpu_cache_stage(a, extra, ls, machine, listing, dense, stock_engine, gcache, ncmoe_user):
+    """CACHE-1187 / LAUNCHER-1188 (owner 2026-11-16): `--gpu-cache auto` is the default where it was measured and nowhere else: Linux, a CUDA llama-server (device list: CUDA and nothing
+    else), a MoE model that runs the stock engine with experts on the CPU side, a llama-server that has --moe-cache-mib. Off: --gpu-cache off (or any value you pass), --exact, --stock,
+    --hybrid, --cpu-only, --multi-gpu, a draft model or MTP, dense models, the plugin engine, Windows / Vulkan / ROCm / SYCL / Metal, your own --n-cpu-moe / -cmoe / --moe-cache-mib / -ot after --.
+    Returns the cache setting to use; says why when it turns it on."""
+    if a.gpu_cache or gcache != "off" or machine.windows or a.exact or a.stock or a.hybrid or a.cpu_only or a.multi_gpu or dense or not stock_engine:
+        return gcache
+    if ncmoe_user is not None or a.n_cpu_moe is not None or not cuda_only_listing(listing):
+        return gcache
+    if any(x in ("--n-cpu-moe", "-ncmoe", "--cpu-moe", "-cmoe", "--moe-cache-mib", "-ot", "--override-tensor") or x.startswith(("--n-cpu-moe=", "--moe-cache-mib=")) for x in extra):
+        return gcache
+    if any(x in ("-md", "--model-draft", "draft-mtp") or x.startswith("--model-draft=") for x in extra):
+        return gcache            # a draft model or MTP drafting with llama.cpp's cache: reported broken upstream (DOCS-090, #31497, fixed in b12207) and not tested here
+    try:
+        if "--moe-cache-mib" not in ls_help(ls, machine.run):
+            return gcache
+    except Exception:
+        return gcache
+    say("moe-cache: GPU expert cache on by default (--gpu-cache auto): Linux, a CUDA llama-server and a MoE model that fits in RAM, the combination it was measured on "
+        "(one NVIDIA laptop, 35B model); the experts you use most stay on the GPU. --gpu-cache off or --exact turns it off")
+    return "auto"
+
+
 def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine):
     """ENGINE-029, stage "GPU expert cache and hybrid bank": the size of llama.cpp's GPU expert cache (--gpu-cache auto/MiB, capped by one Vulkan device buffer), or the hybrid bank (--hybrid); both put every expert on the CPU side (n_cpu_moe 999). env and extra grow in place. Returns n_cpu_moe as text."""
     LAUNCHER_CACHE[0] = False
@@ -4386,7 +4418,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
             cmd[cmd.index("--load-mode") + 1] = "none"
             LOAD_NONE_BY_RULE[0] = True
             say("moe-cache: " + why)
-    if method == "none (stock)" and not dense and LAUNCHER_CACHE[0] and "--load-mode" in cmd:
+    if method == "none (stock)" and not dense and LAUNCHER_CACHE[0] and getattr(a, "cuda_listing", False) and "--load-mode" in cmd:
         why = load_mode_cache_none(a, cmd, extra, machine, model, arg_after(extra, "--cache-ram", "-cram"))
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
@@ -4932,7 +4964,7 @@ def _launch_plan(a, extra, argv, machine):
         a.n_cpu_moe = user_flags["ncmoe"]
     ls, model, port = a.llama_server, a.model, a.port
     ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
-    gcache = a.gpu_cache
+    gcache = a.gpu_cache or "off"
     if a.hybrid and gcache != "off":
         say("moe-cache: --hybrid replaces --gpu-cache: the GPU memory goes to the hybrid bank"); gcache = "off"
     if not os.path.isfile(model):
@@ -4992,6 +5024,9 @@ def _launch_plan(a, extra, argv, machine):
         extra += ["--slot-save-path", slotdir]
     profile = profile_stage(a, model, pname, dry)
     load, method, gcache, env, cap = memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine)
+    dev_listing = listing if listing is not None else machine.list_devices(ls)        # the server's own device list (Linux gives None up to here)
+    a.cuda_listing = cuda_only_listing(dev_listing)
+    gcache = default_gpu_cache_stage(a, extra, ls, machine, dev_listing, dense, method == "none (stock)", gcache, ncmoe_user)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
     # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock,

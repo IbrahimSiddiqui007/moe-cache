@@ -43,6 +43,32 @@ with tempfile.TemporaryDirectory() as tmp:
     p = plan(model, tmp, ["--gpu-cache", "auto"], vram=3.4)
     check(p["stock"] and p["ub"] == "1024" and p["cache"] is not None, f"cache under 1.5 GiB at -ub 2048 (little VRAM): -ub 1024 buys the room (cache {p['cache']} MiB)")
     p = plan(model, tmp, [])
-    check(p["lm"] == "mmap" and p["cache"] is None, "no --gpu-cache: the default stays off, mmap")
+    check(p["lm"] == "mmap" and p["cache"] is None, "no --gpu-cache, llama-server without --moe-cache-mib: nothing turns on, mmap")
+
+    # --- the default (owner 2026-11-16): on only on Linux + CUDA llama-server + stock engine MoE with experts on the CPU, a llama-server that has --moe-cache-mib
+    lp.HELP_TEXT += "  --moe-cache-mib N\n"
+    def dplan(opts, extra=(), machine="linux", stock=True):
+        r = lp.run_case(machine, ["--vram", "8"] + list(opts), list(extra), model, tmp, call=stock_env if stock else None)
+        c = next((l for l in r["stdout"].splitlines() if "llama-server" in l and " -m " in l), "")
+        g = lambda k: c.split(k)[1].split()[0] if k in c else None
+        return dict(cache=g("--moe-cache-mib "), ub=g("-ub "), lm=g("--load-mode "), why="GPU expert cache on by default" in r["stdout"], ncmoe=g("--n-cpu-moe "))
+    d = dplan([])
+    check(d["why"] and d["cache"] and d["ncmoe"] == "999" and d["ub"] == "2048" and d["lm"] == "none", f"default on Linux + CUDA + stock MoE: cache {d['cache']} MiB, -ub 2048, --load-mode none, the plan line says why")
+    for what, o, e in (("--gpu-cache off", ["--gpu-cache", "off"], []), ("--exact", ["--exact"], []), ("--stock", ["--stock"], []), ("your own --n-cpu-moe", ["--n-cpu-moe", "20"], []),
+                       ("your own --moe-cache-mib after --", [], ["--moe-cache-mib", "2000"]), ("your own -ot after --", [], ["-ot", "exps=CPU"]), ("a draft model after --", [], ["-md", "draft.gguf"])):
+        d = dplan(o, e)
+        check(not d["why"] and (d["cache"] is None or what.startswith("your own --moe")), f"default off with {what}")
+    d = dplan([], machine="win")
+    check(not d["why"] and d["cache"] is None, "default off on Windows / Vulkan")
+    lp.MACHINES["linux_vk"] = dict(lp.MACHINES["linux"], listing=lp.WIN_LIST)
+    d = dplan([], machine="linux_vk")
+    check(not d["why"] and d["cache"] is None, "default off on Linux with a Vulkan llama-server")
+    d = dplan(["--gpu-cache", "auto"], machine="linux_vk")
+    check(d["cache"] is not None and d["ub"] == "1024" and d["lm"] == "mmap", f"--gpu-cache auto asked on Vulkan: the old -ub 1024 rule and mmap stay (cache {d['cache']})")
+    d = dplan([], stock=False)
+    check(not d["why"], "default off when the plugin engine runs")
+    lp.HELP_TEXT = lp.HELP_TEXT.replace("  --moe-cache-mib N\n", "")
+    d = dplan([])
+    check(not d["why"] and d["cache"] is None, "default off when llama-server has no --moe-cache-mib")
 print("gpu_cache_stock_test: " + ("all passed" if not fails else f"{len(fails)} FAILED"))
 sys.exit(1 if fails else 0)
