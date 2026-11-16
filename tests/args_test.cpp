@@ -67,6 +67,7 @@ int main() {
         CHECK(!parse_number("inf", 0, 1e9, x));           // was cast to size_t (undefined)
         CHECK(!parse_number("-inf", -1e9, 1e9, x));
         CHECK(!parse_number("nan", 0, 1, x));             // PROFILE_DECAY=nan went into the profile
+        CHECK(!parse_number("0x10", 0, 1e9, x));          // LAUNCHER-005: hex is a typo on both sides (the launcher does not read it)
         CHECK(!parse_number("1.5", 0, 1, x));
         CHECK(!parse_number("-0.1", 0, 1, x));
         CHECK(!parse_number(nullptr, 0, 1, x));

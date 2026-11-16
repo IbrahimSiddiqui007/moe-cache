@@ -989,12 +989,12 @@ def ram_gib(ram_gb):
 
 
 def leading_number(v):
-    """LAUNCHER-005 (A3-22): the leading decimal number of a text, the way the plugin's strtod reads MOE_CACHE_MAX_RAM_GB ("20GB" is 20 there, so it must be 20
-    here too, or the two sides plan with different caps). Raises ValueError when the text does not start with a number (hex, inf and nan count as typos here)."""
-    m = re.match(r"\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", str(v))
-    if not m or re.match(r"\s*[+-]?0[xX]", str(v)):
+    """LAUNCHER-005 (A3-22, redone 2026-11-16): the number a MOE_CACHE_MAX_RAM_GB text means, the way the plugin's mcargs::parse_number reads it: ALL of the text
+    (white space around it allowed), a finite decimal, 0..1e9. "20GB", hex, inf, nan, "1_0" are typos here and there (the default cap is used). Raises ValueError."""
+    t = str(v).strip(" \t\r\n")
+    if not re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", t) or not 0 <= float(t) <= 1e9:
         raise ValueError(v)
-    return m.group(1)
+    return t
 
 
 def write_text_atomic(path, text):

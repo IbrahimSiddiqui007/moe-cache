@@ -20,18 +20,20 @@ if os.name != "nt":
     check(mc.exit_status(-9) == 137 and mc.exit_status(-15) == 143 and mc.exit_status(0) == 0 and mc.exit_status(3) == 3 and mc.exit_status(None) is None,
           "exit status: -9 -> 137, -15 -> 143, others unchanged")
 
-# A3-22: MOE_CACHE_MAX_RAM_GB read like the plugin's strtod
-check(mc.leading_number("20GB") == "20" and mc.leading_number(" 1.5e1x") == "1.5e1" and mc.leading_number(".5") == ".5", "leading number: 20GB -> 20, 1.5e1x -> 1.5e1, .5")
-for bad in ("GB", "", "0x10", "inf", "nan", "abc20"):
+# A3-22 / LAUNCHER-005: MOE_CACHE_MAX_RAM_GB is read like the plugin's mcargs::parse_number (whole text, finite decimal, 0..1e9)
+check(mc.leading_number(" 1.5e1 ") == "1.5e1" and mc.leading_number(".5") == ".5" and mc.leading_number("20") == "20", "max-ram number: 1.5e1, .5, 20 are numbers")
+for bad in ("GB", "", "0x10", "inf", "nan", "abc20", "20GB", "1e999", "-1", "1_0", "2e9"):
     try:
         mc.leading_number(bad); ok = False
     except ValueError:
         ok = True
-    check(ok, f"leading number: {bad!r} is a typo (default cap)")
+    check(ok, f"max-ram number: {bad!r} is a typo (default cap), as in the plugin")
+os.environ["MOE_CACHE_MAX_RAM_GB"] = "20"
+check(mc.mem_cap() == 20e9, "mem_cap(): MOE_CACHE_MAX_RAM_GB=20 is 20 GB")
 os.environ["MOE_CACHE_MAX_RAM_GB"] = "20GB"
-check(mc.mem_cap() == 20e9, "mem_cap(): MOE_CACHE_MAX_RAM_GB=20GB is 20 GB, as in the plugin")
-os.environ["MOE_CACHE_MAX_RAM_GB"] = "0.0GB"
-check(mc.mem_cap() is None, "mem_cap(): 0GB means no cap")
+check(mc.mem_cap() != 20e9, "mem_cap(): MOE_CACHE_MAX_RAM_GB=20GB is a typo and keeps the default cap, as in the plugin")
+os.environ["MOE_CACHE_MAX_RAM_GB"] = "0.0"
+check(mc.mem_cap() is None, "mem_cap(): 0 means no cap")
 os.environ.pop("MOE_CACHE_MAX_RAM_GB")
 
 # A3-23: the folder above the kit is not searched
