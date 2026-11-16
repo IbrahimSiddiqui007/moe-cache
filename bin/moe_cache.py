@@ -3544,12 +3544,15 @@ def kv_fit_index(kv_k, kv_v=None):
     return {("q8_0", "q8_0"): 1, ("q8_0", "q4_0"): 2, ("q4_0", "q4_0"): 3}.get((kv_k or "f16", kv_v or kv_k or "f16"), 0)
 
 
+LAUNCHER_CACHE = [False]       # set by gpu_cache_stage when the LAUNCHER (--gpu-cache auto / MIB) added --moe-cache-mib; a user's own `-- --moe-cache-mib` leaves it False
+
+
 def load_mode_cache_none(a, cmd, extra, machine, model, cram):
-    """CACHE-1187 / LAUNCHER-1188: stock llama-server with its own GPU expert cache (--moe-cache-mib) on a MoE model that fits the RAM the server may use reads the
-    file faster and decodes about 8-10 % faster with `--load-mode none` than with mmap (laptop 4060, 35B IQ3_XXS, b12207, single request at 8k / 60k, one run each, so a
-    first measurement, not a verdict): llama.cpp warns that mmap is slow with CPU-side experts. `none` copies the whole file into private RAM, so only when the file plus the
-    prompt cache (`cram` MiB) plus the reserve fit the server's RAM; the reserve is the same one load_mode_low_ram uses (the larger of 4 GiB and what the machine keeps free).
-    Not for --exact / --stock, -ot, or a load flag of your own. Returns the plain note, or None."""
+    """CACHE-1187 / LAUNCHER-1188: when the launcher itself turns on llama.cpp's GPU expert cache (--gpu-cache auto / MIB, stock engine) for a MoE model that fits the RAM the
+    server may use, the load is `--load-mode none` instead of mmap. Measured once (laptop 4060, 35B IQ3_XXS, b12207, single request at 8k and 60k, stock cache 3000 with and without it,
+    2 runs with it, 1 without): prompt +14-20 %, decode +8-11 %; llama.cpp itself warns that mmap is slow with CPU-side experts. `none` copies the whole file into private RAM, so only when the
+    file plus the prompt cache (`cram` MiB) plus the reserve fit the server's RAM; the reserve is the one load_mode_low_ram uses (the larger of 4 GiB and what the machine keeps free).
+    Not for --exact / --stock, -ot, a load flag of your own, or a cache flag you passed yourself after --. Returns the plain note, or None."""
     if a.exact or a.stock or "-ot" in cmd or any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
     try:
@@ -3564,8 +3567,8 @@ def load_mode_cache_none(a, cmd, extra, machine, model, cram):
     need = size / 2**30 + (int(cram) / 1024 if str(cram).isdigit() else 0.0) + margin
     if need > avail / 2**30:
         return None
-    return (f"GPU expert cache and the {size / 2**30:.1f} GiB model fits the {avail / 2**30:.1f} GiB of RAM this server may use (with the prompt cache and a {margin:.1f} GiB reserve): "
-            "--load-mode none (llama.cpp warns that mmap is slow with CPU-side experts; --exact or --load-mode after -- keeps mmap)")
+    return (f"GPU expert cache: the {size / 2**30:.1f} GiB model fits the {avail / 2**30:.1f} GiB of RAM this server may use (with the prompt cache and a {margin:.1f} GiB reserve): "
+            "--load-mode none (laptop: prompt +14-20 %, decode +8-11 % against mmap; llama.cpp warns that mmap is slow with CPU-side experts; --exact or --load-mode after -- keeps mmap)")
 
 
 def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
@@ -4081,6 +4084,7 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
 
 def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine):
     """ENGINE-029, stage "GPU expert cache and hybrid bank": the size of llama.cpp's GPU expert cache (--gpu-cache auto/MiB, capped by one Vulkan device buffer), or the hybrid bank (--hybrid); both put every expert on the CPU side (n_cpu_moe 999). env and extra grow in place. Returns n_cpu_moe as text."""
+    LAUNCHER_CACHE[0] = False
     placeholder = getattr(a, "n_cpu_moe", None) is None and ncmoe == "999" and bool(tuned) and tuned.get("static_n_cpu_moe") is not None
     static = str(tuned["static_n_cpu_moe"]) if placeholder else ncmoe          # the placement's static layers (planner map fix 1: no more plan.py answer to fall back on)
     if gcache != "off" and placeholder and static == "0":
@@ -4104,7 +4108,7 @@ def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, sto
         if not gcmib:
             ncmoe = static                # "using the planner's static GPU layers": the placement's own answer
         if gcmib:
-            ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
+            ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1")); LAUNCHER_CACHE[0] = True
             say(f"moe-cache: GPU expert cache of {gcmib} MiB; " + ("llama.cpp keeps the hottest experts on the GPU" if stock else "all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"))
     if a.hybrid and ncmoe != "0":
         ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))
@@ -4382,7 +4386,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
             cmd[cmd.index("--load-mode") + 1] = "none"
             LOAD_NONE_BY_RULE[0] = True
             say("moe-cache: " + why)
-    if method == "none (stock)" and not dense and "--moe-cache-mib" in extra and "--load-mode" in cmd:
+    if method == "none (stock)" and not dense and LAUNCHER_CACHE[0] and "--load-mode" in cmd:
         why = load_mode_cache_none(a, cmd, extra, machine, model, arg_after(extra, "--cache-ram", "-cram"))
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
