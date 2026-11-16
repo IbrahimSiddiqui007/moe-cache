@@ -589,6 +589,13 @@ def spread_table(runs):
         bs = [sp([runs[i]["bands"][k]["decode_tps"] for i in idx]) for k in range(len(runs[0]["bands"]))]
         rows.append(f"| {a} | {len(idx)} | {_f(sp([runs[i].get('wall_s') for i in idx]))} | {_f(sp([ov[i]['prompt_tps'] for i in idx]))} | {_f(sp([ov[i]['decode_tps'] for i in idx]))} | "
                     + " | ".join(_f(b) for b in bs) + " |")
+    if len(arms) == 2:
+        ia, ib = [[i for i, r in enumerate(runs) if r["arm"] == a] for a in arms]
+        mean = lambda xs: (sum(x for x in xs if x is not None) / len([x for x in xs if x is not None])) if [x for x in xs if x is not None] else None
+        ratio = lambda k: (lambda a, b: None if not a or b is None else 100 * (b - a) / a)(mean([ov[i][k] for i in ia]), mean([ov[i][k] for i in ib]))
+        rows += ["", f"{arms[1]} against {arms[0]}, mean of each arm's runs, in %: prompt {_f(ratio('prompt_tps'))}, decode {_f(ratio('decode_tps'))}. "
+                 "Read it against the spread rows above: a difference inside the runs' own spread is noise. The spread of an A = A run is a noise floor only when "
+                 "both arms start from the same stored plan (--prep); separate tuning walks add noise that it does not contain."]
     return "\n".join(rows)
 
 

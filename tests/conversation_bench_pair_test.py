@@ -128,6 +128,31 @@ check(not alive(PORT), "SIGTERM mid-run leaves no server on the port")
 ps = subprocess.run(["pgrep", "-f", FAKE], capture_output=True, text=True).stdout.split()
 check(not ps, f"no fake llama-server process is left ({ps})")
 
+# ---- SIGTERM to the driver's own pid only (not its group), while it waits before the conversation: the arm is stopped at once, not after the conversation
+out6 = os.path.join(tmp, "out6")
+c6 = cmd[:3] + [out6] + cmd[4:-2] + ["--settle-s", "60"]
+p = subprocess.Popen(c6, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+t0 = time.time()
+while time.time() - t0 < 60 and not alive(PORT):
+    time.sleep(0.3)
+time.sleep(1)
+os.kill(p.pid, signal.SIGTERM)
+try:
+    p.wait(30); ended = True
+except subprocess.TimeoutExpired:
+    ended = False; os.killpg(p.pid, signal.SIGKILL); p.wait()
+time.sleep(1)
+check(ended and not alive(PORT), "SIGTERM to the driver pid alone stops the arm at once (the trap runs while it waits)")
+ps = subprocess.run(["pgrep", "-f", FAKE], capture_output=True, text=True).stdout.split()
+check(not ps, f"(pid-only stop) no fake llama-server process is left ({ps})")
+
+# ---- an --env word without = is refused
+r = subprocess.run(cmd[:3] + [os.path.join(tmp, "out7")] + cmd[4:-2] + ["--env-a", "FOO"], capture_output=True, text=True, timeout=60)
+check(r.returncode == 2 and "K=V" in r.stderr and not alive(PORT), "--env-a FOO (no =) is refused and nothing is left running")
+rec_t = open(os.path.join(out, "tables.md")).read()
+check("against A" in rec_t and "noise floor only" in rec_t, "tables.md says how to read the B-against-A line")
+check(any("laptop run, ONE machine, forecast" in n for n in rec["notes"]), "the record carries the machine / forecast label")
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("FAIL: %d" % len(fails) if fails else "ok")
 sys.exit(1 if fails else 0)

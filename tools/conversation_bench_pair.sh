@@ -27,14 +27,14 @@
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 OUT=""; MODEL=""; LS="${LLAMA_SERVER:-}"; CTX=65536; PORT=8099; ORDER="A,B,B,A"; LA=A; LB=B; RA="$HERE"; RB="$HERE"
-AA=""; AB=""; EA=""; EB=""; SEED=""; MT=""; MX=""; LEG=0; BA=""; EVICT=1; COOL=1; PREP=0; READY=1800; SETTLE=15
+AA=""; AB=""; EA=""; EB=""; SEED=""; MT=""; MX=""; LEG=0; BA=""; EVICT=1; COOL=1; CACHEWORD=cold; PREP=0; READY=1800; SETTLE=15
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT=$2; shift 2;; --model) MODEL=$2; shift 2;; --llama-server) LS=$2; shift 2;; --ctx) CTX=$2; shift 2;; --port) PORT=$2; shift 2;;
     --order) ORDER=$2; shift 2;; --label-a) LA=$2; shift 2;; --label-b) LB=$2; shift 2;; --root-a) RA=$2; shift 2;; --root-b) RB=$2; shift 2;;
     --args-a) AA=$2; shift 2;; --args-b) AB=$2; shift 2;; --env-a) EA=$2; shift 2;; --env-b) EB=$2; shift 2;; --cache-seed) SEED=$2; shift 2;;
     --max-turns) MT=$2; shift 2;; --max-tokens) MX=$2; shift 2;; --legacy) LEG=1; shift;; --bench-args) BA=$2; shift 2;;
-    --prep) PREP=1; shift;; --no-evict) EVICT=0; shift;; --no-cool) COOL=0; shift;; --ready-s) READY=$2; shift 2;; --settle-s) SETTLE=$2; shift 2;;
+    --prep) PREP=1; shift;; --no-evict) EVICT=0; CACHEWORD=warm; shift;; --no-cool) COOL=0; shift;; --ready-s) READY=$2; shift 2;; --settle-s) SETTLE=$2; shift 2;;
     -h|--help) sed -n '2,32p' "$0"; exit 0;; *) echo "unknown argument: $1 (see --help)" >&2; exit 2;;
   esac
 done
@@ -46,22 +46,29 @@ for k in "${KINDS[@]}"; do [ "$k" = A ] || [ "$k" = B ] || { echo "--order words
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 log() { echo "$(date +%T) $*" | tee -a "$OUT/progress.log"; }
 
-SPID=""; SAMP=""
+SPID=""; SAMP=""; BGP=""
 # the arm is its own session (setsid): any live (non-zombie) process in that session still belongs to it
 group_alive() { ps -o stat= --sid "$SPID" 2>/dev/null | grep -qv '^Z'; }
+# kill_wait PID: SIGTERM, then SIGKILL after 4 s (a helper that has not installed its handler yet must not hang the stop), then reap it
+kill_wait() { local i; kill "$1" 2>/dev/null; for i in 1 2 3 4 5 6 7 8; do kill -0 "$1" 2>/dev/null || break; sleep 0.5; done; kill -KILL "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
 # stop_arm: SIGTERM to the arm's process group (the launcher stops its server cleanly), SIGKILL after 40 s; then whatever is left in the group is killed by PID
 stop_arm() {
-  [ -n "$SAMP" ] && { kill "$SAMP" 2>/dev/null; wait "$SAMP" 2>/dev/null; SAMP=""; }
+  [ -n "$BGP" ] && { kill_wait "$BGP"; BGP=""; }       # the bench client or a gate that is running
+  [ -n "$SAMP" ] && { kill_wait "$SAMP"; SAMP=""; }
   [ -n "$SPID" ] || return 0
   kill -TERM -- "-$SPID" 2>/dev/null      # SIGTERM, not SIGINT: a background job of a script starts with SIGINT ignored, and the launcher handles SIGTERM
   for _ in $(seq 40); do group_alive || break; sleep 1; done
   if group_alive; then log "the arm's processes did not stop on SIGTERM: SIGKILL to the group"; kill -KILL -- "-$SPID" 2>/dev/null; sleep 1; fi
   wait "$SPID" 2>/dev/null
-  group_alive && log "STILL RUNNING after SIGKILL: $(ps -o pid=,args= --sid "$SPID" | cut -c1-100 | tr '\n' ';')"
+  if group_alive; then log "STILL RUNNING after SIGKILL: $(ps -o pid=,args= --sid "$SPID" | cut -c1-100 | tr '\n' ';'): stop (the next arm would plan from a GPU that is not free)"; SPID=""; exit 1; fi
   SPID=""
+  # the GPU memory of the stopped server is given back a moment after its socket closes: wait until the card is near the level before the run (the next plan reads the free memory)
+  if [ -n "${VRAM0:-}" ]; then for _ in $(seq 60); do v=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1); [ -z "$v" ] || [ "$v" -le $((VRAM0 + 400)) ] && break; sleep 1; done; fi
 }
 trap 'stop_arm' EXIT
-trap 'log "interrupted: stopping the server"; stop_arm; exit 130' INT TERM
+trap 'log "interrupted: stopping the server"; stop_arm; exit 143' INT TERM
+# bg_wait CMD...: run in the background and wait, so a SIGTERM to the driver alone (not its whole group) is handled at once and not after the conversation ends
+bg_wait() { "$@" & BGP=$!; wait "$BGP"; local rc=$?; BGP=""; return $rc; }
 
 port_pid() { ss -ltnH "sport = :$PORT" -p 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2; }
 port_busy() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null)" != 000 ] || [ -n "$(port_pid)" ]; }
@@ -126,11 +133,13 @@ arm_setup() {   # sets LAB ROOT ARGS ENVS for arm kind A or B
 }
 # start_server CACHE LOGFILE CMDFILE: starts the launcher (own session, own XDG_CACHE_HOME), waits for /health; sets SPID and LOADS; stops everything and exits 1 when it never gets ready
 start_server() {
-  local cache=$1 logf=$2 cmdf=$3 t0 ready=0 AARR EARR
+  local cache=$1 logf=$2 cmdf=$3 t0 ready=0 AARR EARR e
+  for e in $ENVS; do case "$e" in ?*=*) ;; *) echo "--env words must be K=V, got '$e'" >&2; exit 2;; esac; done
   read -ra AARR <<< "$ARGS"; read -ra EARR <<< "$ENVS"
   CMD=(env XDG_CACHE_HOME="$cache" "${EARR[@]}" python3 "$ROOT/bin/moe_cache.py" server "$MODEL" --llama-server "$LS" --ctx "$CTX" --port "$PORT" "${AARR[@]}")
   printf '%q ' "${CMD[@]}" > "$cmdf"; echo >> "$cmdf"
   log "  ${CMD[*]}"
+  VRAM0=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
   t0=$(date +%s.%N)
   setsid "${CMD[@]}" > "$logf" 2>&1 &
   SPID=$!
@@ -164,6 +173,7 @@ if [ "$PREP" = 1 ]; then
     evict_model "prep $LAB"; log "prep $LAB: starting once to let the launcher tune and store its plan"
     start_server "$pc" "$OUT/server-prep-$LAB.log" "$OUT/cmd-prep-$LAB.txt"
     log "prep $LAB: ready after ${LOADS} s (the stored plan is in $pc)"
+    ls "$pc"/moe-cache/autotune/*.json >/dev/null 2>&1 || log "WARNING prep $LAB: no auto-tune record was stored (the launcher skipped tuning: another server running? a pinned plan?); the arms will start as the launcher decides alone"
     stop_arm; [ -n "$(port_pid)" ] && { log "prep $LAB: port $PORT still held after the stop: stop"; exit 1; }
     PREPDIR[$kind]=$pc
   done
@@ -181,14 +191,16 @@ for kind in "${KINDS[@]}"; do
   sampler "$OUT/peaks-$tag.json"
   start_server "$CACHE" "$OUT/server-$tag.log" "$OUT/cmd-$tag.txt"
   LPID=$(port_pid); log "run $n ($LAB): ready after ${LOADS} s, llama-server pid ${LPID:-unknown}"
-  sleep "$SETTLE"
-  if [ "$COOL" = 1 ] && [ -x "$HERE/tools/wait_cool.sh" ]; then G=$(bash "$HERE/tools/wait_cool.sh" 65 1800); log "run $n ($LAB): $G"; fi
+  bg_wait sleep "$SETTLE"
+  if [ "$COOL" = 1 ] && [ -x "$HERE/tools/wait_cool.sh" ]; then G=$(bash "$HERE/tools/wait_cool.sh" 65 1800); log "run $n ($LAB): $G"; fi     # (a $(...) wait: the trap runs when it returns)
   BARGS=(run --url "http://127.0.0.1:$PORT" --arm "$LAB" --ctx "$CTX" --out "$OUT/$tag.json" --command-line "@$OUT/cmd-$tag.txt" --server-log "$OUT/server-$tag.log" --load-s "$LOADS")
   [ -n "$LPID" ] && BARGS+=(--monitor-pid "$LPID")
-  case " $ENVS " in *" MOE_CACHE_STATS_SIGNAL=1 "*) [ -n "$LPID" ] && BARGS+=(--stats-pid "$LPID" --stats-log "$OUT/server-$tag.log");; esac
+  case " $ENVS " in *" MOE_CACHE_STATS_SIGNAL=1 "*)    # the plugin's counters are read with SIGUSR1: only when the plugin is loaded (a stock llama-server dies of that signal)
+    if grep -q "moe-cache: cache mode" "$OUT/server-$tag.log"; then [ -n "$LPID" ] && BARGS+=(--stats-pid "$LPID" --stats-log "$OUT/server-$tag.log")
+    else log "run $n ($LAB): MOE_CACHE_STATS_SIGNAL=1 given but the plugin is not loaded in this arm (stock engine): no hit-rate counters";fi;; esac
   [ -n "$MX" ] && BARGS+=(--max-tokens "$MX"); [ -n "$MT" ] && BARGS+=(--max-turns "$MT"); [ "$LEG" = 1 ] && BARGS+=(--legacy)
   read -ra BAARR <<< "$BA"
-  python3 "$HERE/tools/conversation_bench.py" "${BARGS[@]}" "${BAARR[@]}" > "$OUT/$tag.txt" 2>&1
+  bg_wait python3 "$HERE/tools/conversation_bench.py" "${BARGS[@]}" "${BAARR[@]}" > "$OUT/$tag.txt" 2>&1
   rc=$?
   log "run $n ($LAB): exit $rc: $(tail -1 "$OUT/$tag.txt" | cut -c1-200)"
   stop_arm
@@ -198,7 +210,16 @@ for kind in "${KINDS[@]}"; do
 done
 
 if [ "${#RUNS[@]}" = "${#KINDS[@]}" ]; then
-  python3 "$HERE/tools/conversation_bench.py" assemble "${RUNS[@]}" --out "$OUT/record.json" --model "$MODEL" --llama-server "$LS" --cache cold 2>&1 | tee "$OUT/tables.md"
+  python3 "$HERE/tools/conversation_bench.py" assemble "${RUNS[@]}" --out "$OUT/record.json" --model "$MODEL" --llama-server "$LS" --cache "$CACHEWORD" 2>&1 | tee "$OUT/tables.md"
+  # labels of the record (R17): the bench tool does not know where it ran
+  python3 - "$OUT/record.json" "$(hostname)" "$ORDER" "$PREP" "$SEED" "$CACHEWORD" <<'PY'
+import json, sys
+f, host, order, prep, seed, cw = sys.argv[1:7]
+d = json.load(open(f))
+d.setdefault("notes", []).append(f"driver tools/conversation_bench_pair.sh on host {host}: laptop run, ONE machine, forecast (R16/R17); order {order}; model file cache {cw}; "
+                                   f"launcher plan tuned once before the arms (--prep): {'yes' if prep == '1' else 'no, each arm tuned in its own cache unless the seed held the records'}; cache seed: {seed or 'none'}")
+json.dump(d, open(f, "w"), indent=1, ensure_ascii=False)
+PY
   python3 "$HERE/tools/conversation_bench.py" spread "$OUT/record.json" 2>&1 | tee -a "$OUT/tables.md"
   log "done: $OUT/record.json, $OUT/tables.md  (peaks: $OUT/peaks-*.json)"
 else

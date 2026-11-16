@@ -63,8 +63,8 @@ python3 bin/moe_cache.py bench-record ingest record.json --machine pc
 launcher itself (two flags, two environments, or two checkouts of the code), one server at a time. Each arm gets its own `XDG_CACHE_HOME`, the server is
 started in its own process group, `/health` is awaited, `conversation_bench.py run` plays the conversation with llama-server's pid (VRAM, RAM, CPU peaks),
 an independent sampler writes `peaks-N-label.json` (whole-card VRAM peak, lowest MemAvailable), and the server is stopped with SIGTERM (SIGKILL after 40 s);
-a trap does the same on Ctrl-C/SIGTERM, so a stopped run leaves nothing behind. At the end `assemble` writes one record and `spread` prints the run-by-run table
-and the spread between the two runs of each arm (give both arms the same arguments and that spread is the noise floor). On the laptop run it through the heat guard:
+a trap does the same on SIGTERM to the driver (SIGINT is ignored in background jobs; `kill -9` of the driver cannot be trapped: under `cool_run.sh` stopping its scope catches whatever is left, standalone check `ps` for a llama-server). At the end `assemble` writes one record and `spread` prints the run-by-run table
+and the spread between the two runs of each arm (give both arms the same arguments and `--prep`, so both start from one stored plan, and that spread is the noise floor; without `--prep` each arm's tuning walk adds noise it does not contain). On the maintainers' laptop it runs through their heat guard (`handover/tools/cool_run.sh`, not shipped); the commands below show it in front of the driver, drop it elsewhere:
 
 ```bash
 # two flags (same code):
