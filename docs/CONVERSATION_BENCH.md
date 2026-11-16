@@ -63,15 +63,15 @@ python3 bin/moe_cache.py bench-record ingest record.json --machine pc
 launcher itself (two flags, two environments, or two checkouts of the code), one server at a time. Each arm gets its own `XDG_CACHE_HOME`, the server is
 started in its own process group, `/health` is awaited, `conversation_bench.py run` plays the conversation with llama-server's pid (VRAM, RAM, CPU peaks),
 an independent sampler writes `peaks-N-label.json` (whole-card VRAM peak, lowest MemAvailable), and the server is stopped with SIGTERM (SIGKILL after 40 s);
-a trap does the same on SIGTERM to the driver (SIGINT is ignored in background jobs; `kill -9` of the driver cannot be trapped: under `cool_run.sh` stopping its scope catches whatever is left, standalone check `ps` for a llama-server). At the end `assemble` writes one record and `spread` prints the run-by-run table
-and the spread between the two runs of each arm (give both arms the same arguments and `--prep`, so both start from one stored plan, and that spread is the noise floor; without `--prep` each arm's tuning walk adds noise it does not contain). On the maintainers' laptop it runs through their heat guard (`handover/tools/cool_run.sh`, not shipped); the commands below show it in front of the driver, drop it elsewhere:
+a trap does the same on SIGTERM to the driver (SIGINT is ignored in background jobs; `kill -9` of the driver cannot be trapped: a thermal wrapper that runs it in its own cgroup scope catches whatever is left; otherwise check `ps` for a llama-server). At the end `assemble` writes one record and `spread` prints the run-by-run table
+and the spread between the two runs of each arm (give both arms the same arguments and `--prep`, so both start from one stored plan, and that is a rough spread, two runs per arm: A's runs 1 and 4 bracket the drift, B's 2 and 3 are adjacent; without `--prep` each arm's tuning walk adds noise it does not contain). On a laptop, run it inside a thermal wrapper if you have one (the driver does not manage heat); the commands below show a wrapper as `THERMAL_WRAPPER --`, drop it if you have none:
 
 ```bash
 # two flags (same code):
-handover/tools/cool_run.sh -c 16 -m 28 -- moe-cache/tools/conversation_bench_pair.sh --out OUT --model M.gguf --llama-server LS --ctx 65536 \
+THERMAL_WRAPPER -- tools/conversation_bench_pair.sh --out OUT --model M.gguf --llama-server LS --ctx 65536 \
     --args-a "" --args-b "--n-cpu-moe 24"
 # two code versions (two worktrees, same flags):
-handover/tools/cool_run.sh -c 16 -m 28 -- moe-cache/tools/conversation_bench_pair.sh --out OUT --model M.gguf --llama-server LS --ctx 65536 \
+THERMAL_WRAPPER -- tools/conversation_bench_pair.sh --out OUT --model M.gguf --llama-server LS --ctx 65536 \
     --root-a /path/to/worktree-old --root-b /path/to/worktree-new
 ```
 

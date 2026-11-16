@@ -568,7 +568,7 @@ def overall(run):
 
 def spread_table(runs):
     """Run by run: wall time, whole-run prompt and decode tok/s, then per arm the spread between its runs ((max - min) / mean, %) for the whole run and per
-    depth band. Two runs with the same arguments (A = B) give the noise floor; two arms with different settings should be judged against it."""
+    depth band. Two runs per arm are a rough spread only: with A B B A, A's runs (1 and 4) bracket the drift and B's (2 and 3) are adjacent."""
     def sp(xs):
         xs = [x for x in xs if x is not None]
         return None if len(xs) < 2 or not sum(xs) else 100 * (max(xs) - min(xs)) / (sum(xs) / len(xs))
@@ -594,8 +594,8 @@ def spread_table(runs):
         mean = lambda xs: (sum(x for x in xs if x is not None) / len([x for x in xs if x is not None])) if [x for x in xs if x is not None] else None
         ratio = lambda k: (lambda a, b: None if not a or b is None else 100 * (b - a) / a)(mean([ov[i][k] for i in ia]), mean([ov[i][k] for i in ib]))
         rows += ["", f"{arms[1]} against {arms[0]}, mean of each arm's runs, in %: prompt {_f(ratio('prompt_tps'))}, decode {_f(ratio('decode_tps'))}. "
-                 "Read it against the spread rows above: a difference inside the runs' own spread is noise. The spread of an A = A run is a noise floor only when "
-                 "both arms start from the same stored plan (--prep); separate tuning walks add noise that it does not contain."]
+                 "Read it against the spread rows above: a difference inside the runs' own spread is not distinguishable from noise. This is a rough spread from two runs per arm (A's runs 1 and 4 bracket the drift, B's 2 and 3 are adjacent), "
+                 "and it is the same plan only when both arms start from one stored plan (--prep); separate tuning walks add noise it does not contain."]
     return "\n".join(rows)
 
 

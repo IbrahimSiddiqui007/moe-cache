@@ -2,10 +2,12 @@
 # conversation_bench_pair.sh: the Linux twin of conversation_bench_pair.ps1. A real multi-turn conversation that fills the context (default 65536), played
 # through the moe-cache LAUNCHER in two arms, A B B A, one server at a time, then ONE bench record (conversation_bench.py assemble) and a spread table.
 # Arm A and arm B differ only by what you give them: launcher arguments (--args-X), environment (--env-X) or a different launcher checkout (--root-X).
-# Same arguments on both arms = the noise floor (the A-vs-A spread). Laptop runs go through the heat guard:
-#   handover/tools/cool_run.sh -c 16 -m 28 -- tools/conversation_bench_pair.sh --out DIR --model M.gguf --llama-server LS --ctx 65536
+# Same arguments on both arms = a rough spread (two runs per arm: A's runs 1 and 4 bracket the drift, B's runs 2 and 3 are adjacent). On a laptop, run the driver
+# inside a thermal wrapper if you have one (CPU cap, freeze when hot); the driver does not manage heat itself:
+#   [thermal wrapper --] tools/conversation_bench_pair.sh --out DIR --model M.gguf --llama-server LS --ctx 65536
 #
 # usage: conversation_bench_pair.sh --out DIR --model FILE.gguf --llama-server BIN [options]
+#   --machine NAME       label written into the record notes (default: this host's name)
 #   --ctx N              context to fill (65536)            --port P            server port (8099)
 #   --order "A,B,B,A"    arms in the order they run         --label-a / --label-b   names in the record (A, B)
 #   --root-a DIR / --root-b DIR   launcher checkout per arm (default: the checkout this script is in); two code versions = two worktrees
@@ -27,24 +29,26 @@
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 OUT=""; MODEL=""; LS="${LLAMA_SERVER:-}"; CTX=65536; PORT=8099; ORDER="A,B,B,A"; LA=A; LB=B; RA="$HERE"; RB="$HERE"
-AA=""; AB=""; EA=""; EB=""; SEED=""; MT=""; MX=""; LEG=0; BA=""; EVICT=1; COOL=1; CACHEWORD=cold; PREP=0; READY=1800; SETTLE=15
+AA=""; AB=""; EA=""; EB=""; SEED=""; MT=""; MX=""; LEG=0; BA=""; EVICT=1; COOL=1; CACHEWORD=cold; PREP=0; MACHINE="$(hostname)"; NOTES="$(mktemp)"; READY=1800; SETTLE=15
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT=$2; shift 2;; --model) MODEL=$2; shift 2;; --llama-server) LS=$2; shift 2;; --ctx) CTX=$2; shift 2;; --port) PORT=$2; shift 2;;
     --order) ORDER=$2; shift 2;; --label-a) LA=$2; shift 2;; --label-b) LB=$2; shift 2;; --root-a) RA=$2; shift 2;; --root-b) RB=$2; shift 2;;
     --args-a) AA=$2; shift 2;; --args-b) AB=$2; shift 2;; --env-a) EA=$2; shift 2;; --env-b) EB=$2; shift 2;; --cache-seed) SEED=$2; shift 2;;
     --max-turns) MT=$2; shift 2;; --max-tokens) MX=$2; shift 2;; --legacy) LEG=1; shift;; --bench-args) BA=$2; shift 2;;
-    --prep) PREP=1; shift;; --no-evict) EVICT=0; CACHEWORD=warm; shift;; --no-cool) COOL=0; shift;; --ready-s) READY=$2; shift 2;; --settle-s) SETTLE=$2; shift 2;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0;; *) echo "unknown argument: $1 (see --help)" >&2; exit 2;;
+    --machine) MACHINE=$2; shift 2;; --prep) PREP=1; shift;; --no-evict) EVICT=0; CACHEWORD=warm; shift;; --no-cool) COOL=0; shift;; --ready-s) READY=$2; shift 2;; --settle-s) SETTLE=$2; shift 2;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set -u/ { exit }' "$0"; exit 0;; *) echo "unknown argument: $1 (see --help)" >&2; exit 2;;
   esac
 done
 [ -n "$OUT" ] && [ -n "$MODEL" ] && [ -n "$LS" ] || { echo "need --out, --model and --llama-server (or LLAMA_SERVER); see --help" >&2; exit 2; }
 for f in "$MODEL" "$LS" "$RA/bin/moe_cache.py" "$RB/bin/moe_cache.py"; do [ -e "$f" ] || { echo "missing: $f" >&2; exit 1; }; done
+for e in $EA $EB; do case "$e" in ?*=*) ;; *) echo "--env-a/--env-b words must be K=V, got '$e'" >&2; exit 2;; esac; done
 IFS=, read -ra KINDS <<< "$ORDER"
 [ "${#KINDS[@]}" -gt 0 ] || { echo "--order is empty" >&2; exit 2; }
 for k in "${KINDS[@]}"; do [ "$k" = A ] || [ "$k" = B ] || { echo "--order words are A and B, got '$k'" >&2; exit 2; }; done
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 log() { echo "$(date +%T) $*" | tee -a "$OUT/progress.log"; }
+note() { log "NOTE: $*"; echo "$*" >> "$NOTES"; }     # also goes into the record's notes
 
 SPID=""; SAMP=""; BGP=""
 # the arm is its own session (setsid): any live (non-zombie) process in that session still belongs to it
@@ -63,7 +67,10 @@ stop_arm() {
   if group_alive; then log "STILL RUNNING after SIGKILL: $(ps -o pid=,args= --sid "$SPID" | cut -c1-100 | tr '\n' ';'): stop (the next arm would plan from a GPU that is not free)"; SPID=""; exit 1; fi
   SPID=""
   # the GPU memory of the stopped server is given back a moment after its socket closes: wait until the card is near the level before the run (the next plan reads the free memory)
-  if [ -n "${VRAM0:-}" ]; then for _ in $(seq 60); do v=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1); [ -z "$v" ] || [ "$v" -le $((VRAM0 + 400)) ] && break; sleep 1; done; fi
+  if [ -n "${VRAM0:-}" ]; then for _ in $(seq 60); do v=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1); [ -z "$v" ] || [ "$v" -le $((VRAM0 + 400)) ] && break; sleep 1; done
+    # (GPU 0 only: nvidia-smi's first line; a multi-GPU machine is not checked on the other cards)
+    if [ -n "$v" ] && [ "$v" -gt $((VRAM0 + 400)) ]; then note "WARNING: after the stop the GPU still held $v MiB (before the run: $VRAM0 MiB) after 60 s; the next arm planned from less free memory"; fi
+  fi
 }
 trap 'stop_arm' EXIT
 trap 'log "interrupted: stopping the server"; stop_arm; exit 143' INT TERM
@@ -125,7 +132,7 @@ PY
 mapfile -t MFILES < <(compgen -G "$(dirname "$MODEL")/$(basename "$MODEL" | sed -E 's/-00001-of-/-*-of-/')")
 [ "${#MFILES[@]}" -gt 0 ] || MFILES=("$MODEL")
 log "conversation pair: model $MODEL, ctx $CTX, order $ORDER, A=$LA [root $RA] args '$AA' env '$EA', B=$LB [root $RB] args '$AB' env '$EB'"
-log "llama-server $LS; host $(hostname); labels for the record: machine laptop, one machine, forecast"
+log "llama-server $LS; host $(hostname); machine label "$MACHINE""
 if port_busy; then log "port $PORT is in use (another server?): stop"; exit 1; fi
 
 arm_setup() {   # sets LAB ROOT ARGS ENVS for arm kind A or B
@@ -203,6 +210,7 @@ for kind in "${KINDS[@]}"; do
   bg_wait python3 "$HERE/tools/conversation_bench.py" "${BARGS[@]}" "${BAARR[@]}" > "$OUT/$tag.txt" 2>&1
   rc=$?
   log "run $n ($LAB): exit $rc: $(tail -1 "$OUT/$tag.txt" | cut -c1-200)"
+  [ "$rc" != 0 ] && note "run $n ($LAB) is incomplete (exit $rc): see $tag.txt"
   stop_arm
   [ -n "$(port_pid)" ] && { log "run $n ($LAB): port $PORT still held after the stop: stop"; exit 1; }
   if [ -f "$OUT/$tag.json" ]; then RUNS+=("$OUT/$tag.json"); else log "run $n: no result file (see $OUT/$tag.txt)"; fi
@@ -212,12 +220,13 @@ done
 if [ "${#RUNS[@]}" = "${#KINDS[@]}" ]; then
   python3 "$HERE/tools/conversation_bench.py" assemble "${RUNS[@]}" --out "$OUT/record.json" --model "$MODEL" --llama-server "$LS" --cache "$CACHEWORD" 2>&1 | tee "$OUT/tables.md"
   # labels of the record (R17): the bench tool does not know where it ran
-  python3 - "$OUT/record.json" "$(hostname)" "$ORDER" "$PREP" "$SEED" "$CACHEWORD" <<'PY'
+  python3 - "$OUT/record.json" "$(hostname)" "$ORDER" "$PREP" "$SEED" "$CACHEWORD" "$MACHINE" "$NOTES" <<'PY'
 import json, sys
-f, host, order, prep, seed, cw = sys.argv[1:7]
+f, host, order, prep, seed, cw, machine, notes = sys.argv[1:9]
 d = json.load(open(f))
-d.setdefault("notes", []).append(f"driver tools/conversation_bench_pair.sh on host {host}: laptop run, ONE machine, forecast (R16/R17); order {order}; model file cache {cw}; "
+d.setdefault("notes", []).append(f"driver tools/conversation_bench_pair.sh on host {host} (machine label: {machine}): one machine, forecast; order {order}; model file cache {cw}; "
                                    f"launcher plan tuned once before the arms (--prep): {'yes' if prep == '1' else 'no, each arm tuned in its own cache unless the seed held the records'}; cache seed: {seed or 'none'}")
+d["notes"] += [l.rstrip("\n") for l in open(notes) if l.strip()]
 json.dump(d, open(f, "w"), indent=1, ensure_ascii=False)
 PY
   python3 "$HERE/tools/conversation_bench.py" spread "$OUT/record.json" 2>&1 | tee -a "$OUT/tables.md"
