@@ -126,4 +126,135 @@ rc, asked, n = run_guard(None)
 check(rc == 0 and asked == ["oom"] and n == 2, f"control: the same failure with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
 rc, asked, n = run_guard(None, kind="kv")
 check(rc == 0 and asked == ["kv"] and n == 2, f"control: the KV abort with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
+
+# LAUNCHER-1200: the cache the launcher chose does not fit at load -> one retry without it (static plan); never for your own --moe-cache-mib or --exact
+check(bool(mc.GPU_OOM_RE.search("llama_init_from_model: failed to initialize the context: failed to allocate buffer for MoE cache")), "recognised: the cache buffer failure line")
+base = ["llama-server", "-m", "m.gguf", "-ngl", "99", "--n-cpu-moe", "999", "-c", "65536", "--load-mode", "none", "-ub", "2048", "-b", "2048", "--moe-cache-mib", "6500", "--cache-ram", "2048"]
+new = mc.cache_fallback_cmd(base, 30, 2048)
+check(new is not None and "--moe-cache-mib" not in new and "6500" not in new and new[new.index("--n-cpu-moe") + 1] == "30" and "--cache-ram" in new and new[new.index("-ub") + 1] == "2048",
+      "fallback command: cache flag and its value gone, static --n-cpu-moe 30, the rest kept")
+new = mc.cache_fallback_cmd(base, 33, 1024)
+check(new[new.index("-ub") + 1] == "1024" and new[new.index("-b") + 1] == "2048", "fallback command: a smaller -ub when the static plan needs it, -b stays 2048")
+check(mc.cache_fallback_cmd([c for c in base if c not in ("--moe-cache-mib", "6500")], 30, 2048) is None, "no cache flag in the command: nothing to fall back from")
+# end to end with a fake server: first start dies with the cache buffer failure, the retry (what oom_retry returns) starts without the cache
+fake_cache = os.path.join(TMP, "fake_cache.py")
+open(fake_cache, "w").write('''
+import os, sys
+mark = sys.argv[1]
+n = int(open(mark).read()) if os.path.exists(mark) else 0
+open(mark, "w").write(str(n + 1))
+if "--moe-cache-mib" in sys.argv:
+    sys.stderr.write("ggml_backend_cuda_buffer_type_alloc_buffer: allocating 6500.00 MiB on device 0: cudaMalloc failed: out of memory\\nllama_init_from_model: failed to initialize the context: failed to allocate buffer for MoE cache\\n"); sys.exit(1)
+sys.stderr.write("fake ok without cache\\n"); sys.exit(0)
+''')
+def run_cache(launcher_choice, exact=False, engine="stock"):
+    """The decision is the launcher's real cache_oom_decision + cache_fallback_cmd (the same functions oom_retry calls), the child is a fake server."""
+    mark = os.path.join(TMP, f"mc_{launcher_choice}_{exact}_{engine}")
+    start = [sys.executable, fake_cache, mark, "--n-cpu-moe", "999", "-ub", "2048", "--moe-cache-mib", "6500"]
+    asked = []
+    def oom_retry():
+        asked.append(1)
+        d = mc.cache_oom_decision(start, launcher_choice, exact, engine)
+        return mc.cache_fallback_cmd(start, 30, 2048) if d == "fallback" else None
+    rc = mc.run_child(start, dict(os.environ), oom_retry=oom_retry)
+    return rc, len(asked), int(open(mark).read())
+rc, asked, n = run_cache(True)
+check(rc == 0 and asked == 1 and n == 2, f"the launcher's cache fails at load: one retry without it starts (rc {rc}, asked {asked}, started {n}x)")
+rc, asked, n = run_cache(False)
+check(rc != 0 and n == 1, f"your own --moe-cache-mib after --: no retry at all (rc {rc}, started {n}x)")
+rc, asked, n = run_cache(True, exact=True)
+check(rc != 0 and n == 1, f"--gpu-cache N with --exact: no retry at all (rc {rc}, started {n}x)")
+rc, asked, n = run_cache(True, engine="plugin")
+check(rc != 0 and n == 1, f"the plugin engine with a cache: no cache fallback (rc {rc}, started {n}x)")
+check(mc.cache_oom_decision(["x", "--n-cpu-moe", "20"], False, False, "stock") is None, "no cache in the command: the older retries apply (decision None)")
+# remembered failure: the next plan is smaller or has no cache
+check(mc.shrink_known_fail(3000, 0) == 3000 and mc.shrink_known_fail(2000, 3000) == 2000 and mc.shrink_known_fail(3000, 3000) == 2496 and mc.shrink_known_fail(1700, 1700) == 0,
+      "shrink_known_fail: unchanged below the failed size, 15 % under it from there, none under 1536 MiB")
+sys.path.insert(0, os.path.join(ROOT, "planner"))
+import load_record as lr  # noqa: E402
+cd = os.path.join(TMP, "lrcache"); kvf = ("f16", "f16")
+LK = lambda free=7600, ctx=65536, b="b1", kv=kvf: lr.lookup_cache_fail(cd, "gpu", b, "m1", ctx, kv, "stock", free_now_mib=free)
+check(LK() is None, "no failure recorded: None")
+check(lr.save_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", 3000, 7600) and LK()["fail_mib"] == 3000 and LK()["fails"] == 1, "a failed cache of 3000 MiB is stored and found (1 failure)")
+check(LK(8400) is None, "more free GPU memory now (+800 MiB): the failure is not trusted")
+check(LK(None) is None, "free memory now unknown: not trusted (the free-memory check is not skipped)")
+check(LK(ctx=32768) is None and LK(b="b2") is None and LK(kv=("q8_0", "q8_0")) is None, "another context, build or KV type: not found")
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", 2500, 7600)
+check(LK()["fail_mib"] == 2500 and LK()["fails"] == 2, "a later, smaller failure replaces it; two failures in a row are counted")
+# plan_known_cache: the real decision
+S = lambda fail, fails=1, ok=None: {"fail_mib": fail, "fails": fails, "ok_mib": ok}
+check(mc.plan_known_cache(6500, S(6500)) == 5504 and mc.plan_known_cache(6500, S(6500), 3300) == 3264, "plan: 15 % under the failed size, never over the tuner's own size from today's memory")
+check(mc.plan_known_cache(6500, S(6500, 2)) == 0, "plan: after two failures in a row, no cache")
+check(mc.plan_known_cache(6500, S(6500, 1, 3200)) == 3200, "plan: a size that loaded before is used directly")
+check(mc.plan_known_cache(3000, S(6500)) == 3000 and mc.plan_known_cache(3000, None) == 3000, "plan: a size under the failed one, or no record: unchanged")
+# the size that loaded: kept under the failing size, record cleared at or over it
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 40000, kvf, "stock", 6500, 7600)
+lr.save_cache_ok(cd, "gpu", "b1", "m1", 40000, kvf, "stock", 3200)
+check(LK(ctx=40000)["ok_mib"] == 3200 and LK(ctx=40000)["fail_mib"] == 6500, "a size that loaded fine (under the failing one) is recorded next to the failure")
+lr.save_cache_ok(cd, "gpu", "b1", "m1", 40000, kvf, "stock", 6500)
+check(LK(ctx=40000) is None, "a load with the cache at or over the failing size clears the record")
+check(not lr.save_cache_ok(cd, "gpu", "b9", "m1", 65536, kvf, "stock", 3000), "no failure recorded: a good load writes nothing")
+# apply_cache_record on a final command, with a real record and a stub machine
+class M:
+    def gpu_identity(self): return "gpu"
+class A: pass
+a = A(); a.vram = None; a.vram_user = None; a.plan_free_mib = 7600
+mc.load_record_on = lambda: True
+mc.CACHE_DIR = os.path.join(TMP, "apply"); mc.LAUNCHER_CACHE[0] = True
+mc_lr = lr; mc_lr.build_id = lambda ls: "bX"; mc_lr.model_id = lambda m: "mX"
+base = ["llama-server", "-c", "65536", "--n-cpu-moe", "999", "-ub", "2048", "-b", "2048", "--moe-cache-mib", "6500", "-ctk", "q8_0", "-ctv", "q8_0"]
+mc_lr.save_cache_fail(mc.CACHE_DIR, "gpu", "bX", "mX", 65536, mc.kv_key(base), "stock", 6500, 7600)
+tuned = {"gpu_cache_mib": 3300, "static_n_cpu_moe": 34}
+c = list(base); r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r == 3264 and c[c.index("--moe-cache-mib") + 1] == "3264", f"apply on the final command (q8_0 KV key): 6500 planned as the tuner's 3264 (got {r})")
+c = [x if x != "q8_0" else "f16" for x in base]; r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r is None and "6500" in c, "a command with another KV type has another key: record not applied")
+mc_lr.save_cache_fail(mc.CACHE_DIR, "gpu", "bX", "mX", 65536, mc.kv_key(base), "stock", 5000, 7600)
+c = list(base); r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r == 0 and "--moe-cache-mib" not in c and c[c.index("--n-cpu-moe") + 1] == "34" and mc.LAUNCHER_CACHE[0] is False, "after two failures: no cache, the static layers (34), cache flag off")
+mc.LAUNCHER_CACHE[0] = False
+c = list(base); r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r is None and "6500" in c, "your own cache flag (not the launcher's): never edited")
+# fail, ok, fail: the count restarts at 1 (a good load reset it to 0, which must not read as "no count")
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 6500, 7600)
+lr.save_cache_ok(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 3200)
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 6500, 7600)
+check(LK(ctx=30000)["fails"] == 1 and mc.plan_known_cache(6500, LK(ctx=30000)) == 3200, f"fail, ok, fail: fails == 1, not 2 (got {LK(ctx=30000)['fails']}); the good size is still used")
+# the auto-tune's retry (tune_retry) then the same failure: the other retries still apply to the plan-as-is load, except the KV retry on a cache command
+def tune_case(extra_tuned, mode="oom_always"):
+    mark = os.path.join(TMP, "m_tune_" + mode + str(len(extra_tuned))); asked = []; kvasked = []
+    if os.path.exists(mark): os.remove(mark)
+    def tune_retry(rc, seen):
+        return ([sys.executable, fake, mark, mode, "tuned"] + extra_tuned, dict(os.environ))
+    rc = mc.run_child([sys.executable, fake, mark, "oom_always"], dict(os.environ), oom_retry=lambda: asked.append(1) or [sys.executable, fake, mark, "oom_once_done", "third"],
+                      kv_retry=lambda: kvasked.append(1) or None, tune_retry=tune_retry)
+    return rc, int(open(mark).read()), len(asked), len(kvasked)
+rc, n, asked, kvn = tune_case([])
+check(n == 3 and asked == 1, f"tune retry on a command without the cache: the out-of-memory retry still applies (started {n}x, oom_retry asked {asked}x)")
+rc, n, asked, kvn = tune_case(["--moe-cache-mib", "3000"])
+check(n == 3 and asked == 1 and kvn == 0, f"tune retry on a cache command: the cache fallback (oom_retry) still applies, the KV retry does not (started {n}x, asked {asked}x, kv asked {kvn}x)")
+# a KV abort on the plan-as-is load: the KV retry runs for a command without the cache, never for one with it
+rc, n, asked, kvn = tune_case([], "kv_abort_always")
+check(kvn == 1, f"tune retry, no cache, KV abort: the KV retry is asked (kv asked {kvn}x)")
+rc, n, asked, kvn = tune_case(["--moe-cache-mib", "3000"], "kv_abort_always")
+check(kvn == 0, f"tune retry, cache command, KV abort: the KV retry is not asked (kv asked {kvn}x)")
+# cache_fallback_retry with no free-memory reading: the plan's static layers and ub, nothing recorded; no static plan: one line, no command
+ccmd = ["llama-server", "-c", "65536", "--n-cpu-moe", "999", "-ub", "2048", "-b", "2048", "--moe-cache-mib", "3300"]
+said = []; real_say = mc.say; mc.say = lambda m, err=False: said.append(m)
+recorded = []
+try:
+    new = mc.cache_fallback_retry(ccmd, None, {"static_n_cpu_moe": 34, "ub": 1024}, lambda tf: 1 / 0, lambda mib, fr: recorded.append((mib, fr)) or True)
+    check(new is not None and "--moe-cache-mib" not in new and new[new.index("--n-cpu-moe") + 1] == "34" and new[new.index("-ub") + 1] == "1024" and not recorded,
+          "free memory unknown: the plan's static layers (34) and ub (1024), the cache flag gone, nothing recorded")
+    check(any("free GPU memory unknown now" in m and "3300 MiB" in m for m in said), "free memory unknown: the line says so")
+    new = mc.cache_fallback_retry(ccmd, None, {"static_n_cpu_moe": 34, "ub": 2048}, lambda tf: 1 / 0, lambda mib, fr: True)
+    check(new is not None and new[new.index("-ub") + 1] == "2048", "static ub 2048 keeps -ub 2048 (not forced to 1024)")
+    said.clear()
+    check(mc.cache_fallback_retry(ccmd, None, {}, lambda tf: 1 / 0, lambda mib, fr: recorded.append(1)) is None and not recorded and any("no second try" in m for m in said),
+          "no free-memory reading and no static plan: no command, one 'no second try' line, nothing recorded")
+    new = mc.cache_fallback_retry(ccmd, (8 * 2**30, 7 * 2**30), None, lambda tf: (30, 1024), lambda mib, fr: recorded.append((mib, fr)) or True)
+    check(new is not None and new[new.index("--n-cpu-moe") + 1] == "30" and new[new.index("-ub") + 1] == "1024" and recorded == [(3300, 7168.0)], "free memory known: the tuner's plan, and the failed size recorded with the free memory")
+finally:
+    mc.say = real_say
+
 sys.exit(1 if fails else 0)
