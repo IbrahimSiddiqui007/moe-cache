@@ -2514,6 +2514,7 @@ class Machine:
     def mem_cap(self): return mem_cap()
     def mem_for_server(self, ram_gb): return mem_for_server(ram_gb)
     def cgroup_limit(self): return cgroup_mem_limit()
+    def mem_available(self): return _mem_for_server(None)      # the RAM available now, not clipped at mem_cap() (the reserve is taken once, in ram_cap_decision)
     def win_memory(self): return win_memory()
     def win_commit(self): return win_commit()
     def win_dedicated_vram(self): return win_dedicated_vram()
@@ -3795,7 +3796,7 @@ def ram_cap_decision(avail, total, *, windows, ram_flag=None, env_ram=None, stoc
     if gib * 2**30 >= avail:
         return None
     source = "Windows GlobalMemoryStatusEx" if windows else "Linux MemAvailable"
-    why = (f"{avail / 2**30:.1f} GiB available now ({source}), {keep / 2**30:.1f} GiB kept free for your programs (physical RAM minus max(4 GiB, 12.5 %))"
+    why = (f"{avail / 2**30:.1f} GiB available now ({source}), {keep / 2**30:.1f} GiB kept free for your programs (max(4 GiB, 12.5 % of the RAM))"
            + (f" and {stream:.1f} GiB for the model file read through memory-mapped pages (the file is bigger than the cache; assumed, not measured)" if stream else ""))
     return {"gib": gib, "avail": avail, "keep": keep, "stream": stream, "source": source, "why": why}
 
@@ -3807,7 +3808,7 @@ def avail_reserve_gib(a, machine, stock=False, model=None):
     if not windows and getattr(a, "exact", False):
         return None
     try:
-        avail, total = machine.mem_for_server(None), machine.mem_total()
+        avail, total = getattr(machine, "mem_available", lambda: machine.mem_for_server(None))(), machine.mem_total()
         limit = None if windows else getattr(machine, "cgroup_limit", lambda: None)()
     except Exception:
         return None
@@ -3821,6 +3822,8 @@ def avail_reserve_gib(a, machine, stock=False, model=None):
         sg = float(os.environ.get("MOE_CACHE_STREAM_GIB", RAM_STREAM_GIB))
     except ValueError:
         sg = RAM_STREAM_GIB
+    if getattr(a, "exact", False):
+        size = None                       # --exact: exactly the figure of before the stream term
     d = ram_cap_decision(avail, total, windows=windows, ram_flag=a.ram, env_ram=os.environ.get("MOE_CACHE_RAM_GIB"), stock=stock, cgroup_limit=limit, model_bytes=size, stream_gib=sg)
     return (d["gib"], d["avail"], d["keep"], d) if d else None
 

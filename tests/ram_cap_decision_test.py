@@ -52,6 +52,7 @@ class M(mc.Machine):
     @property
     def windows(self): return self._w
     def mem_for_server(self, ram_gb): return self.avail
+    def mem_available(self): return self.avail
     def mem_total(self): return TOT
     def cgroup_limit(self): return self.limit
 a, _, _ = mc.parse_server(["m.gguf", "--no-pin"])
@@ -68,7 +69,13 @@ with tempfile.TemporaryDirectory() as td:
         check(r is None, "Linux with a cgroup limit: None")
         ax, _, _ = mc.parse_server(["m.gguf", "--no-pin", "--exact"])
         check(mc.avail_reserve_gib(ax, M(17.4 * GIB, False), model=big) is None, "--exact on Linux: as before (none)")
-        check(mc.avail_reserve_gib(ax, M(17.4 * GIB, True), model=big) is not None, "--exact on Windows: as before (the reserve stays)")
+        rx = mc.avail_reserve_gib(ax, M(17.4 * GIB, True), model=big)
+        check(rx and abs(rx[0] - 13.4) < 0.01 and rx[3]["stream"] == 0, "--exact on Windows: as before (13.4, no stream term)")
+        class Clip(M):
+            def mem_for_server(self, r): return 28 * GIB          # clipped at the whole-server cap
+            def mem_available(self): return 30 * GIB
+        rc = mc.avail_reserve_gib(a, Clip(30 * GIB, True))
+        check(rc and abs(rc[0] - 26.0) < 0.01, f"the reserve is taken once: 30 GiB available -> 26, not the clipped 28 - 4 = 24 ({rc and rc[0]})")
         os.environ["MOE_CACHE_STREAM_GIB"] = "0"
         r = mc.avail_reserve_gib(a, M(17.4 * GIB, True), model=big)
         check(r and abs(r[0] - 13.4) < 0.01, "MOE_CACHE_STREAM_GIB=0 gives the old 13.4")

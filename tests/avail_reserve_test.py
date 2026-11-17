@@ -25,6 +25,7 @@ class M(mc.Machine):
     def windows(self): return self._win
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib)], "preload"
     def mem_for_server(self, ram_gb): return self.avail
+    def mem_available(self): return self.avail
     def mem_total(self): return self.total
     def mem_cap(self): return self.total - max(4 * GIB, self.total / 8)
 
