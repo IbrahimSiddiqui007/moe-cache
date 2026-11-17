@@ -3594,6 +3594,18 @@ LOAD_MODE_RAM_MARGIN_GIB = 4.0
 LOAD_MODE_SMALL_SPILL_GIB = 3.0      # the part of a dense model that stays in RAM (planner) up to which the GPU takes "almost all" of it
 
 
+def mmap_working_set_short(size_gib, avail_gib, cram_gib, margin_gib):
+    """True when a memory-mapped load leaves less than the reserve: the whole file (every page it reads, also the part that stays in RAM) enters the working set, plus the prompt cache
+    (`--cache-ram`), against the RAM available to the server. Pure; GiB in, bool out."""
+    return avail_gib - size_gib - cram_gib < margin_gib
+
+
+def prompt_cache_gib(extra):
+    """GiB of host RAM llama-server's prompt cache may take: the user's --cache-ram MiB after --, else the launcher's default of 2048 MiB (the plan line 'prompt cache: up to 2048 MiB')."""
+    v = arg_after(extra, "--cache-ram", "-cram")
+    return int(v) / 1024 if v and str(v).isdigit() and int(v) > 0 else 2.0
+
+
 def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     """LAUNCHER-1133 follow-up (critic 2026-11-12: bounded, margin from the cap): a dense model that does NOT fit fully on the GPU keeps mmap (the weights that stay in RAM are file-backed and
     can be evicted), unless the mmap load itself would eat the RAM the server may use: chain's real load of f5af74c (27B UD-Q3_K_XL, 64k, q4_0, mmap) read ~9-12 GB of mapped file pages into
@@ -3624,8 +3636,16 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     # critic L3: the mmap load stages what goes to the GPU (file minus the part that stays in RAM) through RAM at once; mmap stays only when that, the reserve and a second reserve for the
     # desktop's own growth fit in the RAM available to the server; and `none` copies the part that stays in RAM, which has to fit too (a 40 GiB file with 14 GiB available stays mmap).
     stage = size / 2**30 - spill_gib
-    if avail / 2**30 >= stage + 2 * margin or spill_gib + margin > avail / 2**30:
+    if spill_gib + margin > avail / 2**30:
+        return None                                                    # `none` would copy the part that stays in RAM, and that does not fit either
+    cram = prompt_cache_gib(extra)
+    ws_short = mmap_working_set_short(size / 2**30, avail / 2**30, cram, margin)
+    if avail / 2**30 >= stage + 2 * margin and not ws_short:
         return None
+    if ws_short and avail / 2**30 >= stage + 2 * margin:
+        return (f"the memory-mapped load would put the whole {size / 2**30:.1f} GiB file into the working set (file-backed pages, also the part that stays in RAM) and, with the "
+                f"{cram:.1f} GiB prompt cache, leave under the {margin:.1f} GiB the machine keeps free ({avail / 2**30:.1f} GiB available to the server; chain 2026-11-17: 27B IQ4_XS 128k, "
+                f"mmap, apps open: available RAM fell to 1.2 GB at load and the guard stopped it): --load-mode none (--exact or --load-mode after -- keeps llama.cpp's default)")
     return (f"the model file is {size / 2**30:.1f} GiB, {avail / 2**30:.1f} GiB of RAM is available to the server and a memory-mapped load would stage about {stage:.1f} GiB of it through RAM "
             f"(plus {margin:.1f} GiB the machine keeps free, twice); about {spill_gib:.1f} GiB stays in RAM: --load-mode none (the weights are read into memory as the GPU takes them; "
             "--exact or --load-mode after -- keeps llama.cpp's default)")

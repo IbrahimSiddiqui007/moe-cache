@@ -40,8 +40,8 @@ r = lambda m=M(), a=None, c=cmd, e=(), mod=f, sp=5.0: mc.load_mode_low_ram(a or 
 
 why = r(M(avail=14 * GIB))
 check(why and "13.5 GiB" in why and "14.0 GiB of RAM is available" in why and "stage about 8.5 GiB" in why and "--load-mode none" in why and "5.0 GiB stays in RAM" in why, f"14 GiB available for a 13.5 GiB file: none, and the note says the figures ({why and why[:80]})")
-check(r(M(avail=16 * GIB)) is not None and r(M(avail=17 * GIB)) is None, "critic L3: mmap stages file - spill = 8.5 GiB, plus the reserve twice (8): 16 GiB available -> none, 17 -> mmap")
-check(r(M(avail=18 * GIB)) is None, "18 GiB available (over file + 4): mmap stays")
+check(r(M(avail=16 * GIB)) is not None and r(M(avail=19 * GIB)) is not None and r(M(avail=20 * GIB)) is None, "critic L3 + the mmap working set: staging 8.5 GiB + 2 x 4 reserve = 16.5; the whole file 13.5 + prompt cache 2 + reserve 4 = 19.5: 16 and 19 GiB available -> none, 20 -> mmap")
+check(r(M(avail=20 * GIB)) is None and r(M(avail=18 * GIB)) is not None, "20 GiB available (over file + prompt cache 2 + reserve 4): mmap stays; 18: none")
 check(r(M(windows=False, avail=1 * GIB)) is None, "Linux: mmap stays (page cache serves it, no spike measured)")
 check(r(M(avail=14 * GIB), A(exact=True)) is None and r(M(avail=14 * GIB), A(stock=True)) is None, "--exact and --stock: nothing changed")
 check(r(M(avail=14 * GIB), e=["--load-mode", "mmap"]) is None and r(M(avail=14 * GIB), e=["--no-mmap"]) is None and r(M(avail=14 * GIB), e=["-lm=none"]) is None, "a load flag of your own: kept")
@@ -55,8 +55,15 @@ check(r(M(avail=14 * GIB), mod=big, sp=26.0) is None, "R1: 40 GiB file, 14 GiB a
 check(r(M(avail=30 * GIB), mod=big, sp=8.0) is not None, "40 GiB file, 30 GiB available, 8 GiB stays in RAM: none")
 # critic R4: the reserve is what the machine keeps free (RAM minus mem_cap), not a fixed 4 GiB, on a bigger machine
 m64 = M(avail=19 * GIB, total=64 * GIB, cap=56 * GIB)
-check(r(m64) is not None and r(M(avail=19 * GIB, total=32 * GIB, cap=28 * GIB)) is None, "R4: 13.5 GiB file, 19 GiB available: 64 GiB machine (8 GiB reserve) -> none, 32 GiB machine (4 GiB reserve) -> mmap")
+check(r(m64) is not None and r(M(avail=20 * GIB, total=32 * GIB, cap=28 * GIB)) is None, "R4: 13.5 GiB file: 19 GiB available on the 64 GiB machine (8 GiB reserve) -> none; 20 GiB on a 32 GiB machine (4 GiB reserve) -> mmap")
 check("8.0 GiB the machine keeps free" in r(m64) and "available to the server" in r(m64), "the note names the margin and says 'available to the server' (R4, R6)")
+# 2026-11-17 chain: 27B IQ4_XS 128k on the PC, mmap, apps open, available 17.4 GiB for a 13.3 GiB file with a big spill (stage + 8 fits, the whole file does not): none, with its reason
+check(mc.mmap_working_set_short(13.3, 17.4, 2.0, 4.0) and not mc.mmap_working_set_short(13.3, 20.0, 2.0, 4.0), "mmap_working_set_short: 13.3 file + 2 prompt cache + 4 reserve = 19.3 GiB: 17.4 short, 20 not")
+check(mc.prompt_cache_gib([]) == 2.0 and mc.prompt_cache_gib(["--cache-ram", "512"]) == 0.5, "prompt cache GiB: default 2, the user's --cache-ram wins")
+pcw = r(M(avail=17.4 * GIB, total=31.1 * GIB, cap=27.1 * GIB), mod=f, sp=9.0)          # large spill: stage 4.5 + 8 = 12.5 fits, the old rule kept mmap
+check(pcw and "whole 13.5 GiB file" in pcw and "--load-mode none" in pcw and "1.2 GB" in pcw, "large spill, 17.4 GiB available: the old staging rule kept mmap; the working-set rule picks none and says why")
+check(r(M(avail=24 * GIB, total=31.1 * GIB, cap=27.1 * GIB), mod=f, sp=9.0) is None, "24 GiB available: mmap stays")
+check(r(M(avail=17.4 * GIB, total=31.1 * GIB, cap=27.1 * GIB), a=A(), e=["--cache-ram", "0"], mod=f, sp=9.0) is not None, "--cache-ram 0 is not a prompt cache size: the 2 GiB default counts")
 # the PC case through the real command_stage (main's request, 2026-11-12): dense, the planner says "does not fit", 12 GiB available for a 13.5 GiB file
 import contextlib, io
 class PCMachine(mc.Machine):
