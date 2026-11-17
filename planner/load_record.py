@@ -367,7 +367,7 @@ def lookup_cache_fail(cache_dir, machine, build, model, ctx, kv, engine, free_no
             return None
     except (ValueError, OverflowError):
         return None
-    return {"fail_mib": e["fail_mib"], "fails": int(e.get("fails") or 1), "ok_mib": e.get("ok_mib") if isinstance(e.get("ok_mib"), int) else None}
+    return {"fail_mib": e["fail_mib"], "fails": int(e["fails"]) if isinstance(e.get("fails"), int) else 1, "ok_mib": e.get("ok_mib") if isinstance(e.get("ok_mib"), int) else None}
 
 
 def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_source, n_cpu_moe=None, free_now_mib=None):
