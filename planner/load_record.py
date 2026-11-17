@@ -315,7 +315,7 @@ def save_cache_fail(cache_dir, machine, build, model, ctx, kv, engine, fail_mib,
             d = _read(cache_dir)
             key = _key(machine, build, model, int(ctx), kv_name(kv), engine)
             old = d["cachefail"].get(key) or {}
-            fails, ok = int(old.get("fails") or (1 if old else 0)) + 1, old.get("ok_mib")
+            fails, ok = (int(old["fails"]) if isinstance(old.get("fails"), int) else (1 if old else 0)) + 1, old.get("ok_mib")
             if isinstance(old.get("fail_mib"), int) and old["fail_mib"] < int(fail_mib):
                 fail_mib = old["fail_mib"]
             if not (isinstance(ok, int) and ok < int(fail_mib)):

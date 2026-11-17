@@ -215,10 +215,22 @@ check(r == 0 and "--moe-cache-mib" not in c and c[c.index("--n-cpu-moe") + 1] ==
 mc.LAUNCHER_CACHE[0] = False
 c = list(base); r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
 check(r is None and "6500" in c, "your own cache flag (not the launcher's): never edited")
-# at most two loads when the auto-tune's retry already ran (tune_retry first, then the same failure again: no third load)
-mark = os.path.join(TMP, "m_tune_oom"); asked = []
-def tune_retry(rc, seen):
-    return ([sys.executable, fake, mark, "oom_always", "tuned"], dict(os.environ))
-rc = mc.run_child([sys.executable, fake, mark, "oom_always"], dict(os.environ), oom_retry=lambda: asked.append(1) or [sys.executable, fake, mark, "oom_always", "third"], tune_retry=tune_retry)
-check(rc != 0 and int(open(mark).read()) == 2 and not asked, f"tune retry then the same failure: two loads in all, no third (started {int(open(mark).read())}x, oom_retry asked {len(asked)}x)")
+# fail, ok, fail: the count restarts at 1 (a good load reset it to 0, which must not read as "no count")
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 6500, 7600)
+lr.save_cache_ok(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 3200)
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 6500, 7600)
+check(LK(ctx=30000)["fails"] == 1 and mc.plan_known_cache(6500, LK(ctx=30000)) == 3200, f"fail, ok, fail: fails == 1, not 2 (got {LK(ctx=30000)['fails']}); the good size is still used")
+# the auto-tune's retry (tune_retry) then the same failure: the other retries still apply to the plan-as-is load, except the KV retry on a cache command
+def tune_case(extra_tuned):
+    mark = os.path.join(TMP, "m_tune_" + str(len(extra_tuned))); asked = []; kvasked = []
+    if os.path.exists(mark): os.remove(mark)
+    def tune_retry(rc, seen):
+        return ([sys.executable, fake, mark, "oom_always", "tuned"] + extra_tuned, dict(os.environ))
+    rc = mc.run_child([sys.executable, fake, mark, "oom_always"], dict(os.environ), oom_retry=lambda: asked.append(1) or [sys.executable, fake, mark, "oom_once_done", "third"],
+                      kv_retry=lambda: kvasked.append(1) or None, tune_retry=tune_retry)
+    return rc, int(open(mark).read()), len(asked)
+rc, n, asked = tune_case([])
+check(n == 3 and asked == 1, f"tune retry on a command without the cache: the out-of-memory retry still applies (started {n}x, oom_retry asked {asked}x)")
+rc, n, asked = tune_case(["--moe-cache-mib", "3000"])
+check(n == 3 and asked == 1, f"tune retry on a cache command: the cache fallback (oom_retry) still applies (started {n}x, asked {asked}x)")
 sys.exit(1 if fails else 0)

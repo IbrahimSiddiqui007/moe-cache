@@ -1942,7 +1942,7 @@ def apply_cache_record(a, cmd, machine, ls, model, ctx, tuned):
         cmd[cmd.index("--moe-cache-mib") + 1] = str(new)
     else:
         static = (tuned or {}).get("static_n_cpu_moe")
-        nc = cache_fallback_cmd(cmd, static, 1024) if static is not None else None
+        nc = cache_fallback_cmd(cmd, static, (tuned or {}).get("ub")) if static is not None else None      # the static plan was made at the plan's own -ub
         if not nc:
             return None                          # no static plan to fall back to: the cache stays, the out-of-memory retry decides at load
         cmd[:] = nc
@@ -1982,10 +1982,12 @@ def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry,
         say_exit(rc, seen, expect_plugin and port)
         return rc
     if rc not in (0, None) and not quiet and tune_retry and not seen["ready"]:
-        # LAUNCHER-1045: the server did not come up with a plan the auto-tune picked: the pick is marked bad and the plan as it is starts once (the other retries still apply to it)
+        # LAUNCHER-1045: the server did not come up with a plan the auto-tune picked: the pick is marked bad and the plan as it is starts once. The other retries still apply to that
+        # load (a start without the GPU cache keeps the out-of-memory and KV retries as before); a plan WITH the cache keeps only the out-of-memory retry, which is the cache fallback
+        # (LAUNCHER-1200: so a cache plan can make three loads in the worst case: picked plan, plan as it is, no cache)
         new = tune_retry(rc, seen)
         if new:
-            return _run_child(new[0], new[1], port, expect_plugin, mem_limit, allow_sleep, None, None, None)      # LAUNCHER-1200: this was the second load: no third
+            return _run_child(new[0], new[1], port, expect_plugin, mem_limit, allow_sleep, oom_retry, None if "--moe-cache-mib" in new[0] else kv_retry, None)
     if rc not in (0, None) and not quiet and kv_retry and seen.get("kvabort") and not seen["ready"]:
         # The known abort (Granite 1B, 63a07fa) prints only "ggml-impl.h:NNN: fatal error", nothing about the KV type, so the text cannot be narrowed further; the retry is
         # limited instead to: an abort before the server was ready, a q8_0 KV cache this launcher chose (kv_retry is None otherwise), and ONE retry. The matched line is logged.
@@ -5304,22 +5306,31 @@ def run_launch_plan(plan):
                     return gpu_total_free_bytes()
                 time.sleep(2)                          # the failed server's memory is given back a moment after it exits
                 tf = free_now()
+                n_new = ub_new = None
                 if tf:
                     reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
                     t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd,
                              free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
-                    new = cache_fallback_cmd(cmd, t["n_cpu_moe"], t["ub"])
-                    if new:
-                        mib = int(arg_after(cmd, "--moe-cache-mib"))
-                        rid = cache_record_ident(a, machine, ls, model)
-                        saved = False
-                        if rid:
-                            lr_, gid_, build_, mid_ = rid
-                            kv_ = kv_key(cmd)
-                            saved = lr_.save_cache_fail(CACHE_DIR, gid_, build_, mid_, int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_, "stock", mib, tf[1] / 2**20)
-                        say(f"moe-cache: llama-server could not load with the GPU expert cache of {mib} MiB (not enough free GPU memory; {tf[1] / 2**30:.1f} GiB free now): starting again once without "
-                            f"the cache, with {t['n_cpu_moe']} layers of experts on the CPU." + (" The next start plans a smaller cache or none." if saved else "") + " --gpu-cache off keeps it off", err=True)
-                        return new
+                    n_new, ub_new = t["n_cpu_moe"], t["ub"]
+                    free_txt = f"{tf[1] / 2**30:.1f} GiB free now"
+                else:                                   # free memory cannot be read: the plan's own static answer (made with the free memory of the start)
+                    st = (plan.tuned or {}).get("static_n_cpu_moe")
+                    if st is not None:
+                        n_new, ub_new = int(st), (plan.tuned or {}).get("ub")
+                    free_txt = "free GPU memory unknown now, using the plan's static layers"
+                new = cache_fallback_cmd(cmd, n_new, ub_new) if n_new is not None else None
+                if new:
+                    mib = int(arg_after(cmd, "--moe-cache-mib"))
+                    rid = cache_record_ident(a, machine, ls, model)
+                    saved = False
+                    if rid and tf:                      # a failure without a free-memory reading is not recorded (it could not be told apart from a memory change later)
+                        lr_, gid_, build_, mid_ = rid
+                        saved = lr_.save_cache_fail(CACHE_DIR, gid_, build_, mid_, int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_key(cmd), "stock", mib, tf[1] / 2**20)
+                    say(f"moe-cache: llama-server could not load with the GPU expert cache of {mib} MiB (not enough free GPU memory; {free_txt}): starting again once without "
+                        f"the cache, with {n_new} layers of experts on the CPU." + (" The next start plans a smaller cache or none." if saved else "") + " --gpu-cache off keeps it off", err=True)
+                    return new
+                say("moe-cache: llama-server could not load with the GPU expert cache and no plan without it could be made (no free-memory reading, no static plan, or no --n-cpu-moe in the command): "
+                    "no second try. Use --gpu-cache off or a smaller --gpu-cache", err=True)
             except Exception as e:
                 say(f"moe-cache: llama-server could not load with the GPU expert cache; the retry without it could not be planned ({e})", err=True)
             return None
