@@ -291,8 +291,8 @@
         const plat::proc_mem_t pm = plat::proc_mem();
         const double g = 1073741824.0;
         fprintf(stderr, "moe-cache: mem: system available %.2f GiB (keep %.2f)%s | this process: working set %.2f GiB = private %.2f + mapped files %.2f | cache budget %.2f GiB, "
-                        "resident experts %.2f GiB | live: shrinks %llu, grows %llu\n", live_avail / g, live_keep / g, squeeze ? " UNDER THE LINE" : "", pm.total / g, pm.priv / g,
-                pm.mapped / g, budget / g, resident_bytes / g, (unsigned long long) live_shrinks, (unsigned long long) live_grows);
+                        "resident experts %.2f GiB, file views %.2f GiB, working-set minimum %.2f GiB | live: shrinks %llu, grows %llu\n", live_avail / g, live_keep / g, squeeze ? " UNDER THE LINE" : "", pm.total / g, pm.priv / g,
+                pm.mapped / g, budget / g, resident_bytes / g, view_bytes / g, ws_min_cur / g, (unsigned long long) live_shrinks, (unsigned long long) live_grows);
     }
 
     // auto mode: keep the real anonymous memory of the process under (limit - margin). Called every 32 groups and after every 256 MiB of reads.
@@ -320,19 +320,23 @@
         if (peers_on && peer_ceiling.load() != (size_t) -1) {
             target = peer_ceiling.load();     // N2: the room the other servers of the registry leave (mc_state_peers.inl)
         }
-        // RAM-LIVE: the system's available RAM is the second line: this process never takes it under live_keep (src/mc_livecap.h)
+        // RAM-LIVE: the system's available RAM is the second line: this process never takes it under live_keep (src/mc_livecap.h). Not on the Linux file-view
+        // path: evicting there only drops mapped pages to the page cache, which MemAvailable counts already, so the figure would not rise and the cache would
+        // shrink to its floor (critic 2026-11-17). Probed at most every 250 ms; after a live shrink the figure is given 500 ms to settle before the next one.
         size_t live_room_ok = 1;
-        if (live_keep) {
+        bool live_limited = false;
+        if (live_keep && !(win_view && !plat::is_windows)) {
             const uint64_t now = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            live_avail = plat::mem_available();
-            const size_t lt = mclive::ceiling(target, rss, live_avail, live_keep);
-            const bool limited = lt < target;
-            if (limited && rss > lt) {
-                live_shrinks++;
+            if (!live_last_ms || now >= live_last_ms + 250) {
+                live_avail = plat::mem_available();
+                live_last_ms = now;
             }
+            const bool settling = now < live_settle_ms;
+            const size_t lt = settling ? target : mclive::ceiling(target, rss, live_avail, live_keep);
+            live_limited = lt < target;
             target = lt;
-            live_room_ok = mclive::grow_allowed(live_avail, live_keep, now, live_grow_ms) ? 1 : 0;
-            live_status(now, limited || (live_avail && live_avail < live_keep));
+            live_room_ok = !settling && mclive::grow_allowed(live_avail, live_keep, now, live_grow_ms) ? 1 : 0;
+            live_status(now, live_avail && live_avail < live_keep);
         }
         // bytes of expert data that are really in memory (pending ones are marked but not read yet)
         const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
@@ -354,6 +358,10 @@
             if (nb < budget) {
                 budget = nb;
                 tune_shrinks++;
+                if (live_limited) {
+                    live_shrinks++;
+                    live_settle_ms = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() + 500;
+                }
                 if (!shrink_warned && budget < budget_peak / 2) {
                     // desktop PC 2026-10-26: the cache fell from 14 to 2 GiB without a word; the user only saw a slow server. (The ~15 GB that
                     // llama-server took there was llama.cpp's model-file pages left in its working set, I37, now released at the first graph)
@@ -376,9 +384,11 @@
             size_t g = std::min<size_t>(target - rss - ((size_t) 256 << 20), (size_t) 1 << 30);
             if (live_keep) {
                 g = std::min(g, mclive::grow_step(live_avail, live_keep));
-                live_grow_ms = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             }
             if (g) {
+                if (live_keep) {
+                    live_grow_ms = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                }
                 budget = std::min(max_budget, budget + g);
                 tune_grows++;
                 if (live_keep) {

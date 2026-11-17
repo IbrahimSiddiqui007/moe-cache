@@ -17,7 +17,7 @@ struct state_budget_t {
     size_t min_budget = 0;
     uint64_t tune_shrinks = 0, tune_grows = 0;
     size_t live_keep = 0;              // RAM-LIVE (MOE_CACHE_AVAIL_KEEP_GIB, set by the launcher): keep this much of the system's available RAM free; 0 = off
-    uint64_t live_last_ms = 0, live_grow_ms = 0, live_log_ms = 0;   // last probe, last grow, last status line
+    uint64_t live_last_ms = 0, live_grow_ms = 0, live_log_ms = 0, live_settle_ms = 0;   // last probe, last grow, last status line
     size_t live_avail = 0;             // available RAM at the last probe
     uint64_t live_shrinks = 0, live_grows = 0;
     size_t resident_bytes = 0;
