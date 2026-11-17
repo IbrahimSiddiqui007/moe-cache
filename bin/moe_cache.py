@@ -3690,7 +3690,7 @@ def load_mode_cache_none(a, cmd, extra, machine, model, cram):
     if not size or not avail:
         return None
     margin = max(LOAD_MODE_RAM_MARGIN_GIB, (total - cap) / 2**30 if total and cap and total > cap else 0.0)
-    need = size / 2**30 + (int(cram) / 1024 if str(cram).isdigit() else 0.0) + margin
+    need = size / 2**30 + cram_gib(cram, 0.0) + margin
     if need > avail / 2**30:
         return None
     return (f"GPU expert cache: the {size / 2**30:.1f} GiB model fits the {avail / 2**30:.1f} GiB of RAM this server may use (with the prompt cache and a {margin:.1f} GiB reserve): "
@@ -3722,10 +3722,45 @@ def mmap_working_set_short(size_gib, avail_gib, cram_gib, margin_gib):
     return avail_gib - size_gib - cram_gib < margin_gib
 
 
+LLAMA_PROMPT_CACHE_GIB = 8.0      # llama-server's own --cache-ram default (and what -1, "no limit", is counted as: a floor, the real use can be larger)
+
+
+def cram_gib(v, absent=LLAMA_PROMPT_CACHE_GIB):
+    """GiB of host RAM a --cache-ram value lets llama-server's prompt cache take (one parser for load_mode_low_ram and load_mode_cache_none): "0" is off (0), "-1" is no limit (counted as
+    llama's own default of 8 GiB: unknown / large), digits are MiB, a missing flag is `absent` (llama's default of 8 GiB unless the caller knows better; anything else unreadable counts as `absent`)."""
+    if v is None:
+        return absent
+    v = str(v).strip()
+    if v == "-1":
+        return LLAMA_PROMPT_CACHE_GIB
+    if v.isdigit():
+        return int(v) / 1024
+    return absent
+
+
 def prompt_cache_gib(extra):
-    """GiB of host RAM llama-server's prompt cache may take: the user's --cache-ram MiB after --, else the launcher's default of 2048 MiB (the plan line 'prompt cache: up to 2048 MiB')."""
-    v = arg_after(extra, "--cache-ram", "-cram")
-    return int(v) / 1024 if v and str(v).isdigit() and int(v) > 0 else 2.0
+    """GiB of host RAM llama-server's prompt cache may take, read from the --cache-ram in the command (command_stage has put the launcher's own value there by then: 2048 MiB, 0 below 16 GB
+    of memory, MOE_CACHE_PROMPT_CACHE_MIB, cut to the free commit): 0 = off, -1 = unknown / large (8 GiB), no flag = llama's own default (8 GiB)."""
+    return cram_gib(arg_after(extra, "--cache-ram", "-cram"))
+
+
+MMAP_SPIKE_ENV = "MOE_CACHE_MMAP_SPIKE"
+
+
+def mmap_spike_on():
+    """The whole-file working-set rule of load_mode_low_ram is OFF unless MOE_CACHE_MMAP_SPIKE=1 (owner R1: a default change; not measured at a 5-9 GiB spill, where `none` puts the spill
+    into pinned Vulkan host memory)."""
+    return os.environ.get(MMAP_SPIKE_ENV, "") == "1"
+
+
+def model_file_bytes(model):
+    """Bytes of the whole model: every shard of a split GGUF, else the file."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import shards
+        return sum(os.path.getsize(p) for p in shards(model))
+    except Exception:
+        return os.path.getsize(model)
 
 
 def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
@@ -3742,7 +3777,7 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
     try:
-        size = os.path.getsize(model)
+        size = model_file_bytes(model)
         avail = machine.mem_for_server(a.ram)
         total, cap = machine.mem_total(), machine.mem_cap()
     except (OSError, TypeError):
@@ -3761,13 +3796,15 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     if spill_gib + margin > avail / 2**30:
         return None                                                    # `none` would copy the part that stays in RAM, and that does not fit either
     cram = prompt_cache_gib(extra)
-    ws_short = mmap_working_set_short(size / 2**30, avail / 2**30, cram, margin)
+    # critic fix 8: the whole-file rule reads the RAM available now (not clipped at mem_cap(), which already holds the reserve) and the size of every shard
+    avail_now = machine.mem_for_server(a.ram) if a.ram else (getattr(machine, "mem_available", lambda: None)() or avail)
+    ws_short = mmap_spike_on() and mmap_working_set_short(size / 2**30, avail_now / 2**30, cram, margin)
     if avail / 2**30 >= stage + 2 * margin and not ws_short:
         return None
     if ws_short and avail / 2**30 >= stage + 2 * margin:
         return (f"the memory-mapped load would put the whole {size / 2**30:.1f} GiB file into the working set (file-backed pages, also the part that stays in RAM) and, with the "
-                f"{cram:.1f} GiB prompt cache, leave under the {margin:.1f} GiB the machine keeps free ({avail / 2**30:.1f} GiB available to the server; chain 2026-11-17: 27B IQ4_XS 128k, "
-                f"mmap, apps open: available RAM fell to 1.2 GB at load and the guard stopped it): --load-mode none (--exact or --load-mode after -- keeps llama.cpp's default)")
+                f"{cram:.1f} GiB prompt cache, leave under the {margin:.1f} GiB the machine keeps free ({avail_now / 2**30:.1f} GiB available now): --load-mode none (switched on by "
+                f"{MMAP_SPIKE_ENV}=1; not measured at this size; --exact or --load-mode after -- keeps llama.cpp's default)")
     return (f"the model file is {size / 2**30:.1f} GiB, {avail / 2**30:.1f} GiB of RAM is available to the server and a memory-mapped load would stage about {stage:.1f} GiB of it through RAM "
             f"(plus {margin:.1f} GiB the machine keeps free, twice); about {spill_gib:.1f} GiB stays in RAM: --load-mode none (the weights are read into memory as the GPU takes them; "
             "--exact or --load-mode after -- keeps llama.cpp's default)")

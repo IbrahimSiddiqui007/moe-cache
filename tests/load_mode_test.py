@@ -40,8 +40,7 @@ r = lambda m=M(), a=None, c=cmd, e=(), mod=f, sp=5.0: mc.load_mode_low_ram(a or 
 
 why = r(M(avail=14 * GIB))
 check(why and "13.5 GiB" in why and "14.0 GiB of RAM is available" in why and "stage about 8.5 GiB" in why and "--load-mode none" in why and "5.0 GiB stays in RAM" in why, f"14 GiB available for a 13.5 GiB file: none, and the note says the figures ({why and why[:80]})")
-check(r(M(avail=16 * GIB)) is not None and r(M(avail=19 * GIB)) is not None and r(M(avail=20 * GIB)) is None, "critic L3 + the mmap working set: staging 8.5 GiB + 2 x 4 reserve = 16.5; the whole file 13.5 + prompt cache 2 + reserve 4 = 19.5: 16 and 19 GiB available -> none, 20 -> mmap")
-check(r(M(avail=20 * GIB)) is None and r(M(avail=18 * GIB)) is not None, "20 GiB available (over file + prompt cache 2 + reserve 4): mmap stays; 18: none")
+check(r(M(avail=16 * GIB)) is not None and r(M(avail=17 * GIB)) is None and r(M(avail=19 * GIB)) is None, "critic L3 (the default): staging 8.5 GiB + 2 x 4 reserve = 16.5: 16 GiB available -> none, 17 and 19 -> mmap (the whole-file rule is off by default)")
 check(r(M(windows=False, avail=1 * GIB)) is None, "Linux: mmap stays (page cache serves it, no spike measured)")
 check(r(M(avail=14 * GIB), A(exact=True)) is None and r(M(avail=14 * GIB), A(stock=True)) is None, "--exact and --stock: nothing changed")
 check(r(M(avail=14 * GIB), e=["--load-mode", "mmap"]) is None and r(M(avail=14 * GIB), e=["--no-mmap"]) is None and r(M(avail=14 * GIB), e=["-lm=none"]) is None, "a load flag of your own: kept")
@@ -57,13 +56,32 @@ check(r(M(avail=30 * GIB), mod=big, sp=8.0) is not None, "40 GiB file, 30 GiB av
 m64 = M(avail=19 * GIB, total=64 * GIB, cap=56 * GIB)
 check(r(m64) is not None and r(M(avail=20 * GIB, total=32 * GIB, cap=28 * GIB)) is None, "R4: 13.5 GiB file: 19 GiB available on the 64 GiB machine (8 GiB reserve) -> none; 20 GiB on a 32 GiB machine (4 GiB reserve) -> mmap")
 check("8.0 GiB the machine keeps free" in r(m64) and "available to the server" in r(m64), "the note names the margin and says 'available to the server' (R4, R6)")
-# 2026-11-17 chain: 27B IQ4_XS 128k on the PC, mmap, apps open, available 17.4 GiB for a 13.3 GiB file with a big spill (stage + 8 fits, the whole file does not): none, with its reason
+# MMAP-SPIKE (opt-in, MOE_CACHE_MMAP_SPIKE=1; critic 2026-11-17: a default change needs the owner, and `none` is not measured at a 5-9 GiB spill): the whole file plus the prompt cache against the reserve
+E2 = ["--cache-ram", "2048"]                     # command_stage has put the launcher's own value there
+os.environ[mc.MMAP_SPIKE_ENV] = "1"
+check(r(M(avail=19 * GIB), e=E2) is not None and r(M(avail=20 * GIB), e=E2) is None and r(M(avail=18 * GIB), e=E2) is not None, "opt-in on: the whole file 13.5 + prompt cache 2 + reserve 4 = 19.5: 19 GiB available -> none, 20 -> mmap")
 check(mc.mmap_working_set_short(13.3, 17.4, 2.0, 4.0) and not mc.mmap_working_set_short(13.3, 20.0, 2.0, 4.0), "mmap_working_set_short: 13.3 file + 2 prompt cache + 4 reserve = 19.3 GiB: 17.4 short, 20 not")
-check(mc.prompt_cache_gib([]) == 2.0 and mc.prompt_cache_gib(["--cache-ram", "512"]) == 0.5, "prompt cache GiB: default 2, the user's --cache-ram wins")
-pcw = r(M(avail=17.4 * GIB, total=31.1 * GIB, cap=27.1 * GIB), mod=f, sp=9.0)          # large spill: stage 4.5 + 8 = 12.5 fits, the old rule kept mmap
-check(pcw and "whole 13.5 GiB file" in pcw and "--load-mode none" in pcw and "1.2 GB" in pcw, "large spill, 17.4 GiB available: the old staging rule kept mmap; the working-set rule picks none and says why")
-check(r(M(avail=24 * GIB, total=31.1 * GIB, cap=27.1 * GIB), mod=f, sp=9.0) is None, "24 GiB available: mmap stays")
-check(r(M(avail=17.4 * GIB, total=31.1 * GIB, cap=27.1 * GIB), a=A(), e=["--cache-ram", "0"], mod=f, sp=9.0) is not None, "--cache-ram 0 is not a prompt cache size: the 2 GiB default counts")
+pcg = mc.prompt_cache_gib
+check(pcg(["--cache-ram", "512"]) == 0.5 and pcg(["--cache-ram", "2048"]) == 2.0 and pcg(["-cram", "1024"]) == 1.0, "prompt cache GiB: the --cache-ram MiB in the command")
+check(pcg(["--cache-ram", "0"]) == 0.0, "critic fix 4: --cache-ram 0 is OFF (0 GiB), not 2")
+check(pcg(["--cache-ram", "-1"]) == 8.0 and pcg([]) == 8.0, "-1 (no limit) and no flag count as llama's own 8 GiB")
+check(mc.cram_gib("0", 0.0) == 0.0 and mc.cram_gib(None, 0.0) == 0.0 and mc.cram_gib("-1", 0.0) == 8.0 and mc.cram_gib("2048", 0.0) == 2.0, "one parser: load_mode_cache_none shares it (missing flag stays 0 there)")
+pcw = r(M(avail=17.4 * GIB, total=31.1 * GIB, cap=27.1 * GIB), e=E2, mod=f, sp=9.0)          # large spill: stage 4.5 + 8 = 12.5 fits, the old rule kept mmap
+check(pcw and "whole 13.5 GiB file" in pcw and "--load-mode none" in pcw and "MOE_CACHE_MMAP_SPIKE=1" in pcw and "chain" not in pcw and "guard" not in pcw and "1.2 GB" not in pcw, "large spill, 17.4 GiB available: the staging rule kept mmap; the working-set rule (opt-in) picks none, says so, no internal words, no unrecorded incident")
+check(r(M(avail=24 * GIB, total=31.1 * GIB, cap=27.1 * GIB), e=E2, mod=f, sp=9.0) is None, "24 GiB available: mmap stays")
+mw = M(avail=17.6 * GIB, total=31.1 * GIB, cap=27.1 * GIB)
+check(r(mw, e=["--cache-ram", "0"], mod=f, sp=9.0) is None and r(mw, e=E2, mod=f, sp=9.0) is not None and r(mw, e=["--cache-ram", "-1"], mod=f, sp=9.0) is not None, "--cache-ram 0 counts 0 (13.5 + 4 = 17.5 fits 17.6: mmap), 2048 and -1 count more (none)")
+# critic fix 8: the RAM available now (not clipped at mem_cap, which already holds the reserve) and every shard
+class MU(M):
+    def mem_available(self): return 40 * GIB
+check(r(MU(avail=17.6 * GIB), e=E2, mod=f, sp=9.0) is None, "fix 8: a machine with 40 GiB available (the server's figure clipped to 17.6) does not take the reserve twice: mmap stays")
+sh = [os.path.join(d, f"s-0000{i}-of-00002.gguf") for i in (1, 2)]
+for x in sh:
+    open(x, "wb").close(); FAKE_SIZE[x] = int(7 * GIB)
+check(mc.model_file_bytes(sh[0]) == 14 * GIB and mc.model_file_bytes(f) == int(13.5 * GIB), "fix 8: a split GGUF counts every shard, a single file its own size")
+check(r(M(avail=19 * GIB), e=E2, mod=sh[0], sp=9.0) is not None and r(M(avail=20.5 * GIB), e=E2, mod=sh[0], sp=9.0) is None, "fix 8: 14 GiB in two shards: the whole-file rule sees 14, not 7")
+del os.environ[mc.MMAP_SPIKE_ENV]
+check(r(M(avail=17.4 * GIB, total=31.1 * GIB, cap=27.1 * GIB), e=E2, mod=f, sp=9.0) is None, "opt-in off (default): the same plan keeps mmap")
 # the PC case through the real command_stage (main's request, 2026-11-12): dense, the planner says "does not fit", 12 GiB available for a 13.5 GiB file
 import contextlib, io
 class PCMachine(mc.Machine):
@@ -72,6 +90,7 @@ class PCMachine(mc.Machine):
     def mem_total(self): return 32 * GIB
     def mem_cap(self): return 28 * GIB
     def mem_for_server(self, ram): return self.avail
+    def mem_available(self): return self.avail
     def run(self, cmd, **kw): return types.SimpleNamespace(returncode=0, stdout="--fit-target\n", stderr="")
 
 
@@ -123,5 +142,20 @@ mode, say = stage(19 * GIB, fits=False, over=0.7)
 check(mode == "none" and mc.LOAD_NONE_BY_RULE[0] is True, "the rule's own none is marked for the commit check")
 mode, say = stage(30 * GIB, fits=False, over=4.0)
 check(mode == "mmap" and mc.LOAD_NONE_BY_RULE[0] is False, "mmap: not marked")
+# critic fix 6: Windows, dense, the planner's spill (9 GiB at 128k), 17.4 GiB available, the launcher's own --cache-ram 2048, through command_stage
+mode, say = stage(17.4 * GIB, fits=False, over=9.0, extra=["--cache-ram", "2048"])
+check(mode == "mmap" and "whole" not in say, f"command_stage, default: Windows dense + 9 GiB spill, 17.4 GiB available -> mmap stays ({mode})")
+os.environ[mc.MMAP_SPIKE_ENV] = "1"
+try:
+    mode, say = stage(17.4 * GIB, fits=False, over=9.0, extra=["--cache-ram", "2048"])
+    check(mode == "none" and "whole 13.5 GiB file" in say and "MOE_CACHE_MMAP_SPIKE=1" in say and "chain" not in say and "guard" not in say and mc.LOAD_NONE_BY_RULE[0] is True, f"command_stage, opt-in: -> none, the plain line, marked for the commit check ({mode})")
+    mode, say = stage(20 * GIB, fits=False, over=9.0, extra=["--cache-ram", "0"])
+    check(mode == "mmap", f"command_stage, opt-in, prompt cache off, 20 GiB available: mmap ({mode})")
+    mode, say = stage(17.4 * GIB, fits=False, over=9.0, extra=["--cache-ram", "2048"], windows=False)
+    check(mode == "mmap", f"command_stage, opt-in, Linux: mmap ({mode})")
+    mode, say = stage(17.4 * GIB, fits=False, over=9.0, extra=["--cache-ram", "2048"], args=["--exact"])
+    check(mode == "mmap", f"command_stage, opt-in, --exact: mmap ({mode})")
+finally:
+    del os.environ[mc.MMAP_SPIKE_ENV]
 print("load mode test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)
