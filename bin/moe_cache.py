@@ -3801,6 +3801,14 @@ def ram_cap_decision(avail, total, *, windows, ram_flag=None, env_ram=None, stoc
     return {"gib": gib, "avail": avail, "keep": keep, "stream": stream, "source": source, "why": why}
 
 
+def live_keep_decision(total, *, stock=False, exact=False, env_keep=None, off=None):
+    """RAM-LIVE: GiB of the system's available RAM the plugin keeps free WHILE it runs (it gives experts back under it and takes them back slowly above it); None when it is
+    off: stock (no plugin), --exact (as before), the user's own MOE_CACHE_AVAIL_KEEP_GIB (it passes through untouched), MOE_CACHE_LIVE_FOLLOW=0, no RAM figure. Pure."""
+    if stock or exact or env_keep or not total or off in ("0", "off", "no"):
+        return None
+    return ram_keep_bytes(total) / 2**30
+
+
 def avail_reserve_gib(a, machine, stock=False, model=None):
     """GiB the plugin's cache may plan with: ram_cap_decision() with this machine's figures: (gib, avail, keep, decision) or None when it does not apply. Windows and Linux; --exact
     behaves as before (Windows keeps the reserve, Linux has none). Chain's Flash-Next probe 2026-11-13 and the 2026-11-17 daily-use run: without it the cache left 1.3 GB, then 0, available beside the open programs."""
@@ -3849,6 +3857,15 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
             f"{gib:.1f} GiB, about {max(expect, 0.5):.1f} GiB of expert cache after the margin and the rest of the server; fixed at the start (--ram GB sets it by hand)")
         if expect < 2.0:
             say("moe-cache: warning: very little RAM is available for the expert cache (under 2 GiB): the server will be slow; close programs, or pass --ram GB to give it more", err=True)
+    try:
+        lk = live_keep_decision(machine.mem_total(), stock=stock, exact=getattr(a, "exact", False), env_keep=os.environ.get("MOE_CACHE_AVAIL_KEEP_GIB"),
+                                off=os.environ.get("MOE_CACHE_LIVE_FOLLOW"))
+    except Exception:
+        lk = None
+    if lk:
+        env.append(("MOE_CACHE_AVAIL_KEEP_GIB", f"{lk:.3f}"))
+        say(f"moe-cache: live RAM follow: while the server runs the cache gives experts back when the system's available RAM falls under {lk:.1f} GiB and takes them back slowly above it "
+            "(about 1 GiB over the line, 256 MiB a second); it can only give back the cache's own memory; MOE_CACHE_LIVE_FOLLOW=0 turns it off")
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))

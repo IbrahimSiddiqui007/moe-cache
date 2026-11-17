@@ -700,7 +700,7 @@
                     classlru ? (" | policy classlru (" + std::to_string(nclass) + " classes, half-life " + std::to_string((int) classlru_hl) + " tokens): promotions " +
                                 std::to_string(cls_promotions) + ", demotions " + std::to_string(cls_demotions)).c_str() : "",
                     rb_on ? rb_summary().c_str() : "",
-                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows)).c_str() : "");
+                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows) + (live_keep ? ", live-follow shrinks " + std::to_string(live_shrinks) + ", grows " + std::to_string(live_grows) : std::string())).c_str() : "");
         }
     }
 

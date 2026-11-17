@@ -281,6 +281,20 @@
         }
     }
 
+    // RAM-LIVE status: one line every 15 s (at once on a squeeze, at most every 5 s) with what the process holds and what the system has left, so a run that
+    // starves the machine shows which memory it was (the cache's private memory, the mapped model file, or somebody else's). Needs live_keep.
+    void live_status(uint64_t now, bool squeeze) {
+        if (now < live_log_ms + (squeeze ? 5000 : 15000)) {
+            return;
+        }
+        live_log_ms = now;
+        const plat::proc_mem_t pm = plat::proc_mem();
+        const double g = 1073741824.0;
+        fprintf(stderr, "moe-cache: mem: system available %.2f GiB (keep %.2f)%s | this process: working set %.2f GiB = private %.2f + mapped files %.2f | cache budget %.2f GiB, "
+                        "resident experts %.2f GiB | live: shrinks %llu, grows %llu\n", live_avail / g, live_keep / g, squeeze ? " UNDER THE LINE" : "", pm.total / g, pm.priv / g,
+                pm.mapped / g, budget / g, resident_bytes / g, (unsigned long long) live_shrinks, (unsigned long long) live_grows);
+    }
+
     // auto mode: keep the real anonymous memory of the process under (limit - margin). Called every 32 groups and after every 256 MiB of reads.
     void tune() {
         if (max_budget == 0) {
@@ -305,6 +319,20 @@
         size_t target = limit_bytes > margin ? limit_bytes - margin : limit_bytes / 2;
         if (peers_on && peer_ceiling.load() != (size_t) -1) {
             target = peer_ceiling.load();     // N2: the room the other servers of the registry leave (mc_state_peers.inl)
+        }
+        // RAM-LIVE: the system's available RAM is the second line: this process never takes it under live_keep (src/mc_livecap.h)
+        size_t live_room_ok = 1;
+        if (live_keep) {
+            const uint64_t now = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            live_avail = plat::mem_available();
+            const size_t lt = mclive::ceiling(target, rss, live_avail, live_keep);
+            const bool limited = lt < target;
+            if (limited && rss > lt) {
+                live_shrinks++;
+            }
+            target = lt;
+            live_room_ok = mclive::grow_allowed(live_avail, live_keep, now, live_grow_ms) ? 1 : 0;
+            live_status(now, limited || (live_avail && live_avail < live_keep));
         }
         // bytes of expert data that are really in memory (pending ones are marked but not read yet)
         const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
@@ -343,11 +371,20 @@
                 }
                 evict(v);
             }
-        } else if (resident_bytes + ((size_t) 512 << 20) >= budget && rss + ((size_t) 512 << 20) < target && budget < max_budget) {
-            // the cache is full and there is clearly room: grow, at most 1 GiB per step
-            const size_t g = std::min<size_t>(target - rss - ((size_t) 256 << 20), (size_t) 1 << 30);
-            budget = std::min(max_budget, budget + g);
-            tune_grows++;
+        } else if (resident_bytes + ((size_t) 512 << 20) >= budget && rss + ((size_t) 512 << 20) < target && budget < max_budget && live_room_ok) {
+            // the cache is full and there is clearly room: grow, at most 1 GiB per step (RAM-LIVE: 256 MiB, once a second, 1 GiB over the line)
+            size_t g = std::min<size_t>(target - rss - ((size_t) 256 << 20), (size_t) 1 << 30);
+            if (live_keep) {
+                g = std::min(g, mclive::grow_step(live_avail, live_keep));
+                live_grow_ms = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            }
+            if (g) {
+                budget = std::min(max_budget, budget + g);
+                tune_grows++;
+                if (live_keep) {
+                    live_grows++;
+                }
+            }
         }
         update_ws_min();
     }

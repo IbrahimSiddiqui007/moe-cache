@@ -824,6 +824,40 @@ inline size_t rss_private() {
     return r;
 }
 
+// RAM-LIVE logging: what the process holds in RAM, split: total working set (Linux VmRSS), its private part (RssAnon / PrivateWorkingSetSize) and the mapped-file part
+// (Linux RssFile + RssShmem; Windows: total minus private). All 0 when unknown. Only for the status line: no decision reads it.
+struct proc_mem_t { size_t total = 0, priv = 0, mapped = 0; };
+inline proc_mem_t proc_mem() {
+    proc_mem_t m;
+#ifdef _WIN32
+    struct {
+        DWORD  cb, PageFaultCount;
+        SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage,
+               PagefileUsage, PeakPagefileUsage, PrivateUsage, PrivateWorkingSetSize;
+        ULONG64 SharedCommitUsage;
+    } ex2;
+    memset(&ex2, 0, sizeof(ex2));
+    ex2.cb = sizeof(ex2);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &ex2, sizeof(ex2))) {
+        m.total = (size_t) ex2.WorkingSetSize;
+        m.priv = (size_t) ex2.PrivateWorkingSetSize;
+        m.mapped = m.total > m.priv ? m.total - m.priv : 0;
+    }
+#else
+    if (FILE * f = fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            unsigned long long kb = 0;
+            if (sscanf(line, "VmRSS: %llu kB", &kb) == 1) { m.total = (size_t) kb * 1024; }
+            else if (sscanf(line, "RssAnon: %llu kB", &kb) == 1) { m.priv = (size_t) kb * 1024; }
+            else if (sscanf(line, "RssFile: %llu kB", &kb) == 1 || sscanf(line, "RssShmem: %llu kB", &kb) == 1) { m.mapped += (size_t) kb * 1024; }
+        }
+        fclose(f);
+    }
+#endif
+    return m;
+}
+
 // Windows: take the pages of this process's views of the given files out of its working set (VirtualUnlock on a range that is not locked does
 // exactly that; the pages stay in the standby list, so a later touch is a soft fault). Only views mapped from these files are touched, never private
 // memory. Returns the working-set bytes released; *views = how many mapped views matched. Elsewhere: 0.
