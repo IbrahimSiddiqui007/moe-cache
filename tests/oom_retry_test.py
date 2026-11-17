@@ -221,16 +221,40 @@ lr.save_cache_ok(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 3200)
 lr.save_cache_fail(cd, "gpu", "b1", "m1", 30000, kvf, "stock", 6500, 7600)
 check(LK(ctx=30000)["fails"] == 1 and mc.plan_known_cache(6500, LK(ctx=30000)) == 3200, f"fail, ok, fail: fails == 1, not 2 (got {LK(ctx=30000)['fails']}); the good size is still used")
 # the auto-tune's retry (tune_retry) then the same failure: the other retries still apply to the plan-as-is load, except the KV retry on a cache command
-def tune_case(extra_tuned):
-    mark = os.path.join(TMP, "m_tune_" + str(len(extra_tuned))); asked = []; kvasked = []
+def tune_case(extra_tuned, mode="oom_always"):
+    mark = os.path.join(TMP, "m_tune_" + mode + str(len(extra_tuned))); asked = []; kvasked = []
     if os.path.exists(mark): os.remove(mark)
     def tune_retry(rc, seen):
-        return ([sys.executable, fake, mark, "oom_always", "tuned"] + extra_tuned, dict(os.environ))
+        return ([sys.executable, fake, mark, mode, "tuned"] + extra_tuned, dict(os.environ))
     rc = mc.run_child([sys.executable, fake, mark, "oom_always"], dict(os.environ), oom_retry=lambda: asked.append(1) or [sys.executable, fake, mark, "oom_once_done", "third"],
                       kv_retry=lambda: kvasked.append(1) or None, tune_retry=tune_retry)
-    return rc, int(open(mark).read()), len(asked)
-rc, n, asked = tune_case([])
+    return rc, int(open(mark).read()), len(asked), len(kvasked)
+rc, n, asked, kvn = tune_case([])
 check(n == 3 and asked == 1, f"tune retry on a command without the cache: the out-of-memory retry still applies (started {n}x, oom_retry asked {asked}x)")
-rc, n, asked = tune_case(["--moe-cache-mib", "3000"])
-check(n == 3 and asked == 1, f"tune retry on a cache command: the cache fallback (oom_retry) still applies (started {n}x, asked {asked}x)")
+rc, n, asked, kvn = tune_case(["--moe-cache-mib", "3000"])
+check(n == 3 and asked == 1 and kvn == 0, f"tune retry on a cache command: the cache fallback (oom_retry) still applies, the KV retry does not (started {n}x, asked {asked}x, kv asked {kvn}x)")
+# a KV abort on the plan-as-is load: the KV retry runs for a command without the cache, never for one with it
+rc, n, asked, kvn = tune_case([], "kv_abort_always")
+check(kvn == 1, f"tune retry, no cache, KV abort: the KV retry is asked (kv asked {kvn}x)")
+rc, n, asked, kvn = tune_case(["--moe-cache-mib", "3000"], "kv_abort_always")
+check(kvn == 0, f"tune retry, cache command, KV abort: the KV retry is not asked (kv asked {kvn}x)")
+# cache_fallback_retry with no free-memory reading: the plan's static layers and ub, nothing recorded; no static plan: one line, no command
+ccmd = ["llama-server", "-c", "65536", "--n-cpu-moe", "999", "-ub", "2048", "-b", "2048", "--moe-cache-mib", "3300"]
+said = []; real_say = mc.say; mc.say = lambda m, err=False: said.append(m)
+recorded = []
+try:
+    new = mc.cache_fallback_retry(ccmd, None, {"static_n_cpu_moe": 34, "ub": 1024}, lambda tf: 1 / 0, lambda mib, fr: recorded.append((mib, fr)) or True)
+    check(new is not None and "--moe-cache-mib" not in new and new[new.index("--n-cpu-moe") + 1] == "34" and new[new.index("-ub") + 1] == "1024" and not recorded,
+          "free memory unknown: the plan's static layers (34) and ub (1024), the cache flag gone, nothing recorded")
+    check(any("free GPU memory unknown now" in m and "3300 MiB" in m for m in said), "free memory unknown: the line says so")
+    new = mc.cache_fallback_retry(ccmd, None, {"static_n_cpu_moe": 34, "ub": 2048}, lambda tf: 1 / 0, lambda mib, fr: True)
+    check(new is not None and new[new.index("-ub") + 1] == "2048", "static ub 2048 keeps -ub 2048 (not forced to 1024)")
+    said.clear()
+    check(mc.cache_fallback_retry(ccmd, None, {}, lambda tf: 1 / 0, lambda mib, fr: recorded.append(1)) is None and not recorded and any("no second try" in m for m in said),
+          "no free-memory reading and no static plan: no command, one 'no second try' line, nothing recorded")
+    new = mc.cache_fallback_retry(ccmd, (8 * 2**30, 7 * 2**30), None, lambda tf: (30, 1024), lambda mib, fr: recorded.append((mib, fr)) or True)
+    check(new is not None and new[new.index("--n-cpu-moe") + 1] == "30" and new[new.index("-ub") + 1] == "1024" and recorded == [(3300, 7168.0)], "free memory known: the tuner's plan, and the failed size recorded with the free memory")
+finally:
+    mc.say = real_say
+
 sys.exit(1 if fails else 0)

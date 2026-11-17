@@ -1886,6 +1886,31 @@ def cache_fallback_cmd(cmd, n_cpu_moe, ub=None):
     return new
 
 
+def cache_fallback_retry(cmd, tf, tuned, tune_free, record_fail):
+    """LAUNCHER-1200: the command for the one start without the launcher's GPU expert cache, or None (with one line saying why). tf = (total, free) GPU bytes read just now, or None;
+    tune_free(tf) -> (n_cpu_moe, ub) of the plan without a cache for that free memory; tuned = the start's plan (its static layers and ub are used when tf is None);
+    record_fail(mib, free_mib) -> True when the failed size was stored (only called with a free-memory reading: without one a later change could not be told from this failure)."""
+    n_new = ub_new = None
+    if tf:
+        n_new, ub_new = tune_free(tf)
+        free_txt = f"{tf[1] / 2**30:.1f} GiB free now"
+    else:                                   # free memory cannot be read: the plan's own static answer (made with the free memory of the start, at the plan's own -ub)
+        st = (tuned or {}).get("static_n_cpu_moe")
+        if st is not None:
+            n_new, ub_new = int(st), (tuned or {}).get("ub")
+        free_txt = "free GPU memory unknown now, using the plan's static layers"
+    new = cache_fallback_cmd(cmd, n_new, ub_new) if n_new is not None else None
+    if not new:
+        say("moe-cache: llama-server could not load with the GPU expert cache and no plan without it could be made (no free-memory reading, no static plan, or no --n-cpu-moe in the command): "
+            "no second try. Use --gpu-cache off or a smaller --gpu-cache", err=True)
+        return None
+    mib = int(arg_after(cmd, "--moe-cache-mib"))
+    saved = bool(tf) and record_fail(mib, tf[1] / 2**20)
+    say(f"moe-cache: llama-server could not load with the GPU expert cache of {mib} MiB (not enough free GPU memory; {free_txt}): starting again once without "
+        f"the cache, with {n_new} layers of experts on the CPU." + (" The next start plans a smaller cache or none." if saved else "") + " --gpu-cache off keeps it off", err=True)
+    return new
+
+
 def cache_oom_decision(cmd, launcher_cache, exact, engine):
     """LAUNCHER-1200: what the out-of-memory retry does with a command that has llama.cpp's GPU expert cache (--moe-cache-mib): "fallback" = start once without it (the cache is the
     launcher's own choice, not --exact, the stock engine: with the plugin the cache needs MOE_CACHE_GPU_CACHE in the environment too); "refuse" = your own cache flag, --exact or the
@@ -5306,31 +5331,17 @@ def run_launch_plan(plan):
                     return gpu_total_free_bytes()
                 time.sleep(2)                          # the failed server's memory is given back a moment after it exits
                 tf = free_now()
-                n_new = ub_new = None
-                if tf:
-                    reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
-                    t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd,
+                def tune_free(tf_):
+                    reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf_)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
+                    t = tune(model, ctx, free=tf_[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd,
                              free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
-                    n_new, ub_new = t["n_cpu_moe"], t["ub"]
-                    free_txt = f"{tf[1] / 2**30:.1f} GiB free now"
-                else:                                   # free memory cannot be read: the plan's own static answer (made with the free memory of the start)
-                    st = (plan.tuned or {}).get("static_n_cpu_moe")
-                    if st is not None:
-                        n_new, ub_new = int(st), (plan.tuned or {}).get("ub")
-                    free_txt = "free GPU memory unknown now, using the plan's static layers"
-                new = cache_fallback_cmd(cmd, n_new, ub_new) if n_new is not None else None
-                if new:
-                    mib = int(arg_after(cmd, "--moe-cache-mib"))
+                    return t["n_cpu_moe"], t["ub"]
+                def record_fail(mib, free_mib):
                     rid = cache_record_ident(a, machine, ls, model)
-                    saved = False
-                    if rid and tf:                      # a failure without a free-memory reading is not recorded (it could not be told apart from a memory change later)
-                        lr_, gid_, build_, mid_ = rid
-                        saved = lr_.save_cache_fail(CACHE_DIR, gid_, build_, mid_, int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_key(cmd), "stock", mib, tf[1] / 2**20)
-                    say(f"moe-cache: llama-server could not load with the GPU expert cache of {mib} MiB (not enough free GPU memory; {free_txt}): starting again once without "
-                        f"the cache, with {n_new} layers of experts on the CPU." + (" The next start plans a smaller cache or none." if saved else "") + " --gpu-cache off keeps it off", err=True)
-                    return new
-                say("moe-cache: llama-server could not load with the GPU expert cache and no plan without it could be made (no free-memory reading, no static plan, or no --n-cpu-moe in the command): "
-                    "no second try. Use --gpu-cache off or a smaller --gpu-cache", err=True)
+                    if not rid:
+                        return False
+                    return rid[0].save_cache_fail(CACHE_DIR, rid[1], rid[2], rid[3], int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_key(cmd), "stock", mib, free_mib)
+                return cache_fallback_retry(cmd, tf, plan.tuned, tune_free, record_fail)
             except Exception as e:
                 say(f"moe-cache: llama-server could not load with the GPU expert cache; the retry without it could not be planned ({e})", err=True)
             return None
