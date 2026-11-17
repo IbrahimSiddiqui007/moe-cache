@@ -2513,6 +2513,7 @@ class Machine:
     def physical_cores(self): return physical_cores()
     def mem_cap(self): return mem_cap()
     def mem_for_server(self, ram_gb): return mem_for_server(ram_gb)
+    def cgroup_limit(self): return cgroup_mem_limit()
     def win_memory(self): return win_memory()
     def win_commit(self): return win_commit()
     def win_dedicated_vram(self): return win_dedicated_vram()
@@ -3124,7 +3125,7 @@ def plan_placement(a, model, ctx, ncmoe, machine):
     ncmoe: --n-cpu-moe as the user gave it (None: the tuner decides; "999" stands in until it does). Returns (n_cpu_moe as text, the planner's answer as a dict or None, why it failed or None)."""
     planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
     if ncmoe is None:
-        ram_gib = float(f"{(avail_reserve_gib(a, machine) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None      # the planner plans with the capped memory too
+        ram_gib = float(f"{(avail_reserve_gib(a, machine, model=model) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None      # the planner plans with the capped memory too
         vram_gib = float(a.vram) if a.vram else None
         try:
             planner_info = machine.planner_answer(model, ctx, ram_gib, vram_gib)
@@ -3698,7 +3699,7 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
             have = machine.lib_api(lib)
         if not machine.lib_exists(lib) or (want and have and want != have):
             return None                                   # no matching plugin build here: stock stays (this only ever adds the plugin when it can load)
-        ram_gib = float(f"{(avail_reserve_gib(a, machine) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None
+        ram_gib = float(f"{(avail_reserve_gib(a, machine, model=model) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import tune
         # the same GPU room and reserve as the plan itself (gpu_room_inputs: the room figure on Windows AMD / Intel, the desk reserve for the desktop, --gpu-margin, --leave-room): the
@@ -3769,20 +3770,59 @@ def profile_stage(a, model, pname, dry):
     return profile
 
 
-def avail_reserve_gib(a, machine, stock=False):
-    """GiB the plugin's cache may plan with on Windows: the RAM available now minus the reserve the whole-server cap keeps (max(4 GiB, 12.5 % of the RAM)), at least 4 GiB; None when this does not
-    apply (Linux, stock, --ram or MOE_CACHE_RAM_GIB given, no figure). Chain's Flash-Next probe 2026-11-13: without it the default cache left 1.3 GB available beside the open programs."""
-    if not getattr(machine, "windows", False) or stock or a.ram or os.environ.get("MOE_CACHE_RAM_GIB"):      # (a test double without the field is not Windows)
+RAM_KEEP_MIN, RAM_KEEP_FRAC = 4 * 2**30, 0.125      # RAM kept free for the OS and the user's programs: max(4 GiB, 12.5 %), the same line as the whole-server cap (mem_cap)
+RAM_STREAM_GIB = 2.0         # extra RAM kept free when the model file is bigger than the cache can hold, so every request streams it through memory-mapped pages. ASSUMED, not measured: the
+#                              PC re-run with apps open (chain 2026-11-17) is what shows whether it is enough; MOE_CACHE_STREAM_GIB changes it
+
+
+def ram_keep_bytes(total):
+    """Bytes kept free for the OS and the user's programs on a machine with `total` bytes of RAM."""
+    return max(RAM_KEEP_MIN, total * RAM_KEEP_FRAC)
+
+
+def ram_cap_decision(avail, total, *, windows, ram_flag=None, env_ram=None, stock=False, cgroup_limit=None, model_bytes=None, stream_gib=RAM_STREAM_GIB):
+    """The one decision of how much RAM the plugin may plan with, from the RAM available at start (bytes). Returns None when it does not apply (stock, the user's --ram or
+    MOE_CACHE_RAM_GIB, a cgroup limit on Linux (the plugin reads that itself), no figure) or a dict: gib (what MOE_CACHE_RAM_GIB gets), avail, keep, stream (GiB kept for
+    the streamed file, 0 when the model fits), source (where `avail` came from), why (one line for the plan). Windows: GlobalMemoryStatusEx ullAvailPhys; Linux: MemAvailable
+    (page cache and other reclaimable memory count as available there). Pure: no probes, no environment."""
+    if stock or ram_flag or env_ram or not avail or not total or (not windows and cgroup_limit):
+        return None
+    keep = ram_keep_bytes(total)
+    stream = 0.0
+    if model_bytes and model_bytes > avail - keep:           # the file does not fit next to the reserve: reads go through mapped pages that stay in the working set
+        stream = float(stream_gib)
+    gib = max((avail - keep) / 2**30 - stream, 4.0)
+    if gib * 2**30 >= avail:
+        return None
+    source = "Windows GlobalMemoryStatusEx" if windows else "Linux MemAvailable"
+    why = (f"{avail / 2**30:.1f} GiB available now ({source}), {keep / 2**30:.1f} GiB kept free for your programs (physical RAM minus max(4 GiB, 12.5 %))"
+           + (f" and {stream:.1f} GiB for the model file read through memory-mapped pages (the file is bigger than the cache; assumed, not measured)" if stream else ""))
+    return {"gib": gib, "avail": avail, "keep": keep, "stream": stream, "source": source, "why": why}
+
+
+def avail_reserve_gib(a, machine, stock=False, model=None):
+    """GiB the plugin's cache may plan with: ram_cap_decision() with this machine's figures: (gib, avail, keep, decision) or None when it does not apply. Windows and Linux; --exact
+    behaves as before (Windows keeps the reserve, Linux has none). Chain's Flash-Next probe 2026-11-13 and the 2026-11-17 daily-use run: without it the cache left 1.3 GB, then 0, available beside the open programs."""
+    windows = bool(getattr(machine, "windows", False))      # (a test double without the field is not Windows)
+    if not windows and getattr(a, "exact", False):
         return None
     try:
         avail, total = machine.mem_for_server(None), machine.mem_total()
+        limit = None if windows else getattr(machine, "cgroup_limit", lambda: None)()
     except Exception:
         return None
-    if not avail or not total:
-        return None
-    keep = max(4 * 2**30, total / 8)
-    gib = max((avail - keep) / 2**30, 4.0)
-    return (gib, avail, keep) if gib * 2**30 < avail else None
+    size = None
+    if model:
+        try:
+            size = sum(os.path.getsize(p) for p in model_parts(model))
+        except OSError:
+            size = None
+    try:
+        sg = float(os.environ.get("MOE_CACHE_STREAM_GIB", RAM_STREAM_GIB))
+    except ValueError:
+        sg = RAM_STREAM_GIB
+    d = ram_cap_decision(avail, total, windows=windows, ram_flag=a.ram, env_ram=os.environ.get("MOE_CACHE_RAM_GIB"), stock=stock, cgroup_limit=limit, model_bytes=size, stream_gib=sg)
+    return (d["gib"], d["avail"], d["keep"], d) if d else None
 
 
 def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
@@ -3796,13 +3836,13 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
-    elif (ar := avail_reserve_gib(a, machine, stock)):
-        gib, avail, keep = ar
+    elif (ar := avail_reserve_gib(a, machine, stock, model)):
+        gib, avail, keep, dec = ar
         env.append(("MOE_CACHE_RAM_GIB", f"{gib:.3f}"))
         # the plugin's budget = this - margin (1 GiB + the prompt-cache reserve, up to 2 GiB) - the rest of the process (3.5 GiB guess until measured), at least 0.5 GiB; fixed at the start
         # (with the variable set the plugin does not read the available RAM again after the upload)
         expect = gib - 3.0 - 3.5
-        say(f"moe-cache: RAM: {avail / 2**30:.1f} GiB available now, {keep / 2**30:.1f} GiB kept free for your programs (physical RAM minus max(4 GiB, 12.5 %)): the cache plans with "
+        say(f"moe-cache: RAM: {dec['why']}: the cache plans with "
             f"{gib:.1f} GiB, about {max(expect, 0.5):.1f} GiB of expert cache after the margin and the rest of the server; fixed at the start (--ram GB sets it by hand)")
         if expect < 2.0:
             say("moe-cache: warning: very little RAM is available for the expert cache (under 2 GiB): the server will be slow; close programs, or pass --ram GB to give it more", err=True)
