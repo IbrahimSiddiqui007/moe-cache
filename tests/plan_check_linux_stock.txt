@@ -1,0 +1,15 @@
+ARGS: linux laptop CUDA, 35B MoE IQ3_XXS, --ctx 65536 --dry-run (captured 2026-11-17)
+moe-cache: GPU memory: planning with 8.0 GiB free (read now from nvidia-smi or the AMD GPU's sysfs; --vram GiB sets it by hand)
+moe-cache: sampling from the Qwen3.5/3.6 model card (thinking): --min-p 0 --presence-penalty 1.5; temp, top-p, top-k from the GGUF; requests that send their own values win; --no-sampling-defaults turns it off
+moe-cache: memory cap 27.0 GiB (28.9 GB) for the whole server (physical RAM minus max(4 GiB, 12.5 %); --max-ram GB changes it)
+moe-cache: GPU expert cache on by default (--gpu-cache auto): Linux, a CUDA llama-server and a MoE model that fits in RAM, the combination it was measured on (one NVIDIA laptop, 35B model); the experts you use most stay on the GPU. --gpu-cache off or --exact turns it off
+moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C 0x555); --no-pin to disable
+moe-cache: micro-batch -ub 2048 (prompt processing; --ub N to change)
+moe-cache: tuner: GPU expert cache of 2396 MiB (23 % of the experts; 0 MiB kept free for the long-prompt GPU block)
+moe-cache: tuner: micro-batch 2048 (about 1.58x the prompt speed of 512)
+moe-cache: GPU expert cache of 2396 MiB; llama.cpp keeps the hottest experts on the GPU
+moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); llama-server's default number of slots. To change it: moe-cache-server ... -- --cache-ram MiB
+moe-cache: the model (13.2 GB) fits in the memory it may use (20.4 GB): running stock llama-server without the plugin, which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.
+moe-cache: GPU expert cache: the 12.3 GiB model fits the 19.0 GiB of RAM this server may use (with the prompt cache and a 4.0 GiB reserve): --load-mode none (llama.cpp warns that mmap is slow with CPU-side experts; --exact or --load-mode after -- keeps mmap)
+moe-cache: web UI and API will be at http://127.0.0.1:8099
+env GGML_OP_OFFLOAD_MIN_BATCH=512 LLAMA_ARG_CORS_ORIGINS=localhost /home/ibrum/Dev/StrataTest/work/llama-b12207/build-cuda/bin/llama-server -m /home/ibrum/models/dense_fits/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf -ngl 99 --n-cpu-moe 999 -c 65536 -fa on --load-mode none --no-warmup --port 8099 -C 0x555 --cpu-strict 1 --min-p 0 --presence-penalty 1.5 -ub 2048 -b 2048 --moe-cache-mib 2396 --cache-ram 2048

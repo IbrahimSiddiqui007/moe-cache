@@ -29,3 +29,7 @@ Commands (all `python3 bin/moe_cache.py bench-record ...`; the format and the ru
 
 Adding a result: run the test with `bench-report` or `bench-record assemble`, `ingest` the record, `claim add` for the sentence you want to publish, `board`, then put
 `<!-- claim:ID -->` next to the number where you publish it.
+
+## reference.csv (stored stock / default results)
+
+`benchmarks/reference.csv` holds one row per measured reference arm (stock llama.cpp, or our launcher default) so the test chain does not measure it again every slot (rule R16). The key is model, quant, kit, llama build, machine, context, plan hash, protocol and apps open/closed; a row younger than 14 days with the same key is reused by `handover/tools/chainkit` (`reuse_reference: true`), and a stock arm for a key that has a row is refused unless the spec gives a `remeasure_reason`. Rows are written by `chainkit.py reference-add` from a finished item, never by hand. The file starts empty (header only): no reference number exists yet. A row from one run is labelled "forecast (one run)" (R17).
