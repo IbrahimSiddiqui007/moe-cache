@@ -1903,6 +1903,54 @@ def shrink_known_fail(gcmib, fail_mib):
     return n if n >= 1536 else 0
 
 
+def kv_key(cmd):
+    """The KV cache types of a command as the cache-failure record keys them (the one place, for saving and looking up)."""
+    return (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16")
+
+
+def plan_known_cache(gcmib, st, auto_mib=None):
+    """The cache size (MiB) to plan given the failure record st ({"fail_mib", "fails", "ok_mib"}, see load_record.lookup_cache_fail) and the tuner's own size from today's free
+    memory (auto_mib, may be None): unchanged under the failed size; 0 (no cache) after two failures in a row; else the size that loaded before, else 15 % under the failed
+    one, never over the tuner's size."""
+    if not st or gcmib < st["fail_mib"]:
+        return gcmib
+    if st.get("fails", 1) >= 2:
+        return 0
+    n = st["ok_mib"] if st.get("ok_mib") else shrink_known_fail(gcmib, st["fail_mib"])
+    if n and auto_mib and auto_mib > 0:
+        n = min(n, auto_mib // 64 * 64)
+    return n if n >= 1536 else 0
+
+
+def apply_cache_record(a, cmd, machine, ls, model, ctx, tuned):
+    """LAUNCHER-1200: on the FINAL command (so the KV types are the ones the load will use), a cache size that failed to load here before is planned smaller or dropped.
+    Edits cmd in place and returns the new size (MiB, 0 = no cache) or None when nothing changed. The record is not trusted when more GPU memory is free now than after the failure."""
+    if "--moe-cache-mib" not in cmd or not LAUNCHER_CACHE[0]:
+        return None
+    rid = cache_record_ident(a, machine, ls, model)
+    if not rid:
+        return None
+    try:
+        cur = int(arg_after(cmd, "--moe-cache-mib"))
+        st = rid[0].lookup_cache_fail(CACHE_DIR, rid[1], rid[2], rid[3], int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_key(cmd), "stock", free_now_mib=getattr(a, "plan_free_mib", None))
+    except Exception:
+        return None
+    new = plan_known_cache(cur, st, (tuned or {}).get("gpu_cache_mib"))
+    if not st or new == cur:
+        return None
+    if new:
+        cmd[cmd.index("--moe-cache-mib") + 1] = str(new)
+    else:
+        static = (tuned or {}).get("static_n_cpu_moe")
+        nc = cache_fallback_cmd(cmd, static, 1024) if static is not None else None
+        if not nc:
+            return None                          # no static plan to fall back to: the cache stays, the out-of-memory retry decides at load
+        cmd[:] = nc
+        LAUNCHER_CACHE[0] = False
+    say(f"moe-cache: a GPU expert cache of {st['fail_mib']} MiB did not load here before (out of GPU memory; {st['fails']} failed start(s)): " + (f"planning {new} MiB instead" if new else "no cache this time"))
+    return new
+
+
 def cache_record_ident(a, machine, ls, model):
     """(load_record module, GPU identity, llama.cpp build id, model id) for the cache-failure record, or None (record off, --vram given, something unknown). Never raises."""
     try:
@@ -2243,8 +2291,9 @@ def load_recorder_for(a, plan_cmd, machine, ls, model, ctx, engine):
         mtp = "draft-mtp" in cmd            # an MTP load is recorded with the draft context told apart (follow-up 1); its gap is not learned (planner/load_record.py: entries)
         return lr.Recorder({"cache_dir": CACHE_DIR, "machine": gid, "build": build, "model": mid, "ctx": int(arg_after(cmd, "-c", "--ctx-size") or ctx),
                             "ub": int(ub) if (ub or "").isdigit() else 0,
-                            "kv": (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16"),
-                            "engine": engine, "mtp": mtp, "gpu_expert_mib": gpu_expert_bytes(lay, min(int(n), lay["n_layers"])) / 2**20,
+                            "kv": kv_key(cmd),
+                            "engine": engine, "mtp": mtp, "cache_mib": int(arg_after(cmd, "--moe-cache-mib")) if (LAUNCHER_CACHE[0] and (arg_after(cmd, "--moe-cache-mib") or "").isdigit()) else 0,
+                            "gpu_expert_mib": gpu_expert_bytes(lay, min(int(n), lay["n_layers"])) / 2**20,
                             # a load that runs out of GPU memory is a failed edge at this value (follow-up 7): with the free memory read just before this load, not the plan's
                             # (a plan with a GPU cache does not walk --n-cpu-moe: no edge from it)
                             "n_cpu_moe": None if "--moe-cache-mib" in cmd else int(n), "free_now_mib": free_before_load(machine, getattr(a, "plan_free_mib", None)),
@@ -4181,19 +4230,6 @@ def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, sto
                 say(f"moe-cache: --gpu-cache: {gcmib} MiB capped to {cap} MiB: on Vulkan each of llama.cpp's cache banks must fit in one device buffer "
                     f"({lim / 2**20:.0f} MiB on this GPU), a bigger cache aborts the load")
                 gcmib = str(cap)
-        if gcmib.isdigit() and int(gcmib) > 0 and ctx and stock:
-            # LAUNCHER-1200: a load with a cache this size (or bigger) ran out of GPU memory here before: plan 15 % under it, or no cache (the record is dropped when more GPU memory is free now)
-            rid = cache_record_ident(a, machine, ls, model)
-            if rid:
-                try:
-                    kv_ = (arg_after(extra, "-ctk", "--cache-type-k") or "f16", arg_after(extra, "-ctv", "--cache-type-v") or "f16")
-                    fail = rid[0].lookup_cache_fail(CACHE_DIR, rid[1], rid[2], rid[3], int(ctx), kv_, "stock", free_now_mib=getattr(a, "plan_free_mib", None))
-                except Exception:
-                    fail = None
-                if fail and int(gcmib) >= fail:
-                    new_mib = shrink_known_fail(int(gcmib), fail)
-                    say(f"moe-cache: a GPU expert cache of {fail} MiB did not load here before (out of GPU memory): " + (f"planning {new_mib} MiB instead" if new_mib else "using the static GPU layers instead"))
-                    gcmib = str(new_mib) if new_mib else ""
         if gcmib and int(gcmib) < 512:
             say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
         if not gcmib:
@@ -5132,6 +5168,8 @@ def _launch_plan(a, extra, argv, machine):
         kv_q8 = kv_quantized(cmd)        # q8_0, the dense ladder's K q8_0 / V q4_0 and q4_0/q4_0 all count (a plain == "q8_0" read q4_0 as f16 and let the commit check put q8_0 back)
     cmd_picked = list(cmd)
     cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
+    if apply_cache_record(a, cmd, machine, ls, model, ctx, tuned) == 0:
+        ncmoe, ub = arg_after(cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(cmd, "-ub", "--ubatch-size") or ub
     tune_fallback = None
     if tune_info and tune_info.get("changed") and tune_info.get("before") and tune_info.get("state") in ("cached", "tuned"):
         # LAUNCHER-1041: the commit check may have changed the picked plan after all: the end state is said, not the pick alone
@@ -5277,8 +5315,8 @@ def run_launch_plan(plan):
                         saved = False
                         if rid:
                             lr_, gid_, build_, mid_ = rid
-                            kv_ = (arg_after(cmd, "-ctk", "--cache-type-k") or "f16", arg_after(cmd, "-ctv", "--cache-type-v") or "f16")
-                            saved = lr_.save_cache_fail(CACHE_DIR, gid_, build_, mid_, int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_, "stock", mib, getattr(a, "plan_free_mib", None))
+                            kv_ = kv_key(cmd)
+                            saved = lr_.save_cache_fail(CACHE_DIR, gid_, build_, mid_, int(arg_after(cmd, "-c", "--ctx-size") or ctx), kv_, "stock", mib, tf[1] / 2**20)
                         say(f"moe-cache: llama-server could not load with the GPU expert cache of {mib} MiB (not enough free GPU memory; {tf[1] / 2**30:.1f} GiB free now): starting again once without "
                             f"the cache, with {t['n_cpu_moe']} layers of experts on the CPU." + (" The next start plans a smaller cache or none." if saved else "") + " --gpu-cache off keeps it off", err=True)
                         return new

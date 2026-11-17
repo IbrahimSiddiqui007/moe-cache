@@ -173,13 +173,48 @@ check(mc.shrink_known_fail(3000, 0) == 3000 and mc.shrink_known_fail(2000, 3000)
 sys.path.insert(0, os.path.join(ROOT, "planner"))
 import load_record as lr  # noqa: E402
 cd = os.path.join(TMP, "lrcache"); kvf = ("f16", "f16")
-check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock") is None, "no failure recorded: None")
-check(lr.save_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", 3000, 7600) and lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", free_now_mib=7600) == 3000,
-      "a failed cache of 3000 MiB is stored and found")
-check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", free_now_mib=8400) is None, "more free GPU memory now (+800 MiB): the failure is not trusted")
-check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 32768, kvf, "stock") is None and lr.lookup_cache_fail(cd, "gpu", "b2", "m1", 65536, kvf, "stock") is None, "another context or build: not found")
+LK = lambda free=7600, ctx=65536, b="b1", kv=kvf: lr.lookup_cache_fail(cd, "gpu", b, "m1", ctx, kv, "stock", free_now_mib=free)
+check(LK() is None, "no failure recorded: None")
+check(lr.save_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", 3000, 7600) and LK()["fail_mib"] == 3000 and LK()["fails"] == 1, "a failed cache of 3000 MiB is stored and found (1 failure)")
+check(LK(8400) is None, "more free GPU memory now (+800 MiB): the failure is not trusted")
+check(LK(None) is None, "free memory now unknown: not trusted (the free-memory check is not skipped)")
+check(LK(ctx=32768) is None and LK(b="b2") is None and LK(kv=("q8_0", "q8_0")) is None, "another context, build or KV type: not found")
 lr.save_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", 2500, 7600)
-check(lr.lookup_cache_fail(cd, "gpu", "b1", "m1", 65536, kvf, "stock", free_now_mib=7600) == 2500, "a later, smaller failure replaces it")
+check(LK()["fail_mib"] == 2500 and LK()["fails"] == 2, "a later, smaller failure replaces it; two failures in a row are counted")
+# plan_known_cache: the real decision
+S = lambda fail, fails=1, ok=None: {"fail_mib": fail, "fails": fails, "ok_mib": ok}
+check(mc.plan_known_cache(6500, S(6500)) == 5504 and mc.plan_known_cache(6500, S(6500), 3300) == 3264, "plan: 15 % under the failed size, never over the tuner's own size from today's memory")
+check(mc.plan_known_cache(6500, S(6500, 2)) == 0, "plan: after two failures in a row, no cache")
+check(mc.plan_known_cache(6500, S(6500, 1, 3200)) == 3200, "plan: a size that loaded before is used directly")
+check(mc.plan_known_cache(3000, S(6500)) == 3000 and mc.plan_known_cache(3000, None) == 3000, "plan: a size under the failed one, or no record: unchanged")
+# the size that loaded: kept under the failing size, record cleared at or over it
+lr.save_cache_fail(cd, "gpu", "b1", "m1", 40000, kvf, "stock", 6500, 7600)
+lr.save_cache_ok(cd, "gpu", "b1", "m1", 40000, kvf, "stock", 3200)
+check(LK(ctx=40000)["ok_mib"] == 3200 and LK(ctx=40000)["fail_mib"] == 6500, "a size that loaded fine (under the failing one) is recorded next to the failure")
+lr.save_cache_ok(cd, "gpu", "b1", "m1", 40000, kvf, "stock", 6500)
+check(LK(ctx=40000) is None, "a load with the cache at or over the failing size clears the record")
+check(not lr.save_cache_ok(cd, "gpu", "b9", "m1", 65536, kvf, "stock", 3000), "no failure recorded: a good load writes nothing")
+# apply_cache_record on a final command, with a real record and a stub machine
+class M:
+    def gpu_identity(self): return "gpu"
+class A: pass
+a = A(); a.vram = None; a.vram_user = None; a.plan_free_mib = 7600
+mc.load_record_on = lambda: True
+mc.CACHE_DIR = os.path.join(TMP, "apply"); mc.LAUNCHER_CACHE[0] = True
+mc_lr = lr; mc_lr.build_id = lambda ls: "bX"; mc_lr.model_id = lambda m: "mX"
+base = ["llama-server", "-c", "65536", "--n-cpu-moe", "999", "-ub", "2048", "-b", "2048", "--moe-cache-mib", "6500", "-ctk", "q8_0", "-ctv", "q8_0"]
+mc_lr.save_cache_fail(mc.CACHE_DIR, "gpu", "bX", "mX", 65536, mc.kv_key(base), "stock", 6500, 7600)
+tuned = {"gpu_cache_mib": 3300, "static_n_cpu_moe": 34}
+c = list(base); r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r == 3264 and c[c.index("--moe-cache-mib") + 1] == "3264", f"apply on the final command (q8_0 KV key): 6500 planned as the tuner's 3264 (got {r})")
+c = [x if x != "q8_0" else "f16" for x in base]; r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r is None and "6500" in c, "a command with another KV type has another key: record not applied")
+mc_lr.save_cache_fail(mc.CACHE_DIR, "gpu", "bX", "mX", 65536, mc.kv_key(base), "stock", 5000, 7600)
+c = list(base); r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r == 0 and "--moe-cache-mib" not in c and c[c.index("--n-cpu-moe") + 1] == "34" and mc.LAUNCHER_CACHE[0] is False, "after two failures: no cache, the static layers (34), cache flag off")
+mc.LAUNCHER_CACHE[0] = False
+c = list(base); r = mc.apply_cache_record(a, c, M(), "ls", "model", 65536, tuned)
+check(r is None and "6500" in c, "your own cache flag (not the launcher's): never edited")
 # at most two loads when the auto-tune's retry already ran (tune_retry first, then the same failure again: no third load)
 mark = os.path.join(TMP, "m_tune_oom"); asked = []
 def tune_retry(rc, seen):
