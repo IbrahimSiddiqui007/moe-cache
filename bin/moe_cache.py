@@ -5136,7 +5136,8 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     if a.retune:       # not "first start": the stored pick is being replaced
         say_fn(f"moe-cache: auto-tune: --retune: measuring again, trying {how_many} for at most {at.BUDGET_S:.0f} s (the stored result for this model, machine and context is replaced)")
     else:
-        say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: trying {how_many} for at most {at.BUDGET_S:.0f} s (stored afterwards; --retune measures again)")
+        say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: tuning now, once: up to {at.BUDGET_S:.0f} s before the server starts (the result is stored; "
+               f"later starts skip this; --retune measures again, --exact skips it). Trying {how_many}")
     kv_f16 = [False]         # after llama.cpp's known load abort with the launcher's q8_0 KV: this and the later plans are measured with f16 KV (the start's own retry ends there too)
     def run(c, left_s, n):
         c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)

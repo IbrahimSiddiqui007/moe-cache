@@ -356,6 +356,7 @@ try:
     seen_.clear()
     cmd, env, info, out = stage2(counting, size=18.6e9, avail=24e9)
     check(info["state"] == "tuned" and len(seen_) > 2, f"an 18.6 GB model on a 32 GB computer (over 40 % of its RAM, fits the server's memory) is tuned ({len(seen_)} loads)")
+    check(any("tuning now, once" in l and f"{at.BUDGET_S:.0f} s" in l and "later starts skip this" in l for l in out), "a first start says how long tuning takes and that it happens once")
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     cmd, env, info, out = stage2(counting, size=5e9, avail=20e9)
     check(info["state"] == "tuned" and seen_, "a model of 5 GB on 32 GB RAM is tuned")
