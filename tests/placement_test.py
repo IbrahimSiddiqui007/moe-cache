@@ -336,6 +336,31 @@ run, clk, seen = fake(lambda n: 20.0 * (1 + 0.04 * (28 - n)), 0)
 res = at.tune([at.Candidate("C0", "the plan as it is", [])], run, clock=clk, walk=28, budget_s=10000, check=lambda c: (c.id != "ncmoe-3", "too big"))
 check(res["walk"]["steps"] == 2 and "commit check" in res["walk"]["end"] and ("ncmoe-3", 25) not in seen, f"walk: a step the commit check refuses is not loaded ({res['walk']})")
 check(any("edge walk from --n-cpu-moe 28" in l for l in at.summary_lines(res)), "the summary says how the walk went")
+# LAUNCHER-1225 step 2: two layers per load while the known fit limit is far (> WIDE_FROM layers), then one; a failed two-layer step steps back one layer
+def walk32(oom_below, floor):
+    seen_, clk_ = [], [0.0]
+    def run_(c, left, n_tok):
+        cmd_, _, _ = at.apply_edits(CMD32, [], c.edits)
+        n = int(at.flag_value(cmd_, "--n-cpu-moe"))
+        seen_.append(n)
+        clk_[0] += 8
+        if (n in oom_below) if isinstance(oom_below, set) else n < oom_below:
+            return {"ok": False, "error": "llama-server stopped while loading (out of GPU memory)"}
+        return {"ok": True, "load_s": 5, "prompt_tps": 600.0, "decode_tps": 17.0 * (1 + 0.03 * (32 - n)), "decode_n": n_tok}
+    return at.tune([at.Candidate("C0", "the plan as it is", [])], run_, clock=lambda: clk_[0], walk=32, budget_s=10000, floor=floor), seen_
+r_w, s_w = walk32(0, 18)
+check(s_w[:6] == [32, 30, 28, 26, 24, 23] and min(s_w) == 18 and r_w["walk"]["layers"] == 14 and r_w["walk"]["steps"] < 14,
+      f"far fit limit (18 from 32): 2 layers per load down to 6 above it, then 1 ({s_w}, {r_w['walk']['steps']} loads for {r_w['walk']['layers']} layers)")
+r_f, s_f = walk32(29, 18)
+check(s_f[:4] == [32, 30, 28, 29] and r_f["picked"] == "ncmoe-2" and "ncmoe-3 is at the edge" in r_f["walk"]["end"],
+      f"a failed two-layer step (28) steps back to 29, which loads: 29 is the edge, 30 is picked ({s_f}, {r_f['picked']}, {r_f['walk']['end']})")
+r_g, s_g = walk32(31, 18)
+check(s_g[:3] == [32, 30, 31] and r_g["picked"] == "C0" and "ncmoe-1 is at the edge" in r_g["walk"]["end"],
+      f"30 fails, the step back 31 loads: 31 is the edge, the plan stays ({s_g}, {r_g['picked']}, {r_g['walk']['end']})")
+r_h, s_h = walk32(set(range(0, 32)), 18)
+check(s_h[:3] == [32, 30, 31] and r_h["picked"] == "C0" and "did not load or run" in r_h["walk"]["end"], f"30 and the step back 31 both fail: the plan stays ({s_h[:3]}, {r_h['walk']['end']})")
+r_n, s_n = walk32(27, None)
+check(s_n[:7] == [32, 31, 30, 29, 28, 27, 26], f"no known fit limit: one layer per load as before ({s_n})")
 # chat is scored toward decode: a plan with 10 % faster decode and 30 % slower prompts wins for chat, loses for agents
 row_a = {"prompt_tps": 600.0, "decode_tps": 20.0}
 row_b = {"prompt_tps": 420.0, "decode_tps": 22.0}

@@ -23,6 +23,7 @@ SHORT_MIN = 64              # below this a decode figure says nothing
 SCORE_PROMPT = 1000         # score = seconds for this many prompt tokens + DECODE_TOKENS generated tokens: chat is weighted to decode (planner map fix 2: a chat turn
                             # reads only its new text, the earlier turns come from the prompt cache; 4000 until v0.3.8) ...
 SCORE_PROMPT_AGENT = 16000  # ... (agents send long prompts)
+WIDE_FROM = 6               # LAUNCHER-1225: the walk moves two expert layers per load while the known fit limit is more than this many layers away
 WALK_MAX = 12               # the edge walk tries at most this many steps of one more expert layer on the GPU (each step is a load; the 180 s budget usually ends it first)
 RAMLOCK_ENV = (("MOE_CACHE_RAM_LOCK", "1"), ("MOE_CACHE_DROP_READAHEAD", "1"))
 
@@ -346,7 +347,29 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             walk_state["done"] = True
             return None
         last = rows[-1]
+        if walk_state.get("refining"):
+            # the one-layer step back after a failed two-layer step: if it loads, it is the step right before a failed load (the edge); if not, the step before it is
+            walk_state["refining"] = False
+            walk_state["done"] = True
+            if last["status"] == "measured":
+                last["edge"] = True
+                walk_state["end"] = f"ncmoe-{walk_state['k'] + 1} did not load; {last['id']} is at the edge and is not picked"
+            else:
+                walk_state["end"] = f"ncmoe-{walk_state['k'] + 1} and {last['id']} did not load or run"
+                prev = next((r for r in reversed(rows[:-1]) if r["id"].startswith("ncmoe-") and r["status"] == "measured"), None)
+                if prev is not None:
+                    prev["edge"] = True
+                    walk_state["end"] += f"; {prev['id']} is at the edge and is not picked"
+            return None
         if walk_state["k"] > 0:
+            if last["status"] != "measured" and walk_state.get("stride") == 2:
+                # LAUNCHER-1225: a two-layer step failed: step back one layer once (the edge may be between the two)
+                c = walk_candidate(walk_state["k"] - 1)
+                if check is None or check(c)[0]:
+                    walk_state["k"] -= 1
+                    walk_state["n"] = walk_state.get("n", 0) + 1
+                    walk_state["refining"], walk_state["stride"] = True, 1
+                    return c
             if last["status"] != "measured":
                 walk_state["done"], walk_state["end"] = True, f"{last['id']} did not load or run"
                 prev = next((r for r in reversed(rows[:-1]) if r["id"].startswith("ncmoe-") and r["status"] == "measured"), None)
@@ -361,8 +384,11 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
                 return None
         if last["status"] == "measured":
             walk_state["best_dec"] = max(walk_state["best_dec"] or 0, last["decode_tps"])
-        k = walk_state["k"] + 1
-        if k > WALK_MAX or k > walk:
+        # LAUNCHER-1225 step 2: two layers per load while the planner's fit limit is known and more than WIDE_FROM layers away (the loads are the budget: a 35B load is
+        # 15-20 s), then one; a failed two-layer step steps back one layer (above). Without a known limit (Linux, where a load that does not fit fails) one layer per load.
+        stride = 2 if (floor is not None and (walk - walk_state["k"]) - floor > WIDE_FROM) else 1
+        k = walk_state["k"] + stride
+        if walk_state.get("n", 0) + 1 > WALK_MAX or k > walk:
             walk_state["done"], walk_state["end"] = True, "no expert layer left on the CPU" if k > walk else f"{WALK_MAX} steps made"
             return None
         if floor is not None and walk - k < floor:
@@ -384,6 +410,8 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
                 walk_state["done"], walk_state["end"] = True, f"the commit check would not start {c.id} ({str(why)[:100]})"
                 return None
         walk_state["k"] = k
+        walk_state["n"] = walk_state.get("n", 0) + 1
+        walk_state["stride"] = stride
         return c
 
     queue = list(cands[1:])
@@ -464,12 +492,40 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
                 c0b["status"] = "failed"
             rows.append(c0b)
             say(row_line(c0b))
+    # LAUNCHER-1225 step 2 (interleaved rounds): the leading candidate is loaded and measured a second time after the second run of the plan
+    # as it is, so the order is C0, candidates, C0b, best again (A B .. A B). A pick must win with BOTH of its runs against the better baseline run; a lead that came from a
+    # warm cache, a cooler GPU or one lucky probe does not survive that. Runs only when the time for one more load is left; a confirm that does not load or run means no pick.
+    lead = None
+    if rows and rows[0]["status"] == "measured" and base_cost:
+        ms = [r for r in rows if r["status"] == "measured" and r["id"] not in ("C0b", "confirm") and not r.get("edge")]
+        lead = min(ms, key=lambda r: r["score_s"]) if ms else None
+        if lead is not None and lead["id"] != "C0":
+            left = budget_s - (clock() - t0)
+            if left >= base_cost * 1.15:
+                conf = {"id": "confirm", "label": f"{lead['id']} again (confirm run)", "status": "not measured", "edits": lead.get("edits") or [], "of": lead["id"]}
+                progress(f"trying {lead['id']} a second time (confirm run)")
+                try:
+                    r = runner(Candidate(lead["id"], conf["label"], lead.get("edits") or []), left, DECODE_TOKENS) or {}
+                except Exception as e:
+                    r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                if r.get("guard_stop"):
+                    conf.update(status="stopped", error=str(r["guard_stop"])[:200])
+                    rows.append(conf)
+                    say(row_line(conf))
+                    return aborted(rows, "confirm", r["guard_stop"])
+                conf.update({k: r.get(k) for k in ("load_s", "prompt_tps", "decode_tps", "decode_n", "error")})
+                if r.get("ok") and r.get("prompt_tps") and r.get("decode_tps"):
+                    conf.update(status="measured", short_probe=bool((r.get("decode_n") or DECODE_TOKENS) < DECODE_TOKENS), score_s=round(score(conf, agent), 2))
+                else:
+                    conf["status"] = "failed"
+                rows.append(conf)
+                say(row_line(conf))
     total = clock() - t0
     base = rows[0] if rows else None
     res = {"rows": rows, "total_s": round(total, 1), "budget_s": budget_s, "agent": agent, "prompt_tokens": PROMPT_TOKENS, "decode_tokens": DECODE_TOKENS,
            "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False, "score_prompt": SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}
     if walk is not None:
-        res["walk"] = {"from": walk, "steps": walk_state["k"], "end": walk_state.get("end") or "not started (the plan as it is could not be measured)"}
+        res["walk"] = {"from": walk, "steps": walk_state.get("n", 0), "layers": walk_state["k"], "end": walk_state.get("end") or "not started (the plan as it is could not be measured)"}
     if not base or base["status"] != "measured":
         err = (base or {}).get("error") or "no result"
         if "stopped while loading" in err:       # llama-server crashed: slow loading is not the reason (the Granite 1B abort showed this text for a 6 s crash)
@@ -487,15 +543,28 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         if spread > MARGIN:
             noise = f" (the plan as it is moved {spread * 100:.0f} % between its two runs: a cold first run or noise, the better run is the baseline)"
         res["baseline_spread"] = round(spread, 3)
-    best = min((r for r in rows if r["status"] == "measured" and r["id"] != "C0b" and not r.get("edge")), key=lambda r: r["score_s"])
-    gain = 1 - best["score_s"] / base["score_s"] if best["id"] != "C0" else 0.0
+    best = min((r for r in rows if r["status"] == "measured" and r["id"] not in ("C0b", "confirm") and not r.get("edge")), key=lambda r: r["score_s"])
+    conf = next((r for r in rows if r["id"] == "confirm"), None)
+    confirm_note = ""
+    best_score = best["score_s"]
+    if best["id"] != "C0" and conf is not None and conf.get("of") == best["id"]:
+        if conf["status"] == "measured":
+            best_score = max(best["score_s"], conf["score_s"])          # the worse of its two runs must still win
+            res["confirm_spread"] = round(abs(conf["score_s"] - best["score_s"]) / max(conf["score_s"], best["score_s"]), 3)
+            confirm_note = f"; confirmed by a second run (its slower run counts: {best_score:.1f} s against {base['score_s']:.1f} s)"
+        else:
+            best_score = None                                              # it did not load or run a second time: not picked
+            confirm_note = f"; its confirm run {conf['status']} ({str(conf.get('error') or '')[:80]})"
+    elif best["id"] != "C0":
+        confirm_note = "; not confirmed by a second run (no time left in the budget)"
+    gain = (1 - best_score / base["score_s"] if best_score else 0.0) if best["id"] != "C0" else 0.0
     need = max(MARGIN, 2 * res.get("baseline_spread", 0.0))      # LAUNCHER-1045 (margin part): a plan must beat the baseline by more than twice the baseline's own run-to-run spread
     if best["id"] != "C0" and gain >= need:
         res.update(picked=best["id"], changed=True, state="tuned",
                    why=f"{best['id']} ({best['label']}) was {gain * 100:.0f} % faster than the plan as it is for a {SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}-token prompt plus {DECODE_TOKENS} generated tokens "
-                       f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)" + noise)
+                       f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)" + confirm_note + noise)
     else:
-        near = f"; the best other was {best['id']} at {gain * 100:.0f} %" if best["id"] != "C0" else ""
+        near = f"; the best other was {best['id']} at {gain * 100:.0f} %{confirm_note}" if best["id"] != "C0" else ""
         res.update(state="tuned", partial=any(r["status"] == "not measured" for r in rows), why=f"the plan as it is stays: no candidate was {need * 100:.0f} % faster{near}" + noise
                                      + ("" if sum(r["status"] == "measured" and r["id"] != "C0b" for r in rows) > 1 else " (only the plan itself could be measured in the time; --retune tries again, e.g. with the model already in the page cache)"))
     return res
@@ -606,7 +675,7 @@ def summary_lines(result, cached=False, skipped=(), locked=None):
         out.append("moe-cache: auto-tune:   " + row_line(r))
     if result.get("walk") and not cached:
         w = result["walk"]
-        out.append(f"moe-cache: auto-tune: edge walk from --n-cpu-moe {w['from']}: {w['steps']} step(s) of one more expert layer on the GPU; ended: {w['end']}")
+        out.append(f"moe-cache: auto-tune: edge walk from --n-cpu-moe {w['from']}: {w['steps']} load(s), {w.get('layers', w['steps'])} expert layer(s) moved to the GPU at most; ended: {w['end']}")
     out.append("moe-cache: auto-tune: " + ("picked " + result["picked"] + ": " if result.get("changed") else "") + result.get("why", ""))
     if locked:
         out.append("moe-cache: auto-tune: left alone (yours or not applicable): " + ", ".join(f"{d} ({w})" for d, w in sorted(locked.items())))

@@ -123,9 +123,44 @@ def cold_runner(cand, left, n):
     return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n)                                                               # +20 % over the cold C0 only
 clk = Clock()
 r = at.tune(cands, cold_runner, clock=clk)
-check([x["id"] for x in r["rows"]][-1] == "C0b" and r["rows"][-1]["status"] == "measured", "the plan as it is runs a second time (C0b) when the budget allows")
+_ids = [x["id"] for x in r["rows"]]
+check("C0b" in _ids and r["rows"][_ids.index("C0b")]["status"] == "measured" and _ids[-1] in ("C0b", "confirm") and (_ids[-1] != "confirm" or _ids[-2] == "C0b"),
+      "the plan as it is runs a second time (C0b) when the budget allows; the leader's confirm run, if any, comes after it")
+
 check(r["picked"] == "C0" and not r["changed"] and "moved" in r["why"], "a candidate that only beats the COLD baseline is not picked; the why names the baseline spread")
 check(r.get("baseline_spread", 0) > 0.05, "the baseline spread is stored")
+# --- LAUNCHER-1225 step 2: the leader is confirmed by a second run after C0b (A B .. A B); both of its runs must win ---
+def confirm_case(second, budget=180.0):
+    """C0 20 tok/s both runs; candidate ids[1] 25 tok/s on its first run, `second` tok/s (or a failure for None) on its confirm run."""
+    n_ = {"x": 0}
+    def runner(cand, left, n):
+        clk.t += 20
+        if cand.id == "C0":
+            return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n)
+        if cand.id == ids[1]:
+            n_["x"] += 1
+            if n_["x"] == 2:
+                return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=second, decode_n=n) if second else dict(ok=False, error="llama-server stopped while loading")
+            return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=25, decode_n=n)
+        return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=19, decode_n=n)
+    c_ = Clock()
+    def runner2(cand, left, n):
+        globals()["clk"] = c_
+        return runner(cand, left, n)
+    globals()["clk"] = c_
+    return at.tune(cands, runner2, clock=c_, budget_s=budget)
+r = confirm_case(24.5)
+_ids = [x["id"] for x in r["rows"]]
+check(_ids[-2:] == ["C0b", "confirm"] and r["rows"][-1]["of"] == ids[1] and r["picked"] == ids[1] and "confirmed by a second run" in r["why"],
+      f"a lead that holds on its confirm run is picked ({_ids}, {r['picked']})")
+r = confirm_case(20.2)
+check(r["picked"] == "C0" and "the best other was" in r["why"] and r.get("confirm_spread", 0) > 0.05, f"a lead that falls back to the baseline on its confirm run is not picked ({r['picked']}: {r['why'][:120]})")
+r = confirm_case(None)
+check(r["picked"] == "C0" and "confirm run failed" in r["why"], "a lead whose confirm run does not load is not picked")
+r = confirm_case(24.5, budget=75.0)
+check("confirm" not in [x["id"] for x in r["rows"]] and "not confirmed" in r["why"], f"no time for the confirm run: said in the line ({r['why'][:140]})")
+r = at.tune(cands, lambda c, l, n: (clk.__setattr__("t", clk.t + 20), dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n))[1], clock=Clock())
+check("confirm" not in [x["id"] for x in r["rows"]], "the plan as it is leads: no confirm run (nothing to confirm)")
 seen["C0"] = 0; clk = Clock()
 r = at.tune(cands, cold_runner, clock=clk, budget_s=70.0)
 check(all(x["id"] != "C0b" for x in r["rows"]), "no time for the second baseline run: not attempted")
