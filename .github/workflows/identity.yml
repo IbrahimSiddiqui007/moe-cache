@@ -65,7 +65,7 @@ jobs:
           git checkout --detach FETCH_HEAD
           git log -1 --format='%H %s'
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
-                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_USE_PREBUILT_WEBUI=OFF
           cmake --build build --target llama-server llama-perplexity llama-quantize -j "$(nproc)"
 
       - name: Plugin for this pin (warnings are errors)
@@ -247,7 +247,7 @@ jobs:
         if: matrix.name == 'ggml-0.26-api3'
         run: |
           cmake -S llama.cpp -B llama.cpp/build-dl -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF \
-                -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+                -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_USE_PREBUILT_WEBUI=OFF
           cmake --build llama.cpp/build-dl --target llama-server ggml-cpu-haswell -j "$(nproc)"   # AVX2: every GitHub runner has it; one variant is enough
           ls llama.cpp/build-dl/bin/ | grep -E "ggml-cpu|llama-server"
 
