@@ -19,6 +19,8 @@ Stored (one JSON file, <cache dir>/loads.json, newest 400 entries per kind):
                                                             from, because the gap of nvidia-smi's figure is not the gap of llama-server's or the room figure (follow-up 3)
   drafts   [machine, build, model, ctx, ub, kv]          -> draft_mib: the MTP draft context's own buffers (KV + recurrent state + compute + any weights), told apart from
                                                             the target's by the line "creating MTP draft context" llama-server prints between the two (follow-up 1)
+  cachefail [machine, build, model, ctx, kv, engine]     -> fail_mib: the smallest llama.cpp GPU expert cache the launcher chose that failed to load for lack of GPU memory
+                                                            (LAUNCHER-1200), with the free figure then; the next start shrinks the cache below it or skips it
   edges    [machine, build, model, ctx, ub, kv, engine, mtp] -> fail_ncmoe: the highest --n-cpu-moe whose load failed for lack of GPU memory (any lower value fails too),
                                                             with the free figure then; the auto-tune walk does not load a value it knows fails (follow-up 7)
 The GPU identity (machine) carries the driver version, so a new driver measures anew (follow-up 6).
@@ -35,7 +37,7 @@ GROWTH_CAP_MIB = 512        # growth after load counted at most (laptop 35B: 79 
 EDGE_MAX_AGE_DAYS = 30
 FILE_NAME = "loads.json"
 SCHEMA = 1
-KINDS = ("weights", "buffers", "overhead", "drafts", "edges")
+KINDS = ("weights", "buffers", "overhead", "drafts", "edges", "cachefail")
 _LOCK = threading.Lock()
 
 _NUM = r"([0-9]+(?:\.[0-9]+)?)"
@@ -292,6 +294,82 @@ def lookup_edge(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, free
     return e["fail_ncmoe"]
 
 
+def _write(cache_dir, d):
+    os.makedirs(cache_dir, exist_ok=True)
+    p = store_path(cache_dir)
+    tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1)
+    os.replace(tmp, p)
+
+
+def save_cache_fail(cache_dir, machine, build, model, ctx, kv, engine, fail_mib, free_mib=None):
+    """LAUNCHER-1200: a load with the launcher's own GPU expert cache of fail_mib MiB ran out of GPU memory; free_mib = the free GPU memory measured AFTER the failure
+    (the failed server's memory given back). Keeps the smallest failing size and counts the failures in a row ("fails"); a size that loaded before ("ok_mib") is kept
+    while it is under the failing one. Never raises."""
+    if not (machine and build and model) or not fail_mib:
+        return False
+    try:
+        with _LOCK:
+            d = _read(cache_dir)
+            key = _key(machine, build, model, int(ctx), kv_name(kv), engine)
+            old = d["cachefail"].get(key) or {}
+            fails, ok = (int(old["fails"]) if isinstance(old.get("fails"), int) else (1 if old else 0)) + 1, old.get("ok_mib")
+            if isinstance(old.get("fail_mib"), int) and old["fail_mib"] < int(fail_mib):
+                fail_mib = old["fail_mib"]
+            if not (isinstance(ok, int) and ok < int(fail_mib)):
+                ok = None
+            d["cachefail"].pop(key, None)
+            d["cachefail"][key] = {"fail_mib": int(fail_mib), "free_mib": free_mib, "fails": fails, "ok_mib": ok, "at": time.strftime("%Y-%m-%d %H:%M")}
+            for older in list(d["cachefail"])[:-KEEP]:
+                del d["cachefail"][older]
+            _write(cache_dir, d)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def save_cache_ok(cache_dir, machine, build, model, ctx, kv, engine, ok_mib):
+    """LAUNCHER-1200: a load with the launcher's own cache of ok_mib MiB worked. Only matters where a failure is recorded: at or over the failing size the record is
+    cleared (the memory came back), under it ok_mib is kept so the next start goes to it directly. Never raises."""
+    if not (machine and build and model) or not ok_mib:
+        return False
+    try:
+        with _LOCK:
+            d = _read(cache_dir)
+            key = _key(machine, build, model, int(ctx), kv_name(kv), engine)
+            old = d["cachefail"].get(key)
+            if not old or not isinstance(old.get("fail_mib"), int):
+                return False
+            if int(ok_mib) >= old["fail_mib"]:
+                del d["cachefail"][key]
+            else:
+                old["ok_mib"], old["fails"] = int(ok_mib), 0
+            _write(cache_dir, d)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def lookup_cache_fail(cache_dir, machine, build, model, ctx, kv, engine, free_now_mib=None, drift_mib=256):
+    """{"fail_mib", "fails", "ok_mib"} of the failure recorded for this cache, or None. Not trusted when the free GPU memory now or at the failure is unknown, when there is
+    more free memory now (more than drift_mib) than after the failure, or after EDGE_MAX_AGE_DAYS."""
+    if not (machine and build and model):
+        return None
+    e = _read(cache_dir)["cachefail"].get(_key(machine, build, model, int(ctx), kv_name(kv), engine))
+    if not e or not isinstance(e.get("fail_mib"), int):
+        return None
+    if free_now_mib is None or e.get("free_mib") is None or free_now_mib > e["free_mib"] + drift_mib:
+        return None
+    try:
+        if time.time() - time.mktime(time.strptime(e.get("at", ""), "%Y-%m-%d %H:%M")) > EDGE_MAX_AGE_DAYS * 86400:
+            return None
+    except (ValueError, OverflowError):
+        return None
+    return {"fail_mib": e["fail_mib"], "fails": int(e["fails"]) if isinstance(e.get("fails"), int) else 1, "ok_mib": e.get("ok_mib") if isinstance(e.get("ok_mib"), int) else None}
+
+
 def entries(rec, ctx, ub, kv, engine, mtp, gpu_expert_mib, free_plan_mib, free_source, n_cpu_moe=None, free_now_mib=None):
     """The store entries one parsed load gives: {"weights": {...}, "buffers": {...}, "overhead": {...}, "drafts": {...}, "edges": {...}, "edge_ok": n} (each may be missing).
     gpu_expert_mib: the expert bytes this load placed on the GPU (from the model header and the --n-cpu-moe it ran with); free_plan_mib: the free GPU figure the
@@ -389,4 +467,6 @@ class Recorder:
                       n_cpu_moe=c.get("n_cpu_moe"), free_now_mib=c.get("free_now_mib"))
         if save(c["cache_dir"], c["machine"], c["build"], c["model"], c["ctx"], c.get("ub"), c.get("kv"), c.get("engine"), c.get("mtp"), ent, free_source=c.get("free_source")):
             self.saved += 1
+        if self.loaded and c.get("cache_mib"):
+            save_cache_ok(c["cache_dir"], c["machine"], c["build"], c["model"], c["ctx"], c.get("kv"), c.get("engine"), c["cache_mib"])     # LAUNCHER-1200
         return ent

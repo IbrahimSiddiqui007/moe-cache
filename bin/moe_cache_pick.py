@@ -238,7 +238,7 @@ def is_draft_head(path):
         st = os.stat(path)
         k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
         if k not in _HEADS:
-            sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "planner"))
+            mc.planner_path()
             from gguf_plan import read_tensors
             heads, plain = set(), set()
             for name, _ in read_tensors(path):
@@ -636,7 +636,7 @@ def kv_estimate(k, ctx, path=None):
     per token (an over-estimate for hybrid models)."""
     if path:
         try:
-            sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+            mc.planner_path()
             import gguf_plan
             v = gguf_plan.kv_bytes(path, ctx)
             if v:

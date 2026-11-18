@@ -101,10 +101,18 @@
         if (la_ecores) {
             if (const char * m = getenv("MOE_CACHE_ECORE_MASK")) {
                 DWORD_PTR set = 0;
+                int skipped = 0;
                 for (int c : mask_cpus(m)) {
                     if (c < 64) {
                         set |= (DWORD_PTR) 1 << c;
+                    } else {
+                        skipped++;
                     }
+                }
+                static bool noted = false;
+                if (skipped > 0 && !noted) {
+                    noted = true;       // one line, once: the mask named CPUs this thread cannot be pinned to (Windows processor group 0 only)
+                    fprintf(stderr, "moe-cache: note: CPUs at 64 and above in the efficiency-core mask are skipped (%d of them; Windows processor group 0 only)\n", skipped);
                 }
                 if (set) {
                     SetThreadAffinityMask(GetCurrentThread(), set);
@@ -700,7 +708,7 @@
                     classlru ? (" | policy classlru (" + std::to_string(nclass) + " classes, half-life " + std::to_string((int) classlru_hl) + " tokens): promotions " +
                                 std::to_string(cls_promotions) + ", demotions " + std::to_string(cls_demotions)).c_str() : "",
                     rb_on ? rb_summary().c_str() : "",
-                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows)).c_str() : "");
+                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows) + (live_keep ? ", live-follow shrinks " + std::to_string(live_shrinks) + ", grows " + std::to_string(live_grows) : std::string())).c_str() : "");
         }
     }
 

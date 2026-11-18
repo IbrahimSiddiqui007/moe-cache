@@ -486,10 +486,15 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             s.cur_scan = s.scan_tokens > 0 && n_tok >= s.scan_tokens;
             if (s.trace_f && n_tok == 1) {
                 int16_t hdr[2] = { (int16_t) s.tensors[tidx[0]]->layer, (int16_t) n_used };
-                fwrite(hdr, sizeof(int16_t), 2, s.trace_f);
-                for (int64_t u = 0; u < n_used; u++) {
+                bool bad = fwrite(hdr, sizeof(int16_t), 2, s.trace_f) != 2;     // (int16 ids: expert counts per layer stay far below 32767 in real models)
+                for (int64_t u = 0; u < n_used && !bad; u++) {
                     const int16_t e = (int16_t) *(const int32_t *) ((const char *) ids->data + u * ids->nb[0]);
-                    fwrite(&e, sizeof(int16_t), 1, s.trace_f);
+                    bad = fwrite(&e, sizeof(int16_t), 1, s.trace_f) != 1;
+                }
+                if (bad) {      // the trace is analysis data only: stop writing rather than leave a half-written record; the handle is closed here, so finish() finds none
+                    fprintf(stderr, "moe-cache: expert-id trace: a write failed; the trace stops here, what was written is kept\n");
+                    std::fclose(s.trace_f);     // close before clearing the pointer, or the handle would leak for the rest of the run
+                    s.trace_f = nullptr;
                 }
             }
             {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""avail_reserve_test: on Windows the plugin's cache plans with the RAM available now minus what the whole-server cap keeps free (max(4 GiB, 12.5 % of RAM)); --ram, stock, Linux and an
+"""avail_reserve_test: on Windows (and, since ram-cache-free, Linux without a cgroup limit) the plugin's cache plans with the RAM available now minus what the whole-server cap keeps free (max(4 GiB, 12.5 % of RAM)); --ram, stock and an
 environment MOE_CACHE_RAM_GIB of your own are untouched. Fake machine, no model (chain's Flash-Next probe 2026-11-13: default cache left 1.3 GB available on a 32 GB PC with apps open)."""
 import contextlib, io, os, sys, types
 
@@ -25,6 +25,7 @@ class M(mc.Machine):
     def windows(self): return self._win
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib)], "preload"
     def mem_for_server(self, ram_gb): return self.avail
+    def mem_available(self): return self.avail
     def mem_total(self): return self.total
     def mem_cap(self): return self.total - max(4 * GIB, self.total / 8)
 
@@ -51,14 +52,15 @@ try:
     v, say = env_of(20 * GIB)
     check("very little RAM" not in say, "20 GiB available: no warning")
     a2, _, _ = mc.parse_server(["m.gguf", "--no-pin"])
-    check(abs(mc.avail_reserve_gib(a2, M(16.4 * GIB))[0] - 12.4) < 0.01 and mc.avail_reserve_gib(a2, M(16.4 * GIB, windows=False)) is None and mc.avail_reserve_gib(a2, M(16.4 * GIB), stock=True) is None,
-          "avail_reserve_gib (the figure the MoE planner also gets, critic V5): 12.4 on Windows, None on Linux / stock")
+    check(abs(mc.avail_reserve_gib(a2, M(16.4 * GIB))[0] - 12.4) < 0.01 and abs(mc.avail_reserve_gib(a2, M(16.4 * GIB, windows=False))[0] - 12.4) < 0.01
+          and mc.avail_reserve_gib(a2, M(16.4 * GIB), stock=True) is None,
+          "avail_reserve_gib (the figure the MoE planner also gets, critic V5): 12.4 on Windows and on Linux, None for stock")
     v, say = env_of(16.4 * GIB, args=["--ram", "10"])
     check(abs(float(v) - 10 * 1e9 / GIB) < 0.01 and "kept free" not in say, f"--ram wins ({v})")
     v, say = env_of(16.4 * GIB, stock=True)
     check(v is None, "stock: no plugin, nothing set")
     v, say = env_of(16.4 * GIB, windows=False)
-    check(v is None, "Linux: unchanged")
+    check(v is not None and abs(float(v) - 12.4) < 0.01 and "Linux MemAvailable" in say, f"Linux: the same reserve, source named ({v})")
     os.environ["MOE_CACHE_RAM_GIB"] = "9"
     v, say = env_of(16.4 * GIB)
     check(v is None and "kept free" not in say, "an MOE_CACHE_RAM_GIB of your own in the environment: untouched")

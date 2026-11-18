@@ -402,7 +402,7 @@ def read_meta(path):
 KV_ELEM = {False: 2.0, True: 34 / 32, "q4_0": 18 / 32}       # bytes per K/V value: f16, q8_0 (--fast), q4_0 (a block of 32 values is 18 bytes)
 
 
-KV_ELEM_BY_NAME = {"f16": 2.0, "bf16": 2.0, "f32": 4.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32, "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32}      # bytes per value of llama.cpp's -ctk / -ctv types
+KV_ELEM_BY_NAME = {"f16": 2.0, "bf16": 2.0, "f32": 4.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32, "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32}      # bytes per value of llama.cpp's -ctk / -ctv types (checked at the source: ggml's block_q4_1 is d(2) + m(2) + qs[16] = 20 bytes per 32 values; 24 bytes is q5_1)
 
 
 def kv_elems(kv):
@@ -708,7 +708,10 @@ def fit_n_cpu_moe(path, ctx=8192, reserve_gb=1.3, free=None):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return 999, lay, None
-    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)          # weights + compute buffers + KV (from the header when it can)
+    # 0.55e9 is a legacy "compute buffers" estimate with no measurement behind it (the launcher's own path uses the _COMPUTE_MIB table instead,
+    # which shows 0.7-4.6 GiB at 64k+). Not reachable from the launcher: fit_n_cpu_moe runs only from this file's __main__ (a debugging CLI) and
+    # gpu_cache_mib() has no caller — the gpu_cache_mib value in tune()'s dict is computed by the ladder below. Left at the old value on purpose.
+    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)          # weights + compute buffers (legacy estimate) + KV (from the header when it can)
     room = free - fixed - reserve_gb * 1e9
     gpu_layers = max(0, min(lay["n_layers"], int(room // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0
     return lay["n_layers"] - gpu_layers, lay, free
@@ -721,7 +724,7 @@ def gpu_cache_mib(path, ctx=8192, reserve_gb=1.3, free=None):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return 0
-    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)
+    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)      # same legacy compute-buffer estimate as fit_n_cpu_moe above; this function has no caller (dead) — value left as is
     room = free - fixed - reserve_gb * 1e9
     return int(room // (1024 * 1024)) if room > 0.5e9 else 0
 
