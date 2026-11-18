@@ -14,7 +14,7 @@ import os
 import tempfile
 import time
 
-VERSION = 3                 # bump when the meaning of a stored pick changes: old files are then ignored (3: the edge walk, the chat score and the launcher / llama.cpp build in the key)
+VERSION = 4                 # bump when the meaning of a stored pick changes: old files are then ignored (3: the edge walk, the chat score and the launcher / llama.cpp build in the key; 4: the confirm run, the 2-layer stride, answer classes, the 60 s load gate)
 BUDGET_S = 180.0            # the owner's limit for the whole first start tuning, loads included
 MARGIN = 0.05               # a candidate must beat the plan as it is by this much (run-to-run noise on one probe is about this big)
 PROMPT_TOKENS = 1500        # the probe prompt (a prompt speed at this length ranks plans; it is not a 64k number)
@@ -63,6 +63,7 @@ def set_env(env, key, value):
 class Candidate:
     def __init__(self, cid, label, edits):
         self.id, self.label, self.edits = cid, label, edits       # edits: [{"dim", "flag"|"env", "value"|"delta"}]
+        self.load_cap = None        # seconds: the runner stops a load that takes longer ({"slow_load": True}); set on C0 only (SLOW_LOAD_S)
 
     @property
     def dims(self):
@@ -463,6 +464,8 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             n = min(DECODE_TOKENS, int(b0["decode_tps"] * room))
         progress(f"trying plan {len(rows) + 1} of " + (f"{len(cands)}" if walk is None else f"at most {n_planned}") + f": {c.id} ({c.label})")      # LAUNCHER-1041: the control page lists this while the server is still "starting"
         s = clock()
+        if c.id == "C0":
+            c.load_cap = SLOW_LOAD_S          # critic of 59abd70: a cold load on a slow disk is stopped at 60 s instead of eating the whole budget
         try:
             r = runner(c, left, n) or {}
         except Exception as e:                      # a runner that raises is a failed candidate, never a failed start
@@ -485,6 +488,9 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             row["status"] = "failed"
         rows.append(row)
         say(row_line(row))
+        if c.id == "C0" and r.get("slow_load"):
+            slow_load[0] = float(r.get("load_s") or SLOW_LOAD_S)
+            break
         if c.id == "C0" and row["status"] != "measured":
             break
         if c.id == "C0" and (row.get("load_s") or 0) > SLOW_LOAD_S:
@@ -546,9 +552,10 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
            "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False, "score_prompt": SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}
     if walk is not None:
         res["walk"] = {"from": walk, "steps": walk_state.get("n", 0), "layers": walk_state["k"], "end": walk_state.get("end") or "not started (the plan as it is could not be measured)"}
-    if slow_load[0] is not None and base and base["status"] == "measured":
-        res.update(state="tuned", slow_load=slow_load[0], why=f"the plan as it is stays: its load took {slow_load[0]:.0f} s (over {SLOW_LOAD_S:.0f} s), so no other plan was loaded in the "
-                                                               f"{budget_s:.0f} s budget; --retune tries again (a file already in the page cache loads faster)")
+    if slow_load[0] is not None:
+        # not stored (the launcher skips saving state "slow_load"): the start that follows reads the file into the page cache, so the next start measures again with a warm load
+        res.update(state="slow_load", slow_load=round(slow_load[0], 1), why=f"the plan as it is stays: its load took {slow_load[0]:.0f} s or more (the limit for tuning is {SLOW_LOAD_S:.0f} s), so "
+                                                                         "no other plan was loaded; nothing is stored, the next start tries again (the file is then in the page cache)")
         return res
     if not base or base["status"] != "measured":
         err = (base or {}).get("error") or "no result"
@@ -580,7 +587,8 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             best_score = None                                              # it did not load or run a second time: not picked
             confirm_note = f"; its confirm run {conf['status']} ({str(conf.get('error') or '')[:80]})"
     elif best["id"] != "C0":
-        confirm_note = "; not confirmed by a second run (no time left in the budget)"
+        best_score = None             # critic of 59abd70: a one-run leader is not picked (one run can be a lucky one); the plan as it is stays and --retune measures again
+        confirm_note = "; not picked: no time was left for its confirm run (one run is not enough)"
     gain = (1 - best_score / base["score_s"] if best_score else 0.0) if best["id"] != "C0" else 0.0
     need = max(MARGIN, 2 * res.get("baseline_spread", 0.0))      # LAUNCHER-1045 (margin part): a plan must beat the baseline by more than twice the baseline's own run-to-run spread
     if best["id"] != "C0" and gain >= need:

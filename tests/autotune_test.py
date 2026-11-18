@@ -158,7 +158,8 @@ check(r["picked"] == "C0" and "the best other was" in r["why"] and r.get("confir
 r = confirm_case(None)
 check(r["picked"] == "C0" and "confirm run failed" in r["why"], "a lead whose confirm run does not load is not picked")
 r = confirm_case(24.5, budget=75.0)
-check("confirm" not in [x["id"] for x in r["rows"]] and "not confirmed" in r["why"], f"no time for the confirm run: said in the line ({r['why'][:140]})")
+check("confirm" not in [x["id"] for x in r["rows"]] and r["picked"] == "C0" and not r["changed"] and "no time was left for its confirm run" in r["why"],
+      f"no time for the confirm run: the one-run leader is NOT picked, the plan as it is stays ({r['picked']}: {r['why'][:140]})")
 r = at.tune(cands, lambda c, l, n: (clk.__setattr__("t", clk.t + 20), dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n))[1], clock=Clock())
 check("confirm" not in [x["id"] for x in r["rows"]], "the plan as it is leads: no confirm run (nothing to confirm)")
 seen["C0"] = 0; clk = Clock()
@@ -367,17 +368,30 @@ try:
     cmd, env, info, out = stage2(counting, size=5e9, avail=3e9)
     check(info["state"] == "cached" and not seen_, "a stored pick is still used when the size rule would skip measuring")
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
-    # the load-time gate: C0 loads in 75 s (> SLOW_LOAD_S): nothing else is loaded, the plan as it is stays, stored (no measuring at every start)
+    # the dense spill rule set -ub and -np: the tuner leaves both alone (critic of 59abd70)
     seen_.clear()
-    def slow(cmd, env, left, n):
-        seen_.append(cmd); r = fake_runner(cmd, env, left, n); return dict(r, load_s=75) if r.get("ok") else r
+    cmd, env, info, out = stage2(counting, size=5e9, avail=20e9, spill_locked=True)
+    check({"ub", "np"} <= set(info["locked"]) and all(at.flag_value(c, "-np") == at.flag_value(BASE_CMD, "-np") and at.flag_value(c, "-ub") == at.flag_value(BASE_CMD, "-ub") for c in seen_),
+          f"dense spill rule on: ub and np locked, no probe changes them ({sorted(info['locked'])})")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    # the load-time gate (critic of 59abd70): C0's load is capped at SLOW_LOAD_S; a load that hits the cap stops there, nothing else is loaded, nothing is stored
+    seen_.clear(); caps = []
+    def slow(cmd, env, left, n, load_cap=None):
+        seen_.append(cmd); caps.append(load_cap)
+        return {"ok": False, "slow_load": True, "load_s": 60.4, "error": "the load took over 60 s"} if load_cap else fake_runner(cmd, env, left, n)
     cmd, env, info, out = stage2(slow, size=18.6e9, avail=24e9)
-    check(len(seen_) == 1 and cmd == BASE_CMD and info.get("slow_load") == 75 and info.get("picked") == "C0" and stored_files(),
-          f"one load over {at.SLOW_LOAD_S:.0f} s: only C0 is loaded, the plan stays, the result is stored ({len(seen_)} loads)")
-    check(any("75 s" in l and "--retune" in l for l in out), "...and the line says the load time and --retune")
-    seen_.clear()
+    check(caps[:1] == [at.SLOW_LOAD_S] and len(seen_) == 1 and cmd == BASE_CMD and info["state"] == "slow_load" and not stored_files(),
+          f"C0 is loaded with a {at.SLOW_LOAD_S:.0f} s load cap; at the cap: one load, the plan stays, nothing stored ({len(seen_)} loads, {info['state']}, caps {caps})")
+    check(any("60 s" in l and "next start tries again" in l for l in out), "...and the line says the limit and that the next start tries again")
+    seen_.clear(); caps.clear()
     cmd, env, info, out = stage2(slow, size=18.6e9, avail=24e9)
-    check(info["state"] == "cached" and not seen_ and cmd == BASE_CMD, "...the next start uses the stored result (nothing loaded)")
+    check(info["state"] == "slow_load" and len(seen_) == 1, "...so the next start measures again (it is not stored as too slow for good)")
+    seen_.clear(); caps.clear()
+    def warm(cmd, env, left, n, load_cap=None):
+        seen_.append(cmd); caps.append(load_cap); return fake_runner(cmd, env, left, n)
+    cmd, env, info, out = stage2(warm, size=18.6e9, avail=24e9)
+    check(info["state"] == "tuned" and len(seen_) > 2 and caps[0] == at.SLOW_LOAD_S and all(c is None for c in caps[1:]), "a warm load under the cap: tuned as usual (only C0 carries the cap)")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     # 1042: the commit check on every command that is loaded
     asked = []

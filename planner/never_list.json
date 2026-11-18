@@ -1,13 +1,17 @@
 {
  "schema": 1,
- "about": "Settings measured as a loss (LAUNCHER-1225 step 2, idea from the scout's planner study). The planner and the auto-tune never pick a row's setting inside its scope; when the user sets one, the launcher says what was measured and runs it anyway (the user's flags win). Each row names its evidence; one-run rows are forecasts. A row is removed only by a new measurement that beats it.",
+ "about": "Settings measured as a loss (LAUNCHER-1225 step 2, idea from the scout's planner study). The auto-tune never tries a row's setting inside its scope (the planner does not read this list yet); when the user sets one, the launcher says what was measured and runs it anyway (the user's flags win). Each row names its evidence; one-run rows are forecasts. A row is removed only by a new measurement that beats it.",
  "rows": [
   {
    "id": "dflash-draft",
    "kind": "flag",
    "name": "--spec-type",
    "value": "draft-dflash",
-   "scope": {},
+   "scope": {
+    "backend": "vulkan",
+    "model": "dense",
+    "ctx_min": 65536
+   },
    "loss": "decode 24.9 vs 27.8 tok/s without a drafter, prompt -46 % (Qwen3.8-27B Q3_K_XL, 64k, RX 9070 XT, one run, forecast)",
    "source": "DECODE-704"
   },
@@ -38,7 +42,11 @@
    "kind": "flag",
    "name": "-ub",
    "min": 8192,
-   "scope": {},
+   "scope": {
+    "backend": "vulkan",
+    "model": "moe",
+    "ctx_min": 65536
+   },
    "loss": "prompt +8.5 % but decode -28 % against -ub 4096 (Flash-Next, 64k, our test PC)",
    "source": "PREFILL-185"
   },
@@ -56,7 +64,7 @@
   }
  ],
  "answer_classes": {
-  "about": "LAUNCHER-1225 step 2 (main 2026-11-18): what a setting does to the answers. exact = same answers as the plan without it (scheduling, memory, threads); placement = where weights sit (same maths, speed only); quality = can change tokens: the auto-tune may pick it on its own only when its quality-gate row in TOKEN_MODES (bin/moe_cache_approx.py) has status 'won' (the gate passed and the speed win was measured); a setting missing from this table counts as quality without a gate (never picked on its own). Keys: auto-tune dimensions and plan-file setting names.",
+  "about": "LAUNCHER-1225 step 2 (main 2026-11-18; critic of 59abd70): what a setting does to the answers. exact = same answers as the plan without it (memory locking, how the file is loaded, the context size, records); placement = the same maths run in another place or order (where weights sit, batch size, slots, threads): speed, and possibly last-bit float differences, NOT shown token-identical; quality = can change tokens on purpose: the auto-tune may pick it on its own only when its quality-gate row in TOKEN_MODES (bin/moe_cache_approx.py) has status 'won' (the gate passed and the speed win was measured); a setting missing from this table counts as quality without a gate (never picked on its own). Keys: auto-tune dimensions and plan-file setting names. planner/never_list.py BUILTIN_CLASSES holds the same table for when this file cannot be read.",
   "ncmoe": {
    "class": "placement"
   },
@@ -67,16 +75,16 @@
    "class": "placement"
   },
   "ub": {
-   "class": "exact"
+   "class": "placement"
   },
   "b": {
-   "class": "exact"
+   "class": "placement"
   },
   "np": {
-   "class": "exact"
+   "class": "placement"
   },
   "slots": {
-   "class": "exact"
+   "class": "placement"
   },
   "ramlock": {
    "class": "exact"
@@ -85,7 +93,7 @@
    "class": "exact"
   },
   "threads": {
-   "class": "exact"
+   "class": "placement"
   },
   "engine": {
    "class": "exact"
@@ -100,7 +108,7 @@
    "class": "exact"
   },
   "offload_min_batch": {
-   "class": "exact"
+   "class": "placement"
   },
   "load_record": {
    "class": "exact"

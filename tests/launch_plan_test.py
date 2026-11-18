@@ -342,8 +342,8 @@ def api_mismatch_test(model):
                 def lib_api(self, lib): return lib_api_
             return M(tmp)
 
-        def plan(machine, *more):
-            a, extra, argv = mc.parse_server([model, "--llama-server", os.path.join(tmp, "llama-server"), "--ram", "12", "--no-pin", "--plan-json", *more])
+        def plan(machine, *more, named=True):
+            a, extra, argv = mc.parse_server([model] + (["--llama-server", os.path.join(tmp, "llama-server")] if named else []) + ["--ram", "12", "--no-pin", "--plan-json", *more])
             out = io.StringIO()
             try:
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
@@ -371,12 +371,32 @@ def api_mismatch_test(model):
                 def lib_api(self, lib): return "2"
                 def pick_lib(self, ls): return lib2 if ls == other else os.path.join(self.tmp, "libggml-moe-cache.so")
                 def llama_candidates(self): return [other, os.path.join(self.tmp, "llama-server")]
-            p6, txt6 = plan(Two(tmp))
+            p6, txt6 = plan(Two(tmp), named=False)          # found by the launcher's own search (no --llama-server given)
             checks.append((p6 is not None and p6.engine == "plugin" and p6.cmd[0] == other and p6.lib == lib2 and "using " + other in txt6,
                            f"two servers: the one a plugin build fits is used, plugin plan, one line says so ({p6 and p6.cmd[0]}, {p6 and p6.engine})"))
             class TwoNone(Two):
                 def llama_candidates(self): return [os.path.join(self.tmp, "llama-server")]
-            p7, _ = plan(TwoNone(tmp))
+            p7, _ = plan(TwoNone(tmp), named=False)
+            p6b, txt6b = plan(Two(tmp))                      # critic of 59abd70: --llama-server on the command line, the same path the search finds: kept
+            checks.append((p6b is not None and p6b.engine == "stock" and p6b.cmd[0] != other and "--llama-server " + other in txt6b,
+                           "--llama-server given on the command line (same path as the search's): never switched away from, the line names the other server"))
+            asked = []
+            class TwoWin(Two):
+                windows = True
+                def nvidia_reports(self): return False
+                def win_dedicated_vram(self): return {}
+                def win_driver_version(self, name): return "1.0"
+                def list_devices(self, ls):
+                    asked.append(ls)
+                    return ("Available devices:\n  Vulkan0: New GPU (16304 MiB, 15000 MiB free)\n" if ls == other else "Available devices:\n  Vulkan0: Old GPU (8188 MiB, 2000 MiB free)\n")
+            mc.WINDOWS = True
+            try:
+                p9, txt9 = plan(TwoWin(tmp), named=False)
+            finally:
+                mc.WINDOWS = False
+            checks.append((p9 is not None and p9.cmd[0] == other and other in asked and "New GPU" in txt9 and
+                           any("New GPU" in l and "GiB free" in l for l in txt9.splitlines()[txt9.splitlines().index(next(l for l in txt9.splitlines() if "using " + other in l)):]),
+                           f"Windows: after the switch the device listing and the GPU pick are read from the new server ({[os.path.basename(os.path.dirname(x)) for x in asked]})"))
             checks.append((p7 is not None and p7.engine == "stock", "no other matching server: the stock plan, as before"))
             saved_def = mc.default_llama_server
             mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "somewhere-else", "llama-server")      # the user named this server (not the launcher's find)

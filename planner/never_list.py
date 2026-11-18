@@ -114,6 +114,17 @@ def user_notes(cmd, env, facts, environ=None):
 INPUT_SETTINGS = ("free_gpu_gib", "ram_for_server_gib")      # plan-file rows that are measured inputs, not settings
 
 
+# the same table as never_list.json "answer_classes", for when that file cannot be read (critic of 59abd70: a missing file made every candidate "quality" and vetoed them all)
+BUILTIN_CLASSES = {
+    "ncmoe": ("placement", None), "n_cpu_moe": ("placement", None), "gpu_cache": ("placement", None),
+    "ub": ("placement", None), "b": ("placement", None), "np": ("placement", None), "slots": ("placement", None), "threads": ("placement", None),
+    "offload_min_batch": ("placement", None),
+    "ramlock": ("exact", None), "ram_lock": ("exact", None), "engine": ("exact", None), "load_mode": ("exact", None), "cache_ram_mib": ("exact", None),
+    "context": ("exact", None), "load_record": ("exact", None),
+    "kv": ("quality", "kv8"), "kv_type": ("quality", "kv8"), "mtp": ("quality", "mtp"), "fast": ("quality", "fast1"), "approx": ("quality", "approx-tiers"),
+}
+
+
 def answer_class(name, path=None):
     """(class, gate) of an auto-tune dimension or plan-file setting: class exact / placement / quality / input; gate = the TOKEN_MODES row of a quality setting.
     A name missing from the table is ("quality", None): never picked on its own (fail closed). Plan-file inputs (gpu_* sizes, free memory) are ("input", None)."""
@@ -121,9 +132,13 @@ def answer_class(name, path=None):
         return "input", None
     try:
         with open(path or PATH, encoding="utf-8") as f:
-            t = json.load(f).get("answer_classes") or {}
+            t = json.load(f).get("answer_classes")
+        if not isinstance(t, dict):
+            t = None
     except (OSError, ValueError, AttributeError):
-        t = {}
+        t = None
+    if t is None:                                   # the file is missing or broken: the built-in table (the known dimensions keep their class)
+        return BUILTIN_CLASSES.get(name, ("quality", None))
     r = t.get(name)
     if not isinstance(r, dict) or r.get("class") not in ("exact", "placement", "quality"):
         return "quality", None

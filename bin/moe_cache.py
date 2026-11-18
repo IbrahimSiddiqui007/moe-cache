@@ -2527,8 +2527,8 @@ SERVER_HELP = """\
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
            llama.cpp's (EXACTNESS.md). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
---retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; not for a model bigger than the memory the server may use; one load over 60 s stops it), for at most 180 s in
-           all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %) and stores
+--retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; one more expert layer on the GPU per load, 2 while far from a known fit limit; not for a model bigger than the memory the server may use; a first load over 60 s stops it), for at most 180 s in
+           all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %, and its second run, the confirm run, must win too) and stores
            it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
 --plan-file PATH  write the launch plan as JSON there: every setting the launcher decided, its value, where it came from (probe / measured / constant / user / llama) and a plain reason. A real start writes it to <cache>/plans/port-PORT.json and prints a short summary; --plan-json shows the same under "settings"
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
@@ -3962,8 +3962,11 @@ def matching_pair(ls, machine):
     return None
 
 
-def ls_chosen_by_user(ls):
-    """True when this llama-server was named by the user (--llama-server, LLAMA_SERVER, the control page's saved path), not found by the launcher's own search."""
+def ls_chosen_by_user(ls, argv=()):
+    """True when this llama-server was named by the user (--llama-server, LLAMA_SERVER, the control page's saved path), not found by the launcher's own search.
+    A --llama-server on the launcher's command line always counts, even when it is the same path the search finds (critic of 59abd70)."""
+    if any(x == "--llama-server" or str(x).startswith("--llama-server=") for x in argv or ()):
+        return True
     try:
         found = default_llama_server()
         src = str(_LS.get("source") or "")
@@ -3972,7 +3975,7 @@ def ls_chosen_by_user(ls):
     return os.path.abspath(ls) != os.path.abspath(found) or src.startswith(("LLAMA_SERVER", "the control page"))
 
 
-def api_mismatch_stage(a, ls, machine):
+def api_mismatch_stage(a, ls, machine, argv=()):
     """LAUNCHER-1224, before the plugin build stage: the plugin refuses to load into a llama-server of another ggml backend API, and the plan used to stay plugin-shaped
     (expert layers on the CPU for the cache, plugin settings) while plain llama.cpp ran it. Now the plan is made for stock llama-server, with one line that says why and how to
     get the matching build; when the user asked for something only the plugin does (--fast, --hybrid, --always-plugin) the start stops with that advice instead.
@@ -3983,7 +3986,7 @@ def api_mismatch_stage(a, ls, machine):
     want, have, lib = m
     # first choice: another installed llama-server that a plugin build here fits (the kit's own bundled / patched one first); plain llama.cpp without the cache is the last resort
     pair = matching_pair(ls, machine)
-    if pair and not ls_chosen_by_user(ls):
+    if pair and not ls_chosen_by_user(ls, argv):
         say(f"moe-cache: {ls} uses ggml backend API {want}, which no plugin build here fits; using {pair[0]} (API {machine.ls_api(pair[0])}) with {pair[1]} instead, so the expert "
             f"cache runs (--llama-server PATH chooses another)", err=True)
         a.llama_server = pair[0]
@@ -4832,18 +4835,26 @@ AUTOTUNE_PROMPT = ("The lighthouse keeper had kept a logbook for thirty-one year
                    "he sat at his small wooden table for a long while before he picked up the pen. ")
 
 
-def autotune_probe(cmd, env, left_s, decode_n, record=None):
+def _takes_kw(fn, name):
+    try:
+        import inspect
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def autotune_probe(cmd, env, left_s, decode_n, record=None, load_cap=None):
     """(see _autotune_probe) plus LAUNCHER-1042: a probe the memory guard stopped says so in "guard_stop", which aborts the whole tune. record: a function cmd -> Recorder
     (load_recorder_for): the probe's load is a measurement like a real start's (follow-up 2)."""
     holder = {}
-    r = _autotune_probe(cmd, env, left_s, decode_n, holder, record)
+    r = _autotune_probe(cmd, env, left_s, decode_n, holder, record, load_cap)
     g = holder.get("guard")
     if not r.get("ok") and g is not None and getattr(g, "stopped", None):
         r["guard_stop"] = str(g.stopped)
     return r
 
 
-def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None):
+def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None, load_cap=None):
     """The real runner for moe_cache_autotune.tune: start llama-server with `cmd` on a free local port, wait until it is healthy (its load time), send one request that
     reads a ~1.5k-token prompt (prompt tok/s) and one that writes decode_n tokens (decode tok/s), stop the server. Never raises; a failure is {"ok": False, "error": ...}."""
     import moe_cache_autotune as at
@@ -4893,6 +4904,8 @@ def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None):
                 return r
             if left() <= 0:
                 return {"ok": False, "error": "the load did not finish in the time left"}
+            if load_cap and time.monotonic() - t0 > load_cap:
+                return {"ok": False, "slow_load": True, "load_s": round(time.monotonic() - t0, 1), "error": f"the load took over {load_cap:.0f} s (stopped: too slow to tune)"}
             time.sleep(0.5)
         load_s = time.monotonic() - t0
         if left() <= 0:           # healthy, but after the time was up (a slow poll): the budget is the owner's limit, so this plan is not measured
@@ -4973,6 +4986,9 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         say_fn(line)
         return cmd, env, {"state": "off", "lines": [line], "why": f"off ({off})"}
     locked = at.locked_dims(a, argv, os.environ, windows=machine.windows, agent=bool(a.agent), project=bool(a.project), engine=engine)
+    if getattr(a, "spill_locked", False):           # critic of 59abd70: the dense spill rule set -ub and -np; the tuner leaves them as the rule set them
+        locked.setdefault("ub", "set by the dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1)")
+        locked.setdefault("np", "set by the dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1)")
     # what else shapes the plan a pick was measured on (LAUNCHER-1041): the user's memory caps, the modes (--fast, --mtp, --approx, long-prompt, --hybrid) and the settings the
     # tuner does not touch but the speed depends on (the prompt cache size the USER asked for - the planner's own value is not keyed: on Windows it follows the free commit of the moment -,
     # the KV type of the plan, flash attention)
@@ -5098,7 +5114,12 @@ def autotune_free_vram(a, machine):
 
 def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=None, recorder=None, edge_floor=None):
     import moe_cache_autotune as at
-    probe = runner or (lambda c, e, l, n: autotune_probe(c, e, l, n, record=recorder) if recorder is not None else autotune_probe(c, e, l, n))
+    def default_probe(c, e, l, n, load_cap=None):
+        kw = {"record": recorder} if recorder is not None else {}
+        if load_cap and _takes_kw(autotune_probe, "load_cap"):          # a stand-in probe (tests) may not take it
+            kw["load_cap"] = load_cap
+        return autotune_probe(c, e, l, n, **kw)
+    probe = runner or default_probe
     walk = at.walk_start(cmd, locked)          # planner map fix 2: --n-cpu-moe is walked down from the plan to the edge, one layer per load
     cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None, mtp=tune_mtp_ok(a, cmd), threads=tune_threads_of(cmd))
     cands, vetoed = never_filter(cands, getattr(a, "plan_facts", None) or {"ctx": ctx})       # LAUNCHER-1225: a setting measured as a loss in this scope is never tried
@@ -5148,7 +5169,9 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
                 if not ok:
                     return {"ok": False, "error": f"not loaded: the commit check does not pass this plan with the f16 KV cache ({why[:120]})"}
         t_start = time.monotonic()
-        r = probe(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
+        cap = getattr(c, "load_cap", None)
+        r = (probe(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n, load_cap=cap) if cap and _takes_kw(probe, "load_cap")
+             else probe(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n))
         if not r.get("ok") and r.get("kv_abort") and not kv_f16[0] and "kv" not in locked:       # a KV type the user gave (or --exact) is never changed
             new_cmd, was = kv_retry_cmd(c_cmd)
             if was and (fits is None or fits(new_cmd, c_env)[0]):
@@ -5164,7 +5187,7 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     if walk is not None:
         res["base_ncmoe"] = walk                            # the plan's --n-cpu-moe the deltas were measured from (a later plan that learned from loads may differ)
     try:
-        if res.get("state") != "aborted":          # LAUNCHER-1042: a guard stop stores nothing
+        if res.get("state") not in ("aborted", "slow_load"):          # LAUNCHER-1042: a guard stop stores nothing; a load over SLOW_LOAD_S neither (tried again at the next start)
             at.save(CACHE_DIR, parts, res)
     except OSError as e:
         say_fn(f"moe-cache: auto-tune: could not store the result ({e}); it is measured again at the next start", err=True)
@@ -5201,6 +5224,7 @@ def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
     new = [x for x in cmd]
     new = set_cmd_flag(new, "-ub", str(DENSE_SPILL_UB), ("--ubatch-size",))
     new = set_cmd_flag(new, "-np", "1", ("--parallel",))
+    a.spill_locked = True             # the auto-tune leaves -ub / -np alone (autotune_stage)
     say(f"moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1, test switch, off by default): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k: -np 1 (one request at a "
         f"time; frees llama.cpp's per-slot buffers) and -ub {DENSE_SPILL_UB} (half the compute buffer); one PC run: 27B 64k +7.3 % decode, prompt -1.5 % (forecast, TEST-1205)")
     return new, str(DENSE_SPILL_UB)
@@ -5261,7 +5285,9 @@ def never_facts(listing, dense, ctx):
 
 
 def never_filter(cands, facts):
-    """(candidates without the ones the never-list forbids here, ["id (source)", ...] of those left out). C0 always stays. Never raises: a broken list vetoes nothing."""
+    """(candidates without the ones the never-list forbids here or whose answer class needs a quality gate that has not passed, ["id (why)", ...] of those left out).
+    C0 always stays. Never raises. A missing or broken never_list.json vetoes no row; the answer classes then come from never_list.BUILTIN_CLASSES (the known
+    dimensions), and an unknown dimension still counts as changing answers (fail closed)."""
     try:
         planner_path()
         import never_list as nl
@@ -5448,10 +5474,19 @@ def _launch_plan(a, extra, argv, machine):
         if why:
             say(why); stock = False
     a.api_stock = None
-    if not stock and api_mismatch_stage(a, ls, machine):
+    if not stock and api_mismatch_stage(a, ls, machine, argv):
         stock = True                  # LAUNCHER-1224: the plugin cannot load into this llama-server: plan the stock path, not a plugin-shaped plan that plain llama.cpp would run
     if a.llama_server != ls:          # LAUNCHER-1224 follow-up: switched to an installed server that a plugin build fits
-        ls = a.llama_server           # the GPU facts above stay: the same machine and card (the device list later is read from this server)
+        ls = a.llama_server
+        if win:                       # critic of 59abd70: on Windows the device listing, the picked GPU (and --device below) come from llama-server itself: read them from the new one
+            a.vram = vram_user
+            vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
+            a.plan_gpu_ident = f"listdev:{gpu[1]}:{int(gpu[3])}" if gpu and len(gpu) > 3 and gpu[3] else ""
+            if a.plan_gpu_ident:
+                try:
+                    a.plan_gpu_ident += ";driver " + (machine.win_driver_version(gpu[1]) or "?")
+                except Exception:
+                    pass
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
