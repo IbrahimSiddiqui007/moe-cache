@@ -462,6 +462,10 @@ def launch(argv, deps=None):
         stop_child(child)
         say("stopped while loading.")
         return 130
+    except Exception as e:           # review finding 12: any other error here left the llama-server child running detached with nobody to stop it
+        stop_child(child)
+        say(f"     the launcher hit an error while waiting ({type(e).__name__}: {e}); the server it started was stopped.")
+        return 1
 
     # 5/5 agents
     say("\n5/5  Coding agents")
@@ -500,7 +504,8 @@ def launch(argv, deps=None):
 
     say(f"\nRunning at {url}. Ctrl+C stops it." if child.poll() is None else "")
     try:
-        return child.wait() or 0
+        rc = child.wait()
+        return rc if rc >= 0 else 128 + -rc          # review finding 13: a signal ends a child with a NEGATIVE code (-2 for Ctrl+C); sys.exit(-2) was 254 in the shell, now 130 as shells report it
     except KeyboardInterrupt:
         stop_child(child)
         say("stopped.")

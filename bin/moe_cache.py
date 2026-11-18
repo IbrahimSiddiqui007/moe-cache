@@ -1022,7 +1022,7 @@ def mem_cap():
     if v is not None:
         try:
             f = float(leading_number(v))
-            if f == f and f >= 0:            # not nan
+            if math.isfinite(f) and f >= 0:            # not nan, not inf (review finding 21: inf silently switched the cap off)
                 return f * 1e9 if f > 0 else None
         except ValueError:
             pass
@@ -1103,6 +1103,17 @@ def parse_cpus(text):
             out += range(int(a), int(b) + 1)
         elif part:
             out.append(int(part))
+    return out
+
+
+def split_equals_flags(extra):
+    """Review finding 1/2: the checks on the flags after `--` (arg_after, -ngl, --cache-ram, --host ...) compare whole tokens, so `--host=0.0.0.0` was invisible to them
+    (the bind gate and the forced API key were skipped). Splits `--name=value` (long flags only) into `--name value`, once, where the arguments after `--` are read;
+    every later check and the command llama-server gets then see one form. Short flags (-c=1) are left alone. Known limit: a VALUE that itself looks like `--name=text` (e.g. `-r "--stop=1"`) would be split too; llama.cpp takes such a value only after its flag, which is rare."""
+    out = []
+    for x in extra:
+        m = re.match(r"^(--[A-Za-z][A-Za-z0-9-]*)=(.*)$", x, re.S)
+        out += [m.group(1), m.group(2)] if m else [x]
     return out
 
 
@@ -1401,6 +1412,27 @@ def gb_arg(s):
     if not (0 < v < 1e6):
         raise argparse.ArgumentTypeError(f"out of range: {s!r}")
     return s
+
+
+def max_ram_arg(s):
+    """--max-ram: 0 (any spelling: 0, 0.0, 0.00) = no cap, else the same check as --ram (review finding 21)."""
+    try:
+        if float(s) == 0:
+            return "0"
+    except ValueError:
+        pass
+    return gb_arg(s)
+
+
+def port_arg(s):
+    """argparse check for --port: 1-65535 (review finding 22: 0 and 70000 reached llama-server and died with a raw bind error)."""
+    try:
+        v = int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a port number: {s!r}")
+    if not 1 <= v <= 65535:
+        raise argparse.ArgumentTypeError(f"a port is 1-65535: {s!r}")
+    return v
 
 
 def take_api_key_from_args(extra):
@@ -2801,8 +2833,8 @@ def parse_server(argv):
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model", nargs="?", help="the .gguf file (leave out to use the one `moe_cache.py pick --apply` chose)")
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
-    ap.add_argument("--max-ram", type=lambda v: "0" if v.strip() in ("0", "0.0") else gb_arg(v))    # 0 = no cap (the help says so; gb_arg refused it)
-    ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--max-ram", type=max_ram_arg)    # 0 = no cap (the help says so; gb_arg refused it)
+    ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=port_arg, default=8080)
     ap.add_argument("--llama-server", default=default_llama_server())
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default=""); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
@@ -2839,7 +2871,7 @@ def parse_server(argv):
     ap.add_argument("--plan-json", action="store_true")      # print the launch plan as JSON (argv, environment, reasons, warnings) and exit; nothing is started
     extra = []
     if "--" in argv:
-        i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
+        i = argv.index("--"); argv, extra = argv[:i], split_equals_flags(argv[i + 1:])
     a = ap.parse_args(fast_levels_only(argv))
     return a, extra, argv
 
@@ -3679,7 +3711,7 @@ def load_mode_cache_none(a, cmd, extra, machine, model, cram):
     2 runs with it, 1 without): prompt +14-20 %, decode +8-11 %; llama.cpp itself warns that mmap is slow with CPU-side experts. `none` copies the whole file into private RAM, so only when the
     file plus the prompt cache (`cram` MiB) plus the reserve fit the server's RAM; the reserve is the one load_mode_low_ram uses (the larger of 4 GiB and what the machine keeps free).
     Not for --exact / --stock, -ot, a load flag of your own, or a cache flag you passed yourself after --. Returns the plain note, or None."""
-    if a.exact or a.stock or "-ot" in cmd or any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
+    if a.exact or a.stock or ("-ot" in cmd or "--override-tensor" in cmd) or any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
     try:
         size = os.path.getsize(model)
@@ -3701,7 +3733,7 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
     """LAUNCHER-1068: Windows, a dense model that fits fully on the GPU (the LAUNCHER-982 estimate, not --fit spilling, no -ot) loads with `--load-mode none`: the default mmap load
     spiked used RAM by ~12 GB for Qwen3.8-27B on the PC (2026-11-10), `--load-mode none` added 2-6 GB and was ready in under a minute. Returns the plain note, or None (mmap stays):
     Linux, --exact / --stock, a layout that spills to RAM (mmap keeps those weights file-backed), an unknown fit, or a load flag of your own (--load-mode / -lm / --mmap / --no-mmap / --mlock)."""
-    if not machine.windows or a.exact or a.stock or not pair or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0":
+    if not machine.windows or a.exact or a.stock or not pair or ("-ot" in cmd or "--override-tensor" in cmd) or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0":
         return None
     if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
@@ -3772,7 +3804,7 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
         go up by that part; a 40 GiB file with 14 GiB available stays mmap).
     The reserve is the larger of 4 GiB and what the machine keeps free (physical RAM minus mem_cap(): max(4 GiB, 12.5 %)). Same exceptions as load_mode_fit_none (Linux, --exact / --stock, -ot,
     CPU-only, a load flag of your own). Unknown spill -> mmap stays. Returns the plain note, or None."""
-    if not machine.windows or a.exact or a.stock or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0" or spill_gib is None:
+    if not machine.windows or a.exact or a.stock or ("-ot" in cmd or "--override-tensor" in cmd) or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0" or spill_gib is None:
         return None
     if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
@@ -4190,8 +4222,9 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
         loud and say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card; your --fast / --approx keeps its 8-bit KV cache with the usual micro-batch")
         return kv_q8, tuned, desk_kw, ub_asked
     # -ub 4096 does not fit this card's memory plan: undo the KV cache and plan again as without the flag
+    tk, tv = getattr(a, "dense_kv_types", None) or ("q8_0", "q8_0")           # review finding 8: the pair the launcher added (the same types as kv_stage), not only the q8_0/q8_0 spelling
     for i in range(len(extra) - 3):
-        if extra[i:i + 4] == ["-ctk", "q8_0", "-ctv", "q8_0"]:
+        if extra[i:i + 4] == ["-ctk", tk, "-ctv", tv]:
             del extra[i:i + 4]
             break
     a.fast, a.lp_kv = None, False
@@ -4635,7 +4668,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         say("moe-cache: dense model, no experts: no -ngl 99 (it makes a file bigger than the GPU abort at load); llama.cpp's --fit places the layers by free GPU memory" + margin
             + ("" if a.auto_fit else ". --no-auto-fit brings -ngl 99 back"))
     # LAUNCHER-983: tell the log scan whether work on the CPU is part of this plan (experts on the CPU by design, FFN weights in RAM, CPU-only, a dense model the estimate says is over the GPU)
-    expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and "-ot" in cmd))
+    expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and ("-ot" in cmd or "--override-tensor" in cmd)))
     r = None
     if dense and not expect:
         pair = dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True, skip_mtp=mtp_layer_skipped(ls, extra, machine))
@@ -5161,6 +5194,7 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
 
 
 def _launch_plan(a, extra, argv, machine):
+    extra = split_equals_flags(extra)          # review finding 1/2: callers that did not come through parse_server (tests, on-demand, plan files)
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
     if not a.model:
@@ -5311,7 +5345,7 @@ def _launch_plan(a, extra, argv, machine):
         ncmoe = n_ if n_ is not None else ncmoe
         kv_q8 = kv_quantized(cmd)        # q8_0, the dense ladder's K q8_0 / V q4_0 and q4_0/q4_0 all count (a plain == "q8_0" read q4_0 as f16 and let the commit check put q8_0 back)
     cmd_picked = list(cmd)
-    cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
+    cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, list(argv) + user_extra, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
     if apply_cache_record(a, cmd, machine, ls, model, ctx, tuned) == 0:
         ncmoe, ub = arg_after(cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(cmd, "-ub", "--ubatch-size") or ub
     tune_fallback = None
@@ -5328,7 +5362,7 @@ def _launch_plan(a, extra, argv, machine):
         tuned_env = {k for k, v in env_t if (k, v) not in before_env} | {k for k, v in before_env if (k, v) not in env_t}
         def tune_fallback():
             """LAUNCHER-1045: the plan as the planner made it (through the same commit check), for the one retry when the picked plan does not load -> (cmd, env list) or None."""
-            c2, _n, _u, _k, refusal = commit_stage(a, list(before_cmd), list(before_env), argv, model, ctx, ncmoe0, ub0, kv_q80, gpu, machine, mm_bytes)
+            c2, _n, _u, _k, refusal = commit_stage(a, list(before_cmd), list(before_env), list(argv) + user_extra, model, ctx, ncmoe0, ub0, kv_q80, gpu, machine, mm_bytes)
             if refusal:
                 return None
             return c2, [(k, v) for k, v in env if k not in tuned_env] + [(k, v) for k, v in before_env if k in tuned_env]

@@ -605,6 +605,14 @@ try:
     n0 = len(getattr(mc._TL, "notes", ()))
     mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
     check(len(getattr(mc._TL, "notes", ())) == n0, "commit_fits says nothing and leaves the plan's notes alone")
+    # review finding 6: a flag the user gave after `--` locks the commit check's layout choice like one before it (the launcher passes argv + the flags after `--`)
+    r_free = mc.commit_stage(a_w, list(wcmd), [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4]
+    r_lock = mc.commit_stage(a_w, list(wcmd), [], ["m", "-ngl", "30"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4]
+    check(r_free and "not changed" not in r_free and r_lock and "given by you are not changed" in r_lock, "commit_stage: -ngl from the user's own flags locks the weights layout (finding 6)")
+    check("given by you are not changed" in (mc.commit_stage(a_w, list(wcmd), [], ["m"] + mc.split_equals_flags(["--n-gpu-layers=30"]), model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4] or ""),
+          "commit_stage: `--n-gpu-layers=30` after -- (split) locks it too")
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "moe_cache.py"), encoding="utf-8").read()
+    check(src.count("list(argv) + user_extra, model, ctx, ncmoe") >= 1 and "= commit_stage(a, cmd, env, argv, model" not in src, "the launch plan hands commit_stage argv + the user's flags after -- (finding 6 call site)")
     a_w.no_commit_check = True
     ok_nc, _w = mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
     check(ok_nc, "--no-commit-check: everything fits (the user's choice)")

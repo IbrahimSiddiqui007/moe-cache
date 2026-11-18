@@ -182,6 +182,19 @@ f = Ctrl(); f.terminated = False
 rc = run(f, "--yes", "--model", MODEL)
 check(rc == 130 and "stopped while loading" in f.text() and f.connected == [], "Ctrl+C while loading: no traceback, the server is stopped, exit 130")
 
+class Boom(Fake):
+    def up(self, url, od): raise OSError("boom")
+f = Boom(); f.terminated = False
+rc = run(f, "--yes", "--model", MODEL)
+check(rc == 1 and "hit an error while waiting" in f.text() and "OSError" in f.text() and f.proc.waited and f.connected == [], "review 12: an error other than Ctrl+C while loading stops the child (stop_child waits for it) and exits 1, no traceback")
+class Sig(Fake):
+    def start(self, cmd):
+        p = super().start(cmd); p.wait = lambda timeout=None: -2; return p
+f = Sig(); rc = run(f, "--yes", "--model", MODEL)
+check(rc == 130, f"review 13: a child ended by Ctrl+C (wait() = -2) exits 130, not 254 (got {rc})")
+f = Fake(); rc = run(f, "--yes", "--model", MODEL)
+check(rc == 0, "review 13: a child that ends 0 still exits 0")
+
 # ---- 3d. LAUNCHER-690: ready needs our own live child and our own model ----
 class Squat(Fake):
     def up(self, url, od): return True                  # something answers on the port from the start

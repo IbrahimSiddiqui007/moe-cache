@@ -100,7 +100,7 @@ def custom_key():
 
 def model_alias(model, args):
     """The model name the launcher gives llama-server in agent mode (its --alias, else the file name without .gguf and the shard suffix)."""
-    extra = args[args.index("--") + 1:] if "--" in args else []
+    extra = mc.split_equals_flags(args[args.index("--") + 1:]) if "--" in args else []          # `--alias=x` too (the launcher gives llama-server the split form)
     return mc.arg_after(extra, "-a", "--alias") or mc.default_alias(model)
 
 
