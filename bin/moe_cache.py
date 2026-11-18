@@ -2527,7 +2527,7 @@ SERVER_HELP = """\
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
            llama.cpp's (EXACTNESS.md). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
---retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; not for a model over 40 % of RAM), for at most 180 s in
+--retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; not for a model bigger than the memory the server may use; one load over 60 s stops it), for at most 180 s in
            all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %) and stores
            it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
 --plan-file PATH  write the launch plan as JSON there: every setting the launcher decided, its value, where it came from (probe / measured / constant / user / llama) and a plain reason. A real start writes it to <cache>/plans/port-PORT.json and prints a short summary; --plan-json shows the same under "settings"
@@ -5036,16 +5036,12 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     stored = None if a.retune else fresh(at.load(CACHE_DIR, parts))
     if stored:
         return apply_stored(stored)
-    # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). Measured nowhere: this
-    # is a size rule: more than 40 % of this computer's RAM, or more than the memory the server may use (the planner expects spill).
-    try:
-        ram = float(machine.mem_total())
-    except Exception:
-        ram = 0.0
-    if size and ((ram and float(size) > 0.40 * ram) or (avail and float(size) > float(avail))):
-        line = (f"moe-cache: auto-tune: skipped: the model ({float(size) / 1e9:.1f} GB) is " + (f"more than 40 % of this computer's RAM ({ram / 1e9:.0f} GB)" if ram and float(size) > 0.40 * ram
-                else f"bigger than the memory the server may use ({float(avail) / 1e9:.1f} GB)") +
-                f": loading it up to 5 times does not fit the {at.BUDGET_S:.0f} s budget, so the plan as it is runs untuned")
+    # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). The size rule is now only
+    # "bigger than the memory the server may use" (every load reads from the drive again). The old "more than 40 % of the RAM" part left the usual case (a 30B on a 32 GB machine)
+    # untuned (LAUNCHER-1225 step 2); a model that fits is tuned, and the load-time gate in the tuner (at.SLOW_LOAD_S) stops after the first load when one load is too slow.
+    if size and avail and float(size) > float(avail):
+        line = (f"moe-cache: auto-tune: skipped: the model ({float(size) / 1e9:.1f} GB) is bigger than the memory the server may use ({float(avail) / 1e9:.1f} GB): every load reads it "
+                f"from the drive again, so loading it up to 5 times does not fit the {at.BUDGET_S:.0f} s budget; the plan as it is runs untuned")
         if getattr(a, "autotune_probe", False):
             say_fn(line)             # a plan that only describes (--dry-run, --plan-json, the control page) shows it in plan.autotune and stays as it was
         return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}

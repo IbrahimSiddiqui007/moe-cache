@@ -346,21 +346,37 @@ try:
     seen_ = []
     def counting(cmd, env, left, n):
         seen_.append(cmd); return fake_runner(cmd, env, left, n)
-    for size_, avail_, what in ((75.8e9, 90e9, "75 GB on a 32 GB computer (> 40 % of RAM)"), (5e9, 3e9, "bigger than the memory the server may use (spill)")):
-        seen_.clear()
-        cmd, env, info, out = stage2(counting, size=size_, avail=avail_)
-        check(info["state"] == "skipped" and not seen_ and cmd == BASE_CMD and not stored_files() and any("skipped" in l and "budget" in l for l in out), f"{what}: no probe, one clear line, nothing stored")
     seen_.clear()
-    cmd, env, info, out = stage2(counting, probe=False, size=75.8e9, avail=90e9)
-    check(info["state"] == "skipped" and not out and "40 %" in info["lines"][0], "dry-run / plan-json / control page: the plan says the model will not be tuned (not 'the first start measures')")
+    cmd, env, info, out = stage2(counting, size=5e9, avail=3e9)
+    check(info["state"] == "skipped" and not seen_ and cmd == BASE_CMD and not stored_files() and any("skipped" in l and "budget" in l for l in out),
+          "bigger than the memory the server may use (spill): no probe, one clear line, nothing stored")
+    cmd, env, info, out = stage2(counting, probe=False, size=5e9, avail=3e9)
+    check(info["state"] == "skipped" and not out and "bigger than the memory" in info["lines"][0], "dry-run / plan-json / control page: the plan says the model will not be tuned (not 'the first start measures')")
+    # LAUNCHER-1225 step 2 (replaces the 40 %-of-RAM part of 1044): a 30B (18.6 GB) on a 32 GB machine with 24 GB for the server is tuned
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, size=18.6e9, avail=24e9)
+    check(info["state"] == "tuned" and len(seen_) > 2, f"an 18.6 GB model on a 32 GB computer (over 40 % of its RAM, fits the server's memory) is tuned ({len(seen_)} loads)")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     cmd, env, info, out = stage2(counting, size=5e9, avail=20e9)
     check(info["state"] == "tuned" and seen_, "a model of 5 GB on 32 GB RAM is tuned")
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     # a stored pick is still applied for a big model (only the measuring is skipped)
     cmd, env, info, out = stage2(fake_runner, size=5e9, avail=20e9)
     seen_.clear()
-    cmd, env, info, out = stage2(counting, size=75.8e9, avail=90e9)
+    cmd, env, info, out = stage2(counting, size=5e9, avail=3e9)
     check(info["state"] == "cached" and not seen_, "a stored pick is still used when the size rule would skip measuring")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    # the load-time gate: C0 loads in 75 s (> SLOW_LOAD_S): nothing else is loaded, the plan as it is stays, stored (no measuring at every start)
+    seen_.clear()
+    def slow(cmd, env, left, n):
+        seen_.append(cmd); r = fake_runner(cmd, env, left, n); return dict(r, load_s=75) if r.get("ok") else r
+    cmd, env, info, out = stage2(slow, size=18.6e9, avail=24e9)
+    check(len(seen_) == 1 and cmd == BASE_CMD and info.get("slow_load") == 75 and info.get("picked") == "C0" and stored_files(),
+          f"one load over {at.SLOW_LOAD_S:.0f} s: only C0 is loaded, the plan stays, the result is stored ({len(seen_)} loads)")
+    check(any("75 s" in l and "--retune" in l for l in out), "...and the line says the load time and --retune")
+    seen_.clear()
+    cmd, env, info, out = stage2(slow, size=18.6e9, avail=24e9)
+    check(info["state"] == "cached" and not seen_ and cmd == BASE_CMD, "...the next start uses the stored result (nothing loaded)")
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     # 1042: the commit check on every command that is loaded
     asked = []

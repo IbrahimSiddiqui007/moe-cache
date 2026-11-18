@@ -23,6 +23,8 @@ SHORT_MIN = 64              # below this a decode figure says nothing
 SCORE_PROMPT = 1000         # score = seconds for this many prompt tokens + DECODE_TOKENS generated tokens: chat is weighted to decode (planner map fix 2: a chat turn
                             # reads only its new text, the earlier turns come from the prompt cache; 4000 until v0.3.8) ...
 SCORE_PROMPT_AGENT = 16000  # ... (agents send long prompts)
+SLOW_LOAD_S = 60.0          # LAUNCHER-1225 step 2 (replaces the 40 %-of-RAM skip): when the plan as it is takes longer than this to load, nothing more is loaded (one load already
+                            # used a third of the budget); the next loads would come from the page cache, but a machine this slow is not tuned on its own (--retune tries again)
 WIDE_FROM = 6               # LAUNCHER-1225: the walk moves two expert layers per load while the known fit limit is more than this many layers away
 WALK_MAX = 12               # the edge walk tries at most this many steps of one more expert layer on the GPU (each step is a load; the 180 s budget usually ends it first)
 RAMLOCK_ENV = (("MOE_CACHE_RAM_LOCK", "1"), ("MOE_CACHE_DROP_READAHEAD", "1"))
@@ -430,6 +432,7 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
 
     queue = list(cands[1:])
     order = cands[:1]
+    slow_load = [None]
 
     def next_cand():
         if not rows:
@@ -484,8 +487,11 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         say(row_line(row))
         if c.id == "C0" and row["status"] != "measured":
             break
+        if c.id == "C0" and (row.get("load_s") or 0) > SLOW_LOAD_S:
+            slow_load[0] = row["load_s"]
+            break
     # the plan as it is, a second time (RULES 4: a screen needs A and A2): C0 ran first, cold, so a later plan can look faster only because the files and clocks were warm
-    if rows and rows[0]["status"] == "measured" and base_cost:
+    if rows and rows[0]["status"] == "measured" and base_cost and slow_load[0] is None:
         left = budget_s - (clock() - t0)
         if left >= base_cost * 1.15:
             c0b = {"id": "C0b", "label": "the plan as it is, again (noise check)", "status": "not measured", "edits": []}
@@ -540,6 +546,10 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
            "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False, "score_prompt": SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}
     if walk is not None:
         res["walk"] = {"from": walk, "steps": walk_state.get("n", 0), "layers": walk_state["k"], "end": walk_state.get("end") or "not started (the plan as it is could not be measured)"}
+    if slow_load[0] is not None and base and base["status"] == "measured":
+        res.update(state="tuned", slow_load=slow_load[0], why=f"the plan as it is stays: its load took {slow_load[0]:.0f} s (over {SLOW_LOAD_S:.0f} s), so no other plan was loaded in the "
+                                                               f"{budget_s:.0f} s budget; --retune tries again (a file already in the page cache loads faster)")
+        return res
     if not base or base["status"] != "measured":
         err = (base or {}).get("error") or "no result"
         if "stopped while loading" in err:       # llama-server crashed: slow loading is not the reason (the Granite 1B abort showed this text for a 6 s crash)
