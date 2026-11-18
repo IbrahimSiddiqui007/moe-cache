@@ -108,6 +108,10 @@ def locked_dims(a, argv, environ, windows=False, agent=False, project=False, eng
         out["ncmoe"] = "your --n-cpu-moe / -ngl / -ot"
     if has("-np", "--parallel") or agent or project:
         out["np"] = "your -np" if has("-np", "--parallel") else "agent / project mode keeps its slots"
+    if getattr(a, "exact", False) or getattr(a, "mtp", None) is not None or has("--spec-type", "--model-draft", "-md", "--mtp", "--no-mtp"):
+        out["mtp"] = "--exact" if getattr(a, "exact", False) else "your --mtp / --no-mtp / --spec-type"
+    if getattr(a, "leave_room", False) or has("-t", "--threads"):
+        out["threads"] = "your -t" if has("-t", "--threads") else "--leave-room keeps its cores free"
     if "MOE_CACHE_RAM_LOCK" in environ or "MOE_CACHE_DROP_READAHEAD" in environ:
         out["ramlock"] = "your MOE_CACHE_RAM_LOCK / DROP_READAHEAD"
     elif windows or engine != "plugin":
@@ -127,7 +131,7 @@ def walk_candidate(k):
     return Candidate(f"ncmoe-{k}", f"{k} more expert layer{'s' if k > 1 else ''} on the GPU (edge walk)", [{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": -k}])
 
 
-def build_candidates(cmd, env, locked, ctx, n_layers=None, walk=False):
+def build_candidates(cmd, env, locked, ctx, n_layers=None, walk=False, mtp=False, threads=None):
     """The plan as it is (C0) plus up to 3 candidates built from the unlocked dimensions, best guesses first. Every candidate differs from C0 in one dimension
     (the first two also in a second one only when that is needed to make room: a bigger -ub with more experts on the GPU is not tried together).
     walk: the caller walks --n-cpu-moe down itself (tune(walk=...)): no ncmoe-2 here, and at most 2 others."""
@@ -154,10 +158,20 @@ def build_candidates(cmd, env, locked, ctx, n_layers=None, walk=False):
         byid["ramlock"] = Candidate("ramlock", "RAM_LOCK + DROP_READAHEAD", [{"dim": "ramlock", "env": k, "value": v} for k, v in RAMLOCK_ENV])
     if "np" not in locked:
         byid["np1"] = Candidate("np1", "-np 1 (one slot)", [{"dim": "np", "flag": "-np", "value": "1", "also": ["--parallel"]}])
+    # LAUNCHER-1169 / LAUNCHER-1225 step 2 (opt-in test switches until a PC A B B A: MOE_CACHE_TUNE_MTP=1, MOE_CACHE_TUNE_THREADS=1, read by the launcher): the model's own MTP
+    # drafting measured on this machine instead of a fixed rule (laptop 27B 16k: decode +9 %, prompt -20 %; PC 27B 128k: a loss, on the never-list), and two threads fewer than the
+    # plan (decode is bound by memory bandwidth: past a point more threads only wait). Each is one more load, so they come in addition to the usual candidates.
+    extra = []
+    if mtp and "mtp" not in locked:
+        extra.append(Candidate("mtp", "MTP drafting on (--spec-type draft-mtp, 2 draft tokens)",
+                               [{"dim": "mtp", "flag": "--spec-type", "value": "draft-mtp"}, {"dim": "mtp", "flag": "--spec-draft-n-max", "value": "2"}]))
+    if threads and "threads" not in locked and int(threads) >= 4:
+        t = int(threads) - 2
+        extra.append(Candidate(f"t{t}", f"-t {t} (plan: {threads} threads)", [{"dim": "threads", "flag": "-t", "value": str(t), "also": ["--threads"]}]))
     # priority: more GPU layers, the batch size, the KV type, then the rest; ncmoe+2 only stands in when a slot is free
     order = ["ncmoe-2"] + [k for k in byid if k.startswith("ub")] + ["ncmoe+2", "ramlock", "np1"]
     out = [byid[k] for k in order if k in byid]
-    return [c0] + out[:2 if walk else 3]
+    return [c0] + out[:2 if walk else 3] + extra
 
 
 def key_parts(model_id, ctx, machine_sig, locked, agent, engine, limits=None, launcher=None, build=None):

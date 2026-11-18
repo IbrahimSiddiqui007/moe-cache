@@ -845,5 +845,38 @@ try:
 finally:
     mc.CACHE_DIR, mc.port_busy = saved4
 
+# --- LAUNCHER-1169 / LAUNCHER-1225 step 2: opt-in MTP and thread candidates (test switches) ---
+import types as _ty
+_a = _ty.SimpleNamespace(ub="auto", exact=False, n_cpu_moe=None, hybrid=False, mtp=None, leave_room=False)
+_lk = at.locked_dims(_a, ["m.gguf"], {}, engine="stock")
+_c = at.build_candidates(["llama-server", "-m", "m", "-t", "8", "-ub", "512"], [], _lk, 65536, None, mtp=True, threads=8)
+_ids = [c.id for c in _c]
+check("mtp" in _ids and "t6" in _ids and _ids[0] == "C0", f"opt-in: MTP and -t 6 (two fewer than 8) are candidates ({_ids})")
+_cm = next(c for c in _c if c.id == "mtp")
+_cmd, _, _ = at.apply_edits(["llama-server", "-t", "8"], [], _cm.edits)
+check(at.flag_value(_cmd, "--spec-type") == "draft-mtp" and at.flag_value(_cmd, "--spec-draft-n-max") == "2", "the MTP candidate adds --spec-type draft-mtp --spec-draft-n-max 2")
+_c0 = at.build_candidates(["llama-server", "-m", "m", "-t", "8"], [], _lk, 65536, None)
+check(not any(c.id in ("mtp", "t6") for c in _c0), "switches off (default): no MTP or thread candidate")
+_lk2 = at.locked_dims(_ty.SimpleNamespace(**dict(vars(_a), mtp=False)), ["m.gguf", "--no-mtp", "-t", "4"], {}, engine="stock")
+check("mtp" in _lk2 and "threads" in _lk2, "your --no-mtp / -t lock those dimensions")
+check(not any(c.id in ("mtp", "t6") for c in at.build_candidates(["llama-server", "-t", "8"], [], _lk2, 65536, None, mtp=True, threads=8)), "...and no candidate is built for them")
+check("mtp" in at.locked_dims(_ty.SimpleNamespace(**dict(vars(_a), exact=True)), ["m.gguf"], {}, engine="stock"), "--exact locks MTP (it can change tokens)")
+check("threads" in at.locked_dims(_ty.SimpleNamespace(**dict(vars(_a), leave_room=True)), ["m.gguf"], {}, engine="stock"), "--leave-room locks the thread count")
+check(not any(c.id.startswith("t") for c in at.build_candidates(["llama-server"], [], _lk, 65536, None, threads=3)), "fewer than 4 threads: no thread candidate")
+_k, _o = mc.never_filter(_c, {"backend": "vulkan", "model": "dense", "ctx": 131072})
+check("mtp" not in [c.id for c in _k] and any("LAUNCHER-1133" in x for x in _o), "dense at 128k: the MTP candidate is vetoed by the never-list")
+_k, _o = mc.never_filter(_c, {"backend": "vulkan", "model": "dense", "ctx": 65536})
+check("mtp" in [c.id for c in _k], "dense at 64k: the MTP candidate stays")
+_saved = {k: os.environ.pop(k, None) for k in ("MOE_CACHE_TUNE_MTP", "MOE_CACHE_TUNE_THREADS")}
+check(mc.tune_threads_of(["x", "-t", "8"]) is None and mc.tune_mtp_ok(_ty.SimpleNamespace(plan_facts={"model": "dense"}, model="m"), ["x"]) is False, "switches off: no thread count, no MTP")
+os.environ["MOE_CACHE_TUNE_THREADS"] = "1"; os.environ["MOE_CACHE_TUNE_MTP"] = "1"
+check(mc.tune_threads_of(["x", "-t", "8"]) == 8 and mc.tune_threads_of(["x"]) == mc.physical_cores(), "MOE_CACHE_TUNE_THREADS=1: the plan's -t, else the physical cores")
+check(mc.tune_mtp_ok(_ty.SimpleNamespace(plan_facts={"model": "moe"}, model="m"), ["x"]) is False, "MOE_CACHE_TUNE_MTP=1 on a MoE model: no candidate (dense only)")
+check(mc.tune_mtp_ok(_ty.SimpleNamespace(plan_facts={"model": "dense"}, model="/no/such.gguf"), ["x"]) is False, "...unreadable model: no candidate")
+for _k2, _v2 in _saved.items():
+    os.environ.pop(_k2, None)
+    if _v2 is not None:
+        os.environ[_k2] = _v2
+
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)

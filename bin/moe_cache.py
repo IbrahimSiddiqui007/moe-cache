@@ -4925,6 +4925,8 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     # tuner does not touch but the speed depends on (the prompt cache size the USER asked for - the planner's own value is not keyed: on Windows it follows the free commit of the moment -,
     # the KV type of the plan, flash attention)
     limits = {k: str(getattr(a, k)) for k in ('ram', 'vram', 'max_ram', 'gpu_margin', 'leave_room', 'fast', 'mtp', 'approx', 'long_prompt', 'no_long_prompt', 'hybrid', 'always_plugin') if getattr(a, k, None)}
+    # the opt-in candidates and the dense spill rule change what was measured: a result tuned with them is kept apart from one without (LAUNCHER-1225 step 2)
+    limits.update({k.lower(): "1" for k in ("MOE_CACHE_TUNE_MTP", "MOE_CACHE_TUNE_THREADS", "MOE_CACHE_DENSE_SPILL_RULE") if os.environ.get(k) == "1"})
     limits.update({k: str(v) for k, v in (("cache_ram", arg_after(argv, "--cache-ram", "-cram")), ("ctk", arg_after(cmd, "-ctk", "--cache-type-k")), ("fa", arg_after(cmd, "-fa", "--flash-attn"))) if v is not None})
     if vram_user is not _VRAM_AS_GIVEN:
         # gpu_stage / multi_gpu_start overwrite a.vram with the free memory of the moment (Windows AMD / Intel: "14.65"); keyed on that, a stored pick was found again only when free
@@ -5050,7 +5052,7 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     import moe_cache_autotune as at
     probe = runner or (lambda c, e, l, n: autotune_probe(c, e, l, n, record=recorder) if recorder is not None else autotune_probe(c, e, l, n))
     walk = at.walk_start(cmd, locked)          # planner map fix 2: --n-cpu-moe is walked down from the plan to the edge, one layer per load
-    cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None)
+    cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None, mtp=tune_mtp_ok(a, cmd), threads=tune_threads_of(cmd))
     cands, vetoed = never_filter(cands, getattr(a, "plan_facts", None) or {"ctx": ctx})       # LAUNCHER-1225: a setting measured as a loss in this scope is never tried
     if vetoed:
         say_fn("moe-cache: auto-tune: not tried (measured as a loss, planner/never_list.json): " + ", ".join(vetoed))
@@ -5169,6 +5171,33 @@ def set_cmd_flag(cmd, name, value, also=()):
         out.append(cmd[i])
         i += 1
     return out if done else out + [name, value]
+
+
+def tune_mtp_ok(a, cmd):
+    """LAUNCHER-1169 (test switch MOE_CACHE_TUNE_MTP=1, off by default): MTP drafting is an auto-tune candidate for a DENSE model with an MTP head on a llama-server that has
+    draft-mtp, when the plan has no drafting yet (the MoE agent default turns it on by rule). False on any doubt."""
+    if os.environ.get("MOE_CACHE_TUNE_MTP") != "1" or (getattr(a, "plan_facts", None) or {}).get("model") != "dense" or "--spec-type" in cmd:
+        return False
+    try:
+        planner_path()
+        from gguf_plan import mtp_layers
+        return bool(mtp_layers(a.model)[0]) and "draft-mtp" in ls_help(cmd[0])
+    except Exception:
+        return False
+
+
+def tune_threads_of(cmd):
+    """LAUNCHER-1225 step 2 (test switch MOE_CACHE_TUNE_THREADS=1, off by default): the plan's thread count for a 'two fewer threads' auto-tune candidate: -t in the command, else
+    the physical cores (llama.cpp's own default). None when switched off or unknown."""
+    if os.environ.get("MOE_CACHE_TUNE_THREADS") != "1":
+        return None
+    t = arg_after(cmd, "-t", "--threads")
+    if t is not None:
+        return int(t) if str(t).isdigit() else None
+    try:
+        return int(physical_cores()) or None
+    except Exception:
+        return None
 
 
 def never_facts(listing, dense, ctx):
