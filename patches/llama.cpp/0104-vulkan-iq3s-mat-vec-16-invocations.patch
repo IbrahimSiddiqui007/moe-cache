@@ -1,0 +1,29 @@
+From f104545a82f5fb9c824dd21fca3bccd934b47024 Mon Sep 17 00:00:00 2001
+From: IbrahimSiddiqui007 <87603789+IbrahimSiddiqui007@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 20:31:17 +0400
+Subject: [PATCH 4/4] vulkan: iq3_s mat-vec: always 16 invocations per block
+
+---
+ ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq3_s.comp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq3_s.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq3_s.comp
+index 42f52b4a1..03e0606b7 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq3_s.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq3_s.comp
+@@ -7,9 +7,9 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+ 
+ FLOAT_TYPE temp[NUM_COLS][NUM_ROWS];
+ 
+-// invocations per superblock. with many columns, 8 invocations need too many
+-// registers and spill, so use 16 to halve the per-invocation B working set
+-const uint TPB = NUM_COLS <= 4 ? 8 : 16;
++// invocations per superblock. 16 keeps more invocations busy for short rows and
++// halves the per-invocation B working set, so many columns do not spill
++const uint TPB = 16;
+ const uint NL  = 32 / TPB; // l steps per invocation
+ 
+ void calc_superblock(const uint a_offset, const uint b_offset, const uint itid, const uint i, const uint num_blocks_per_row, const uint first_row, const uint num_rows) {
+-- 
+2.56.0
+

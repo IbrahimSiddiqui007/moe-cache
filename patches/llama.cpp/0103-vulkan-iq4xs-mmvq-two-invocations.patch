@@ -1,0 +1,66 @@
+From e2175dc5ff7fb397a8501759b4c313284c1dd18d Mon Sep 17 00:00:00 2001
+From: IbrahimSiddiqui007 <87603789+IbrahimSiddiqui007@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 20:25:23 +0400
+Subject: [PATCH 3/4] vulkan: iq4_xs MMVQ: two invocations per 32-value block
+
+---
+ ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp  | 10 ++++++++--
+ .../ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl |  8 ++++----
+ 2 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
+index 3383aa88e..4ae98b369 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
+@@ -12,11 +12,11 @@
+ 
+ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+ 
+-#if defined(DATA_A_Q2_0) || defined(DATA_A_QUANT_K)
++#if defined(DATA_A_Q2_0) || defined(DATA_A_QUANT_K) || defined(DATA_A_IQ4_XS)
+ #define K_PER_ITER 16
+ #elif defined(DATA_A_QUANT_LEGACY) || defined(DATA_A_MXFP4)
+ #define K_PER_ITER 8
+-#elif defined(DATA_A_IQ1_S) || defined(DATA_A_IQ1_M) || defined(DATA_A_IQ4_XS)
++#elif defined(DATA_A_IQ1_S) || defined(DATA_A_IQ1_M)
+ #define K_PER_ITER 32
+ #else
+ #error unimplemented
+@@ -45,6 +45,12 @@ void iter(inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint first_row, const
+ #if K_PER_ITER == 8
+         cache_b_qs[0] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 2];
+         cache_b_qs[1] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 2 + 1];
++#elif K_PER_ITER == 16 && defined(DATA_A_IQ4_XS)
++        // iq4_xs word j holds values 4j..4j+3 (low nibbles) and 16+4j..16+4j+3 (high nibbles)
++        cache_b_qs[0] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 2    ];
++        cache_b_qs[1] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 2 + 1];
++        cache_b_qs[2] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 2 + 4];
++        cache_b_qs[3] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 2 + 5];
+ #elif K_PER_ITER == 16
+         cache_b_qs[0] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 4    ];
+         cache_b_qs[1] = data_b[b_block_idx_outer].qs[b_block_idx_inner * 8 + b_qs_idx * 4 + 1];
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
+index 03c348bf9..769e286fd 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
+@@ -453,13 +453,13 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+     const uint ib = ib_a / 8;
+     const uint ib32 = ib_a % 8;
+ 
++    // two invocations per 32-value sub-block, each takes two of its four words
+     int32_t q_sum = 0;
+-    [[unroll]] for (uint j = 0; j < 4; ++j) {
+-        const uint32_t vui = data_a_packed32[ib].qs[4 * ib32 + j];
+-        const i32vec2 qs_a = iq4nl_to_i8x8(vui);
++    [[unroll]] for (uint j = 0; j < 2; ++j) {
++        const i32vec2 qs_a = iq4nl_to_i8x8(data_a_packed32[ib].qs[4 * ib32 + 2 * iqs + j]);
+ 
+         q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[j]);
+-        q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[j + 4]);
++        q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[j + 2]);
+     }
+ 
+     const uint sl = (data_a_packed32[ib].scales_l >> (4 * ib32)) & 0xF;
+-- 
+2.56.0
+
