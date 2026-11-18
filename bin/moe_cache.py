@@ -5702,8 +5702,8 @@ def run_launch_plan(plan):
         if a.project and slotdir:
             write_server_id(slotdir, model, ctx, new)      # the retry runs with the f16 KV cache: server.id must say so
         # LAUNCHER-1222 (3): the 'fatal error' line just above comes from llama.cpp and reads like a crash of the whole start; say first that it is handled
-        say(f"moe-cache: (expected, handled) the 'fatal error' line above is llama.cpp refusing the {was} KV cache for this model (a known llama.cpp limit, seen on Granite 1B with "
-            "q8_0 at any context): starting again once with the f16 KV cache, nothing else changes (--exact starts with f16 and skips this)", err=True)
+        say(f"moe-cache: the 'fatal error' line above came from llama.cpp at load; most likely it refused the {was} KV cache for this model (a known llama.cpp limit, seen on Granite 1B "
+            "with q8_0 at any context): starting again once with the f16 KV cache, nothing else changes; if that start fails too, the cause was something else (--exact starts with f16)", err=True)
         return new
     def tune_retry(rc, seen):
         """LAUNCHER-1045: llama-server stopped before it was ready with a plan the auto-tune picked (a stored pick is applied at every start, so a pick that fails once would fail
