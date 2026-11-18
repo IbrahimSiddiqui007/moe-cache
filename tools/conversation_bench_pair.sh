@@ -19,10 +19,11 @@
 #   --prep               before the arms, start each distinct arm setup once, alone, until ready (the launcher's auto-tune runs and stores its plan there), stop it, and
 #                        give every arm of that setup a copy of that cache: no arm pays for or varies in the tuning walk. Without it every arm tunes in its own empty cache
 #                        (unless --cache-seed has the records). Costs one extra load per distinct setup.
-#   --plan-check         before any arm starts: run the launcher's --dry-run for A and B (no model load) and compare engine path (plugin or stock llama-server), --load-mode, -np, -ub, KV,
-#                        --n-cpu-moe, -ngl, -c: a difference that is not named in --plan-diff stops the run (tools/plan_check.py). Off by default (old call shapes, fake launchers in tests); the
-#                        void laptop A/B of 2026-11-16 differed in more than its switch and nothing compared the plans
-#   --plan-diff KEYS     comma list of plan keys that differ on purpose with --plan-check (engine,load_mode,np,ub,batch,kv,n_cpu_moe,ngl,ctx,device)
+#   --plan-check         before any arm starts: run the launcher's --plan-json for A and B (no model load) and compare engine (plugin or stock), load method, --load-mode, -np, -ub, -b, KV, --n-cpu-moe, -ngl, -c,
+#                        flash attention, -t, -C, -ot, --no-mmap, --mlock and the speed-relevant env vars (long flag forms too): a difference that is not named in --plan-diff stops the run
+#                        (tools/plan_check.py). With --prep the check runs twice: PRE-TUNE before the prep (says so in its output), and again on the TUNED plans (the prepared caches as seed) before the first
+#                        measured run. Off by default (old call shapes, fake launchers in tests); the void laptop A/B of 2026-11-16 differed in more than its switch and nothing compared the plans
+#   --plan-diff KEYS     comma list of plan keys that differ on purpose with --plan-check (engine,load_method,load_mode,np,ub,batch,kv,n_cpu_moe,ngl,ctx,device,fa,threads,cpu_mask,ot,no_mmap,mlock,env)
 #   --no-evict           do not push the model out of the page cache before each arm   --no-cool   skip the quiet gate (tools/wait_cool.sh 65)
 #   --settle-s N         seconds to wait after ready, before the conversation (15)
 #   --ready-s N          seconds to wait for /health (1800)
@@ -138,13 +139,15 @@ mapfile -t MFILES < <(compgen -G "$(dirname "$MODEL")/$(basename "$MODEL" | sed 
 log "conversation pair: model $MODEL, ctx $CTX, order $ORDER, A=$LA [root $RA] args '$AA' env '$EA', B=$LB [root $RB] args '$AB' env '$EB'"
 log "llama-server $LS; host $(hostname); machine label "$MACHINE""
 if port_busy; then log "port $PORT is in use (another server?): stop"; exit 1; fi
-if [ "$PLANCHECK" = 1 ]; then
-  log "plan check: launcher --dry-run of both arms (no model load)"
+plan_check_run() {   # plan_check_run LABEL [seed-a seed-b]: the launcher's --plan-json for both arms; no model is loaded
+  local label=$1 sa=${2:-} sb=${3:-}
+  log "plan check ($label): launcher --plan-json of both arms (no model load)"
   python3 "$HERE/tools/plan_check.py" --model "$MODEL" --llama-server "$LS" --ctx "$CTX" --port "$PORT" --root-a "$RA" --root-b "$RB" --args-a "$AA" --args-b "$AB" --env-a "$EA" --env-b "$EB" \
-    ${SEED:+--cache-seed "$SEED"} ${PLANDIFF:+--allow "$PLANDIFF"} 2>&1 | tee -a "$OUT/progress.log" | tee "$OUT/plan_check.txt" | sed 's/^/  /'
-  [ "${PIPESTATUS[0]}" = 0 ] || { log "plan check FAILED: the two arms do not run the same plan apart from what --plan-diff declares; nothing was started"; exit 1; }
-  while IFS= read -r l; do case "$l" in "PLAN arm"*|"PLAN-NOTE"*) echo "plan check: $l" >> "$NOTES";; esac; done < "$OUT/plan_check.txt"
-fi
+    ${SEED:+--cache-seed "$SEED"} ${sa:+--seed-a "$sa"} ${sb:+--seed-b "$sb"} ${PLANDIFF:+--allow "$PLANDIFF"} 2>&1 | tee -a "$OUT/progress.log" | tee "$OUT/plan_check_$label.txt" | sed 's/^/  /'
+  [ "${PIPESTATUS[0]}" = 0 ] || { log "plan check ($label) FAILED: the two arms do not run the same plan apart from what --plan-diff declares; nothing was run further"; exit 1; }
+  while IFS= read -r l; do case "$l" in "PLAN arm"*|"PLAN-NOTE"*) echo "plan check ($label): $l" >> "$NOTES";; esac; done < "$OUT/plan_check_$label.txt"
+}
+[ "$PLANCHECK" = 1 ] && plan_check_run pre-tune
 
 arm_setup() {   # sets LAB ROOT ARGS ENVS for arm kind A or B
   if [ "$1" = A ]; then LAB=$LA; ROOT=$RA; ARGS=$AA; ENVS=$EA; else LAB=$LB; ROOT=$RB; ARGS=$AB; ENVS=$EB; fi
@@ -196,6 +199,8 @@ if [ "$PREP" = 1 ]; then
     PREPDIR[$kind]=$pc
   done
 fi
+
+if [ "$PLANCHECK" = 1 ] && [ "$PREP" = 1 ]; then plan_check_run tuned "${PREPDIR[A]:-}" "${PREPDIR[B]:-}"; fi   # the plans again with the tuned caches the arms will start from
 
 RUNS=(); n=0
 for kind in "${KINDS[@]}"; do
