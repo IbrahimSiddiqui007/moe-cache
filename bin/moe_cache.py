@@ -5124,6 +5124,53 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
 
 
+DENSE_SPILL_MIN_CTX = 65536
+DENSE_SPILL_UB = 256
+
+
+def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
+    """LAUNCHER-1067 / TEST-1205 arm D: a dense model that still spills out of GPU memory at 64k+ (after the KV ladder) gets -np 1 (one slot: llama.cpp's per-slot buffers go;
+    449 MiB freed on the 27B, LAUNCHER-1067) and -ub 256 (half the compute buffer: 280 -> 140 MiB on the 27B at 128k). Measured: PC, 27B IQ4_XS 64k, one run per arm, decode 12.22
+    -> 13.11 tok/s (+7.3 %), prompt -1.5 %, spill 3.17 -> 2.59 GiB (TEST-1205, forecast); 27B Q3_K_XL 128k 15.7 -> 20.5 tok/s (A B B A). OFF until the PC's 6-turn A B B A:
+    MOE_CACHE_DENSE_SPILL_RULE=1 switches it on (the chain's test switch). Never with --exact, the user's own -np / --parallel / -ub / --ub, or a plan that does not spill.
+    Returns (cmd, ub)."""
+    if os.environ.get("MOE_CACHE_DENSE_SPILL_RULE") != "1" or not dense or a.exact or int(ctx or 0) < DENSE_SPILL_MIN_CTX:
+        return cmd, ub
+    if a.ub != "auto" or any(x in ("-np", "--parallel", "-ub", "--ubatch-size") or x.startswith(("--parallel=", "--ubatch-size=")) for x in user_argv):
+        say("moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1): your own -np / -ub win: not applied", err=True)
+        return cmd, ub
+    try:
+        triple = dense_gpu_fit_pair(a, a.model, ctx, machine, with_q4=True, skip_mtp=mtp_layer_skipped(ls, cmd, machine))
+        fit = triple[kv_fit_index(arg_after(cmd, "-ctk", "--cache-type-k"), arg_after(cmd, "-ctv", "--cache-type-v"))] if triple else None
+    except Exception:
+        fit = None
+    if not fit or fit.get("fits"):
+        say("moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1): " + ("the plan does not spill: not applied" if fit else "no GPU memory estimate: not applied"), err=True)
+        return cmd, ub
+    new = [x for x in cmd]
+    new = set_cmd_flag(new, "-ub", str(DENSE_SPILL_UB), ("--ubatch-size",))
+    new = set_cmd_flag(new, "-np", "1", ("--parallel",))
+    say(f"moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1, test switch, off by default): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k: -np 1 (one request at a "
+        f"time; frees llama.cpp's per-slot buffers) and -ub {DENSE_SPILL_UB} (half the compute buffer); one PC run: 27B 64k +7.3 % decode, prompt -1.5 % (forecast, TEST-1205)")
+    return new, str(DENSE_SPILL_UB)
+
+
+def set_cmd_flag(cmd, name, value, also=()):
+    """cmd with `name value` (every spelling in also replaced) at the place of the first one, or appended."""
+    names = (name,) + tuple(also)
+    out, i, done = [], 0, False
+    while i < len(cmd):
+        if cmd[i] in names and i + 1 < len(cmd):
+            if not done:
+                out += [name, value]
+                done = True
+            i += 2
+            continue
+        out.append(cmd[i])
+        i += 1
+    return out if done else out + [name, value]
+
+
 def never_facts(listing, dense, ctx):
     """The scope facts the never-list (planner/never_list.py) checks a row against: GPU backend from the device listing, dense or MoE, context."""
     try:
@@ -5394,6 +5441,7 @@ def _launch_plan(a, extra, argv, machine):
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
+    cmd, ub = dense_spill_stage(a, cmd, ub, list(argv) + user_extra, ctx, ls, machine, dense)
     a.plan_facts = never_facts(dev_listing, dense, ctx)      # LAUNCHER-1225: the scope the never-list rows are checked in (auto-tune candidates, the user's own settings)
     # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
     ncmoe0, ub0, kv_q80 = ncmoe, ub, kv_q8

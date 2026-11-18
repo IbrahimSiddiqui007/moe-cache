@@ -194,6 +194,37 @@ with tempfile.TemporaryDirectory() as tmp:
     mc.EXPECT_CPU_WORK[0] = True
     check(mc.EXPECT_CPU_WORK[0] is True, "log scan flag exists (the pump skips the note while the plan itself puts work on the CPU)")
     mc.EXPECT_CPU_WORK[0] = False
+    # --- LAUNCHER-1067 / TEST-1205 D: the dense spill rule (test switch MOE_CACHE_DENSE_SPILL_RULE=1, off by default) ---
+    c64 = 65536
+    q4_64 = gp.dense_gpu_fit(model, c64, 64 * GIB, "q4_0", 0.0, 0.0, 0.20)["need_gib"]
+    sp = lambda vram, env=None, opts=(), extra=(): (os.environ.__setitem__("MOE_CACHE_DENSE_SPILL_RULE", env) if env else os.environ.pop("MOE_CACHE_DENSE_SPILL_RULE", None),
+                                                    lp.run_case("linux", ["--ram", "12", "--vram", f"{vram:.3f}", "--ctx", str(c64)] + list(opts), list(extra), model, tmp),
+                                                    os.environ.pop("MOE_CACHE_DENSE_SPILL_RULE", None))[1]
+    off = sp(q4_64 / 2)
+    check("-np 1" not in cmd(off) and "-ub 256" not in cmd(off) and "dense spill rule" not in out(off), "spill rule: switch off (the default): the plan is unchanged")
+    # lp.run_case clears MOE_CACHE_* from the environment, so the switch goes in through a wrapper of the stage
+    real_stage = mc.dense_spill_stage
+    def with_switch(*a_, **k_):
+        os.environ["MOE_CACHE_DENSE_SPILL_RULE"] = "1"
+        try:
+            return real_stage(*a_, **k_)
+        finally:
+            os.environ.pop("MOE_CACHE_DENSE_SPILL_RULE", None)
+    mc.dense_spill_stage = with_switch
+    try:
+        on = sp(q4_64 / 2)
+        check("-np 1" in cmd(on) and "-ub 256" in cmd(on) and cmd(on).count("-ub ") == 1 and "dense spill rule" in out(on) and "spills" in out(on),
+              f"spill rule on, a dense 64k plan that spills: -np 1 and -ub 256 (one -ub), the line says the spill")
+        fits = sp(q4_64 * 3)
+        check("-np 1" not in cmd(fits) and "does not spill: not applied" in out(fits), "spill rule on, a plan that fits: not applied, said")
+        ex = sp(q4_64 / 2, opts=["--exact"])
+        check("-np 1" not in cmd(ex) and "-ub 256" not in cmd(ex), "spill rule on, --exact: not applied")
+        mine = sp(q4_64 / 2, extra=["-np", "2"])
+        check("-np 1" not in cmd(mine) and "-ub 256" not in cmd(mine) and "your own -np / -ub win" in out(mine), "spill rule on, your own -np 2: not applied, said")
+        short = lp.run_case("linux", ["--ram", "12", "--vram", f"{q4_need / 2:.3f}", "--ctx", "8192"], [], model, tmp)
+        check("-np 1" not in cmd(short), "spill rule on, 8k context: below 64k, not applied")
+    finally:
+        mc.dense_spill_stage = real_stage
 if fails:
     print("FAILED: " + "; ".join(fails)); sys.exit(1)
 print("all ok")
