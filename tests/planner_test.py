@@ -529,5 +529,73 @@ if _env is not None:
     os.environ["MOE_CACHE_MAX_RAM_GB"] = _env
 L.mem_total = _mt
 
+# --- plan.py: error messages for a malformed header, and the shard-name reading ---
+os.environ["MOE_PLAN_MINI"] = "1"      # the built-in reader: the synthetic headers below, not the gguf package
+sys.path.insert(0, os.path.join(HERE, "planner"))
+import plan as _plan  # noqa: E402
+import shutil, struct as _struct  # noqa: E402
+
+def _gg_str(x):
+    b = x.encode(); return _struct.pack("<Q", len(b)) + b
+
+def _write_gguf(path, kv):
+    infos, off = [], 0
+    def add(name, dims, ty, nbytes):
+        nonlocal off
+        infos.append((name, dims, ty, off)); off += (nbytes + 31) // 32 * 32
+    add("token_embd.weight", [256, 128], 1, 256 * 128 * 2)
+    for l in range(4):
+        add(f"blk.{l}.ffn_gate_inp.weight", [256, 8], 0, 256 * 8 * 4)
+        for nm in ("ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"):
+            add(f"blk.{l}.{nm}.weight", [256, 64, 8], 12, 256 * 64 * 8)
+    head = b"GGUF" + _struct.pack("<IQQ", 3, len(infos), len(kv))
+    for k, t, v in kv:
+        head += _gg_str(k) + _struct.pack("<I", t) + v
+    for name, dims, ty, o in infos:
+        head += _gg_str(name) + _struct.pack("<I", len(dims)) + b"".join(_struct.pack("<Q", d) for d in dims) + _struct.pack("<IQ", ty, o)
+    head += b"\0" * ((-len(head)) % 32)
+    with open(path, "wb") as f:
+        f.write(head); f.truncate(len(head) + off)      # sparse: the tensor data is never written
+
+_ARCH = "qwen3moe"
+def _kv(with_used=True, with_heads=True):
+    kv = [(_ARCH + ".block_count", 4, _struct.pack("<I", 4)), (_ARCH + ".expert_count", 4, _struct.pack("<I", 8)),
+          (_ARCH + ".embedding_length", 4, _struct.pack("<I", 256)), ("general.architecture", 8, _gg_str(_ARCH))]
+    if with_used:
+        kv.append((_ARCH + ".expert_used_count", 4, _struct.pack("<I", 2)))
+    if with_heads:
+        kv.append((_ARCH + ".attention.head_count", 4, _struct.pack("<I", 16)))
+        kv.append((_ARCH + ".attention.head_count_kv", 4, _struct.pack("<I", 2)))
+    return kv
+
+def _plan_ns(model):
+    return types.SimpleNamespace(model=model, ctx=4096, kv="f16", mtp=False, vram_gib=0, ram_gib=16,
+                                 profile=os.path.join(_TMP, "usage"), check=None)
+
+_m6 = os.path.join(_TMP, "no-heads.gguf"); _write_gguf(_m6, _kv(with_heads=False))
+try:
+    _plan._compute(_plan_ns(_m6)); check(False, "a header without the attention keys raises PlanError")
+except _plan.PlanError as e:
+    check("head_count" in str(e), f"missing attention keys give a message, not a TypeError ({e})")
+except TypeError:
+    check(False, "missing attention keys still raise a raw TypeError")
+_m6b = os.path.join(_TMP, "no-used.gguf"); _write_gguf(_m6b, _kv(with_used=False))
+try:
+    _plan._compute(_plan_ns(_m6b)); check(False, "a header without expert_used_count raises PlanError")
+except _plan.PlanError as e:
+    check("expert_used_count" in str(e), f"a missing expert_used_count gives a message ({e})")
+except TypeError:
+    check(False, "a missing expert_used_count still raises a raw TypeError")
+
+_m1 = os.path.join(_TMP, "moe-full.gguf"); _write_gguf(_m1, _kv())
+s1 = _plan._compute(_plan_ns(_m1))[1]
+_sh = os.path.join(_TMP, "moe-1-of-3.gguf")
+for i in (1, 2, 3):
+    shutil.copy(_m1, os.path.join(_TMP, f"moe-{i}-of-3.gguf"))
+s3 = _plan._compute(_plan_ns(_sh))[1]
+check(abs(s3["per_layer"] - 3 * s1["per_layer"]) < 0.05 * s1["per_layer"],
+      f"a -1-of-3 name is read as all 3 shards (experts per layer {s3['per_layer'] / 1e9:.1f} GB vs 3 x {s1['per_layer'] / 1e9:.1f} GB)")
+os.environ.pop("MOE_PLAN_MINI")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

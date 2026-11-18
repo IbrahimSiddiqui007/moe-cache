@@ -11,6 +11,7 @@ environment) is never tuned; --exact and --stock skip the tuner."""
 import hashlib
 import json
 import os
+import tempfile
 import time
 
 VERSION = 3                 # bump when the meaning of a stored pick changes: old files are then ignored (3: the edge walk, the chat score and the launcher / llama.cpp build in the key)
@@ -208,7 +209,18 @@ LOCK_STALE_S = 600.0        # the budget is 180 s plus the loads around it; a lo
 
 def _pid_alive(pid):
     if os.name == "nt":
-        return True         # no cheap check without extra modules: only the age counts there
+        try:            # a crashed launcher no longer locks Windows autotune out for LOCK_STALE_S — OpenProcess + STILL_ACTIVE (the ui.py pattern)
+            import ctypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, int(pid))
+            if not h:
+                return False
+            code = ctypes.c_ulong()
+            ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+            k.CloseHandle(h)
+            return bool(ok) and code.value == 259          # STILL_ACTIVE
+        except Exception:
+            return True         # cannot ask Windows: only the age counts (as before)
     try:
         os.kill(int(pid), 0)
         return True
@@ -222,30 +234,69 @@ def lock_path(cache_dir):
     return os.path.join(cache_dir, "autotune", "tuning.lock")
 
 
-def acquire_lock(cache_dir, now=time.time, alive=_pid_alive):
+def _lock_state(p):
+    """((dev, ino), held-json) of the lock file at read time, or ((None, None), None) when it is gone."""
+    try:
+        st = os.stat(p)
+    except OSError:
+        return (None, None), None
+    try:
+        with open(p, encoding="utf-8") as f:
+            held = json.load(f)
+    except (OSError, ValueError):
+        held = {}
+    return (st.st_dev, st.st_ino), held
+
+
+def acquire_lock(cache_dir, now=time.time, alive=_pid_alive, sleep=time.sleep):
     """LAUNCHER-1041: one tuning at a time on this computer (two loads at once double the memory and spoil each other's numbers). -> (True, None) or (False, pid of the
-    launcher that holds it). A lock of a dead process or older than LOCK_STALE_S is taken over."""
+    launcher that holds it). The lock is created with mkstemp + os.link (link is atomic, so a rival either sees our file or we see theirs; O_CREAT|O_EXCL left a
+    window where two launchers each held a half-created lock). On a filesystem without hard links (os.link raises something other than FileExistsError) it falls
+    back to O_CREAT|O_EXCL. A lock of a dead process or older than LOCK_STALE_S is taken over, but only while it is still the very same file we judged stale: stat,
+    read, stat, then unlink; a rival's fresh lock is never unlinked, and each retry waits a beat so the loser of a race sees the winner's fresh lock. An empty or
+    unreadable file counts as held (a half-created lock) until its mtime is older than LOCK_STALE_S, then it is stale like any other."""
     p = lock_path(cache_dir)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    for _ in range(2):
+    for _ in range(3):
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".moe_autotune_lock_")
         try:
-            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "t": now()}, f)
             try:
-                with open(p, encoding="utf-8") as f:
-                    held = json.load(f)
-            except (OSError, ValueError):
-                held = {}
-            if held and now() - float(held.get("t", 0)) < LOCK_STALE_S and alive(held.get("pid", 0)):
-                return False, held.get("pid")
+                try:
+                    os.link(tmp, p)     # atomic: fails with FileExistsError when a rival won the race
+                except FileExistsError:
+                    raise
+                except OSError:         # no hard links on this filesystem (EPERM / ENOTSUP ...): exclusive create instead
+                    os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump({"pid": os.getpid(), "t": now()}, f)
+                os.unlink(tmp)
+                return True, None
+            except FileExistsError:
+                os.unlink(tmp)      # our candidate is redundant; judge the winner below
+        except BaseException:
             try:
-                os.unlink(p)            # stale: take it over (the loop tries once more)
+                os.unlink(tmp)
             except OSError:
-                return False, held.get("pid")
-            continue
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"pid": os.getpid(), "t": now()}, f)
-        return True, None
+                pass
+            raise
+        ident, held = _lock_state(p)
+        if held == {}:              # empty or unreadable: a half-created lock is held, but only until it is older than LOCK_STALE_S
+            try:
+                age = now() - os.stat(p).st_mtime
+            except OSError:
+                continue            # it vanished: look again
+            if age < LOCK_STALE_S:
+                return False, None  # nobody's pid to report
+        if held and now() - float(held.get("t", 0)) < LOCK_STALE_S and alive(held.get("pid", 0)):
+            return False, held.get("pid")
+        if ident != (None, None) and _lock_state(p)[0] == ident:
+            try:
+                os.unlink(p)            # the same stale file we judged: safe to take over (the loop tries once more)
+            except OSError:
+                return False, (held or {}).get("pid")
+        sleep(0.05)                     # the file changed under us, or a rival is creating its own: look again instead of unlinking
     return False, None
 
 

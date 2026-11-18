@@ -395,6 +395,27 @@ with tempfile.TemporaryDirectory() as lk:
     json.dump({"pid": 1, "t": time.time()}, open(at.lock_path(lk), "w"))
     at.release_lock(lk)
     check(os.path.exists(at.lock_path(lk)), "release_lock leaves a lock that is not ours")
+    open(at.lock_path(lk), "w").close()      # an empty file is a half-created lock (mkstemp+link): held while it is young
+    ok, h = at.acquire_lock(lk)
+    check(not ok and h is None, "tuning lock: a young empty lock file counts as held (no pid to report)")
+    old_t = time.time() - at.LOCK_STALE_S - 5          # the same file, abandoned: stale by its mtime, taken over
+    os.utime(at.lock_path(lk), (old_t, old_t))
+    ok, h = at.acquire_lock(lk)
+    check(ok and h is None and json.load(open(at.lock_path(lk)))["pid"] == os.getpid(), "tuning lock: an empty lock older than LOCK_STALE_S is taken over")
+    at.release_lock(lk)
+    # a filesystem without hard links: os.link raises EPERM, the lock falls back to O_CREAT|O_EXCL
+    real_link = os.link
+    def no_link(*a, **k): raise PermissionError(1, "Operation not permitted")
+    os.link = no_link
+    try:
+        ok, h = at.acquire_lock(lk)
+        check(ok and json.load(open(at.lock_path(lk)))["pid"] == os.getpid(), "tuning lock: no hard links (EPERM): taken with O_CREAT|O_EXCL")
+        ok2, h2 = at.acquire_lock(lk)
+        check(not ok2 and h2 == os.getpid(), "tuning lock: no hard links: a second launcher still sees it held")
+        check(not [x for x in os.listdir(os.path.dirname(at.lock_path(lk))) if x.startswith(".moe_autotune_lock_")], "tuning lock: no temp file left behind")
+    finally:
+        os.link = real_link
+    at.release_lock(lk)
 
 tmp3 = tempfile.mkdtemp(prefix="autotune-c-")
 saved3 = (mc.CACHE_DIR, mc.port_busy)

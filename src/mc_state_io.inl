@@ -101,10 +101,18 @@
         if (la_ecores) {
             if (const char * m = getenv("MOE_CACHE_ECORE_MASK")) {
                 DWORD_PTR set = 0;
+                int skipped = 0;
                 for (int c : mask_cpus(m)) {
                     if (c < 64) {
                         set |= (DWORD_PTR) 1 << c;
+                    } else {
+                        skipped++;
                     }
+                }
+                static bool noted = false;
+                if (skipped > 0 && !noted) {
+                    noted = true;       // one line, once: the mask named CPUs this thread cannot be pinned to (Windows processor group 0 only)
+                    fprintf(stderr, "moe-cache: note: CPUs at 64 and above in the efficiency-core mask are skipped (%d of them; Windows processor group 0 only)\n", skipped);
                 }
                 if (set) {
                     SetThreadAffinityMask(GetCurrentThread(), set);

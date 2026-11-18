@@ -347,7 +347,12 @@ inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) 
     if (r == MAP_FAILED) {
         // a failed MAP_FIXED may already have unmapped the range (ENOMEM from vm.max_map_count): put the reservation back, or a later
         // allocation could land inside our buffer and the next expert read would write over it
-        mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+        void * back = mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+        if (back == MAP_FAILED) {
+            // the reservation is gone; nothing below this point is safe to continue with (silent buffer overlap = wrong tokens)
+            fprintf(stderr, "moe-cache: FATAL: file mmap failed and the reservation at %p (%zu bytes) could not be restored; stopping\n", p, size);
+            abort();
+        }
         return false;
     }
     madvise(p, size, MADV_WILLNEED);

@@ -281,7 +281,7 @@ def parse(argv):
     ap.add_argument("--no-verify", action="store_true", help="after a download, do not compare the file with the checksum in models.json (a 20 GB file takes a minute or two to check)")
     ap.add_argument("--download", action="store_true", help="the explicit yes to downloading the chosen model when it is not on this PC")
     ap.add_argument("--start", choices=["server", "on-demand", "no"], help="server: run it in this window; on-demand: a listener that loads the model on the first request; no: only print the commands")
-    ap.add_argument("--port", type=int, default=None, help="the port (default 8080)")
+    ap.add_argument("--port", type=mc.port_arg, default=None, help="the port (default 8080)")
     ap.add_argument("--models-dir", action="append", default=[], help="another folder with .gguf files (repeatable)")
     ap.add_argument("--wait", type=int, default=900, help="seconds to wait for the model to load (default 900)")
     ap.add_argument("--dry-run", action="store_true", help="show the steps and the commands; start and download nothing")
@@ -400,6 +400,7 @@ def launch(argv, deps=None):
         say("\n3/5  Getting the model: not needed, it is on this PC")
 
     # 4/5 start
+    # fallback when the recommender gives no context of its own: 64k for agents (our test rule: agent work runs at 64k+), 32k otherwise
     ctx = (rec or {}).get("ctx") or (65536 if use == "agents" else 32768)
     sargs = ["--ctx", str(ctx)] + (["--agent"] if use == "agents" else [])
     port = a.port or 8080

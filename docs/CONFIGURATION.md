@@ -4,6 +4,13 @@
 
 `moe-cache-server` and the control page set these for you. Launcher options are not environment variables and are listed by `moe-cache-server --help`; one of them is new in v0.3.8 and on by default from 32k context: the long-prompt mode (`--long-prompt` asks for it at any context, `--no-long-prompt` turns it off; page: **Long-prompt mode**) sets `-ub 4096` and the q8_0 KV cache when the card has room for it, see [INSTALL.md](INSTALL.md) (speed options).
 
+### Launcher options the help text explains briefly
+
+| Option | What it does |
+|---|---|
+| `--load-method auto\|preload\|path` | How the plugin is loaded into llama-server (`auto` picks between the two the same way): `preload` = `LD_PRELOAD` for llama-server builds that link ggml directly (distro packages; not on Windows); `path` = `GGML_BACKEND_PATH` for builds with separate backend files (official releases). Defined identically on three subcommands (`server`, `learn`, `diffusion`); the definitions do not conflict — each subcommand passes its own value to the same `load_env()`. |
+| `--cpu-gpu-split [auto\|FRACTION]` | Opt-in, CUDA only, dense models only, with the FFN weights in RAM (see `--no-ffn-ram`): the GPU also computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM). Needs the kit's llama.cpp with patch 0091; other builds and Vulkan are not applied. `auto` follows the measured wait; a number from 0.05 to 0.6 fixes the GPU's share. The server then loads without mmap and without repacking. |
+
 
 | Variable | Meaning |
 |---|---|

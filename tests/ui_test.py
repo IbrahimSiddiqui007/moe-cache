@@ -1183,7 +1183,7 @@ srv.shutdown()
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)
 mc = ui.mc
 saved = mc.pick_gpu, mc.list_devices, mc.win_dedicated_vram
-mc.list_devices = lambda ls: "listing"
+mc.list_devices = lambda ls, ttl=60.0: "listing"
 mc.pick_gpu = lambda listing: ("Vulkan1", "AMD Radeon RX 7900 XT", 18000)
 mc.win_dedicated_vram = lambda: {"AMD Radeon RX 7900 XT": 20 * 2**30, "AMD Radeon(TM) Graphics": 512 * 2**20}
 g = ui.windows_gpu_once("llama-server")

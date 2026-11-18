@@ -28,6 +28,7 @@ NOT_FOUND_PROBES = ("/api/v1/models", "/api/tags", "/v1/props", "/version")
 CHOICE_FILE = os.path.join(mc.CACHE_DIR, "on-demand.json")
 LOG_FILE = os.path.join(mc.CACHE_DIR, "on-demand.log")       # the launcher's and llama-server's output
 PID_FILE = os.path.join(mc.CACHE_DIR, "on-demand.pid")
+STOP_WORST_S = 60 + (30 if WINDOWS else 0) + 5      # the longest a normal stop holds the server lock: p.wait(60), plus the 30 s usage-profile save on Windows, plus a beat
 LOAD_STOP_GRACE = 15         # SERVER-836: seconds a stop() during a model load waits after SIGTERM before it kills the launcher (not on macOS)
 CUSTOM_KEY_FILE = os.path.join(mc.CACHE_DIR, "on-demand.key")      # the --api-key given with the default model (mode 0600)
 LISTENER_LOG = os.path.join(mc.CACHE_DIR, "on-demand-listener.log")   # the listener's own lines when it has no console (Windows)
@@ -128,7 +129,7 @@ def local_origin(origin):
 
 def model_facts(b):
     """What the memory split needs to know about a backend's model: file size, MoE or dense, its fixed part, the projector next to it."""
-    sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+    mc.planner_path()
     from gguf_plan import model_layout, _kv_or_flat
     size = sum(os.path.getsize(p) for p in mc.model_parts(b.c["model"]))
     lay = model_layout(b.c["model"])
@@ -382,7 +383,10 @@ class Backend:
                     pass
                 self.log(f"stopped while the model was loading ({reason})")
                 return
-            self.lock.acquire()         # not a load (a stop in progress, a request starting): wait for it as before, so a model swap never starts the next model beside a still-stopping one
+            # a hung holder must not block the handler thread forever: raise, so the HTTP caller answers 503 and the swap can start again. The wait is the
+            # worst case of a normal stop (STOP_WORST_S), so a stop that is merely slow is waited for, not reported as hung
+            if not self.lock.acquire(timeout=STOP_WORST_S):
+                raise RuntimeError(f"could not stop ({reason}): the server lock is held (a stop or swap in progress)")
         try:
             self._stop_locked(reason)
         finally:
@@ -443,7 +447,7 @@ class Pool:
             if cap is None:
                 cap = mc.mem_cap() or mc.mem_for_server(None)
             if vram is None:
-                sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+                mc.planner_path()
                 from gguf_plan import free_vram_bytes
                 vram = free_vram_bytes()
             cores = cores if cores is not None else cc.physical_core_ids()
@@ -519,8 +523,14 @@ class Pool:
         return {"object": "list", "data": data}
 
     def stop(self, reason):
-        for b in self.bs:
-            b.stop(reason)
+        first = None
+        for b in self.bs:              # one backend that cannot stop must not leave the others running: try all, then report the first failure
+            try:
+                b.stop(reason)
+            except Exception as e:
+                first = first or e
+        if first:
+            raise first
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1017,7 +1027,10 @@ def on_demand(argv):
         pass
     finally:
         srv.server_close()
-        b.stop("the listener was stopped")
+        try:
+            b.stop("the listener was stopped")
+        except RuntimeError:
+            pass      # a stop/swap already in progress holds the server lock — its own thread finishes that stop
         try:
             if open(PID_FILE).read().split()[0] == str(os.getpid()):
                 os.remove(PID_FILE)

@@ -20,7 +20,7 @@ def check(ok, what):
 
 # ---- the fake Hugging Face ----
 DATA = {"fake/repo/resolve/rev1/sub/A.gguf": os.urandom(700_000), "fake/repo/resolve/rev1/B.gguf": os.urandom(300_000)}
-MODE = {"cut_first": False, "ignore_range": False, "status": None, "slow": 0.0}
+MODE = {"cut_first": False, "ignore_range": False, "status": None, "slow": 0.0, "content_range": "ok"}      # content_range: ok | missing | wrong
 LOG = []
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -40,6 +40,10 @@ class Fake(http.server.BaseHTTPRequestHandler):
         chunk = body[start:]
         self.send_response(code)
         self.send_header("Content-Length", str(len(chunk)))
+        if code == 206 and MODE["content_range"] == "ok":
+            self.send_header("Content-Range", f"bytes {start}-{len(body) - 1}/{len(body)}")
+        elif code == 206 and MODE["content_range"] == "wrong":
+            self.send_header("Content-Range", f"bytes 0-{len(body) - 1}/{len(body)}")             # a proxy answering from 0
         self.end_headers()
         if MODE["cut_first"] and start == 0:
             MODE["cut_first"] = False
@@ -138,6 +142,8 @@ d.start("fake", f2, ["sub/A.gguf", "B.gguf"])
 s = wait(d)
 check(s["status"] == "done", f"resume: finished and verified ({s['status']}: {s['message']})")
 check(LOG[0][1] == f"bytes={part}-", f"resume: the request asked for bytes={part}- ({LOG[0]})")
+a_reqs = [r for p_, r in LOG if p_.endswith("A.gguf")]
+check(a_reqs == [f"bytes={part}-"], f"resume: exactly one request for A.gguf, and it was ranged ({a_reqs})")
 check(open(os.path.join(f2, "sub", "A.gguf"), "rb").read() == A, "resume: the joined file is byte-identical")
 
 # ---- lost connection: retried from the bytes on disk ----
@@ -149,6 +155,15 @@ check(s["status"] == "done" and any(r == "bytes=200000-" for _, r in LOG), f"con
 f4 = fresh("m4"); os.makedirs(os.path.join(f4, "sub")); open(os.path.join(f4, "sub", "A.gguf.part"), "wb").write(A[:1000]); MODE["ignore_range"] = True
 d = dl.Downloads(); d.start("fake", f4, ["sub/A.gguf", "B.gguf"]); s = wait(d); MODE["ignore_range"] = False
 check(s["status"] == "done" and open(os.path.join(f4, "sub", "A.gguf"), "rb").read() == A, f"no Range support: restarts that file, right bytes ({s['status']})")
+
+# ---- a 206 that does not confirm where it starts: never appended, the file restarts from 0 ----
+for cr, what in (("missing", "no Content-Range"), ("wrong", "a Content-Range starting at 0, not at the resume point")):
+    fx = fresh("m4" + cr); os.makedirs(os.path.join(fx, "sub")); open(os.path.join(fx, "sub", "A.gguf.part"), "wb").write(A[:1000])
+    MODE["content_range"] = cr; LOG.clear()
+    d = dl.Downloads(); d.start("fake", fx, ["sub/A.gguf", "B.gguf"]); s = wait(d); MODE["content_range"] = "ok"
+    a_reqs = [r for p_, r in LOG if p_.endswith("A.gguf")]
+    check(a_reqs == ["bytes=1000-", None], f"206 with {what}: the ranged request is followed by a restart from 0 ({a_reqs})")
+    check(s["status"] == "done" and open(os.path.join(fx, "sub", "A.gguf"), "rb").read() == A, f"206 with {what}: done, file byte-identical ({s['status']}: {s['message'][:60]})")
 
 # ---- wrong checksum: failed, bad file set aside ----
 f5 = fresh("m5"); d = dl.Downloads(); d.start("badsum", f5, ["sub/A.gguf", "B.gguf"]); s = wait(d)

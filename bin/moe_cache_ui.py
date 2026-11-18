@@ -76,7 +76,7 @@ def mtp_info(path):
         st = os.stat(path)
         k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
         if k not in _MTP_INFO:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            mc.planner_path()
             from gguf_plan import mtp_layers
             head, declared = mtp_layers(path)
             d = os.path.dirname(path)
@@ -185,7 +185,7 @@ _GPU = {"done": False, "gpu": None, "watched": 0.0}
 def windows_gpu_once(ls):
     """Windows without nvidia-smi (AMD, Intel): the GPU the launcher picks (llama-server --list-devices, discrete before integrated) with its
     free memory, and its total dedicated VRAM from the registry. {name, free, total, integrated} or None."""
-    g = mc.pick_gpu(mc.list_devices(ls))
+    g = mc.pick_gpu(mc.list_devices(ls, ttl=0))      # ttl=0: the control page shows free memory, so it must not be answered from the launcher's 60 s memo
     if not g:
         return None
     ded = mc.dedicated_vram_of(g[1], mc.win_dedicated_vram())
@@ -339,7 +339,7 @@ class PagePlanMachine(mc.Machine):
     def list_devices(self, ls):
         t, text = self._devices.get(ls, (0.0, ""))
         if time.time() - t > 30:
-            text = mc.list_devices(ls)
+            text = mc.list_devices(ls, ttl=0)      # this class keeps its own 30 s memo; the launcher's 60 s one on top would make the free-VRAM figure up to 90 s old
             self._devices[ls] = (time.time(), text)
         return text
 
@@ -378,7 +378,7 @@ def mtp_reason(path, want, agent, ls):
     """The launcher's MTP line for this model and setting (its own mtp_decide(); the head from gguf_plan.mtp_layers), without the prefix; None
     when the launcher would say nothing. want: None (auto), True (--mtp), False (--no-mtp)."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        mc.planner_path()
         from gguf_plan import mtp_layers
         head, declared = mtp_layers(path)
     except Exception:
@@ -478,7 +478,7 @@ MEASURED = {
 def measured(path, size):
     """Lines like 'laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        mc.planner_path()
         from gguf_plan import model_key
         key = model_key(path)
     except Exception:
@@ -1986,7 +1986,7 @@ def audit_need(model_size, model_path=None, ctx=None):
     old = int(model_size * 1.10 + 1.5 * GIB)
     try:
         if os.path.join(HERE, "planner") not in sys.path:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            mc.planner_path()
         import gguf_plan as gp
         c = max(512, int(ctx or 8192))
         kv = gp.kv_bytes(model_path, c, kv_q8=False)
@@ -2171,10 +2171,16 @@ def list_chats():
 
 
 _CHAT_LOCKS, _CHAT_LOCKS_GUARD = {}, threading.Lock()
+_CHAT_LOCKS_MAX = 256      # a deleted chat used to leave its lock here forever: a long-lived page server leaked one lock per chat path
 
 
 def _chat_lock(path):
     with _CHAT_LOCKS_GUARD:
+        if path not in _CHAT_LOCKS and len(_CHAT_LOCKS) >= _CHAT_LOCKS_MAX:
+            # drop the oldest entries (insertion order), but only locks nobody holds right now; if every one is held the table grows past the cap until they are released
+            over = len(_CHAT_LOCKS) - _CHAT_LOCKS_MAX + 1
+            for old in [k for k, lk in _CHAT_LOCKS.items() if not lk.locked()][:over]:
+                _CHAT_LOCKS.pop(old, None)
         return _CHAT_LOCKS.setdefault(path, threading.Lock())
 
 
@@ -2408,7 +2414,7 @@ def model_kind(path):
         st = os.stat(path)
         k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
         if k not in _KIND:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            mc.planner_path()
             from gguf_plan import read_tensors, shards
             _KIND[k] = "moe" if any("_exps" in n for n, _ in read_tensors(shards(path)[0])) else "dense"
         return _KIND[k]

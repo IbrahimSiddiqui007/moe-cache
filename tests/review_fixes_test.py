@@ -74,8 +74,120 @@ def lp(types_):
 check(lp(None) == ["-t", "8"], "long-prompt fallback: q8_0/q8_0 pair undone")
 check(lp(("q8_0", "q4_0")) == ["-t", "8"], "long-prompt fallback: a dense K q8_0 / V q4_0 pair is undone too (finding 8)")
 
+import moe_cache_launch as mcl  # noqa: E402
+# launch --port gets the same range check as server --port
+for ok in ("1", "8080", "65535"):
+    check(mcl.parse(["--port", ok]).port == int(ok), f"launch --port {ok} accepted")
+for bad in ("0", "70000", "-5", "http"):
+    try:
+        mcl.parse(["--port", bad]); check(False, f"launch --port {bad} refused")
+    except SystemExit:
+        check(True, f"launch --port {bad} refused")
+
 import moe_cache_on_demand as od  # noqa: E402
 check(od.model_alias("/m/big.gguf", ["x", "--", "--alias=foo"]) == "foo" and od.model_alias("/m/big.gguf", ["x", "--", "--alias", "foo"]) == "foo", "on-demand routes by --alias=foo like --alias foo")
+
+# --- further fixes ---
+import time  # noqa: E402
+import moe_cache_bench as _bench  # noqa: E402
+import moe_cache_ui as ui  # noqa: E402
+
+# a server that dies right after /health answers is reported, not waved through
+class _DeadP:
+    def poll(self): return 0
+old_healthy = mc.healthy
+mc.healthy = lambda port: True
+try:
+    err = _bench._wait_ready(_DeadP(), ["llama-server listening"], 59999, time.time(), 30)
+finally:
+    mc.healthy = old_healthy
+check(bool(err) and "stopped" in err, f"a server that dies right after /health is an error, not a green light ({err!r})")
+
+# stop() on a lock that stays held raises, so the HTTP caller answers 503 and the swap can restart
+class _BusyLock:
+    def acquire(self, timeout=None, blocking=True): return False
+    def release(self): pass
+b = od.Backend.__new__(od.Backend)
+b.lock, b.state, b.p, b.stop_asked = _BusyLock(), "stopping", None, False
+b.log = lambda m: None
+try:
+    b.stop("test")
+    check(False, "stop() returns while the lock is held — the raise is missing")
+except RuntimeError:
+    check(True, "stop() raises when the lock stays held past 30 s (the HTTP caller answers 503; the swap does not hang)")
+
+# ttl=0 re-spawns --list-devices — an OOM-retry site must not read the plan-time memo
+_calls = []
+class _FakeOut:
+    stdout = "Vulkan0: Foo (8192 MiB, 4096 MiB free)\n"
+    stderr = ""
+_old_run = mc.subprocess.run
+mc.subprocess.run = lambda cmd, **kw: _calls.append(cmd) or _FakeOut()
+try:
+    d1, d2 = mc.list_devices("ls-fake"), mc.list_devices("ls-fake")
+    check(len(_calls) == 1 and d1 == d2, "list_devices memo: the second call inside the ttl does not spawn again")
+    d3 = mc.list_devices("ls-fake", ttl=0)
+    check(len(_calls) == 2 and d3 == d1, "list_devices ttl=0: the OOM-retry sites re-spawn --list-devices instead of reading the stale memo")
+finally:
+    mc.subprocess.run = _old_run
+
+# the chat-lock dict does not grow past its cap
+for i in range(ui._CHAT_LOCKS_MAX + 50):
+    ui._chat_lock(f"/chat/{i}.json")
+check(len(ui._CHAT_LOCKS) <= ui._CHAT_LOCKS_MAX, f"the chat-lock dict is capped ({len(ui._CHAT_LOCKS)} <= {ui._CHAT_LOCKS_MAX}); a deleted chat does not leak a lock")
+
+# a failed stock probe leaves stock_line empty — the probe's error text must not become the record's stock plan
+tmp4 = tempfile.mkdtemp(prefix="moe-rf3-")
+mdl = os.path.join(tmp4, "m.gguf"); open(mdl, "wb").write(b"x")
+_captured = {}
+_orig_br = _bench.build_record
+def _cap_build_record(*a, **k):
+    _captured["stock_line"] = a[7]
+    return _orig_br(*a, **k)
+_saved4 = (_bench.launcher_plan, _bench.doctor_facts, _bench.server_info, _bench.order, mc.port_busy, _bench.rec.conditions_now, _bench.build_record)
+_bench.launcher_plan = lambda *a, **k: ("plugin", "llama-server -m m -ngl 99") if "--stock" not in (a[4] or []) else (None, "the launch probe failed: BoomError: 1")
+_bench.doctor_facts = lambda *a, **k: (False, {}, [])
+_bench.server_info = lambda *a, **k: ({}, {})
+_bench.order = lambda n: []
+mc.port_busy = lambda port: False
+_bench.rec.conditions_now = lambda **k: {"cold": "warm"}
+_bench.build_record = _cap_build_record
+try:
+    rc = _bench.bench_report([mdl, "--llama-server", "/bin/true", "--out", tmp4])
+finally:
+    _bench.launcher_plan, _bench.doctor_facts, _bench.server_info, _bench.order, mc.port_busy, _bench.rec.conditions_now, _bench.build_record = _saved4
+check(rc == 0 and _captured.get("stock_line") == "", f"a failed stock probe gives stock_line \"\" in the record, not the error text (rc={rc}, stock_line={_captured.get('stock_line')!r})")
+
+# Pool.stop: one backend that cannot stop does not leave the others running
+import threading  # noqa: E402
+import moe_cache_on_demand as _od  # noqa: E402
+_stopped = []
+class _FakeBackend:
+    def __init__(self, name, fail=False): self.name, self.fail, self.key = name, fail, "k"
+    def stop(self, reason):
+        if self.fail:
+            raise RuntimeError(f"could not stop ({reason})")
+        _stopped.append(self.name)
+_pool = _od.Pool([_FakeBackend("a", fail=True), _FakeBackend("b")])
+try:
+    _pool.stop("test")
+    _raised = None
+except RuntimeError as e:
+    _raised = str(e)
+check(_stopped == ["b"] and _raised and "could not stop" in _raised, f"Pool.stop: the second backend is stopped although the first failed, and the failure is still reported ({_stopped}, {_raised!r})")
+check(_od.STOP_WORST_S >= 65, f"Backend.stop waits at least a normal stop's worst case for the server lock ({_od.STOP_WORST_S} s)")
+
+# the page's chat locks: eviction never drops a lock that is held
+import moe_cache_ui as _ui  # noqa: E402
+_ui._CHAT_LOCKS.clear()
+_held = _ui._chat_lock("held")
+_held.acquire()
+for _i in range(_ui._CHAT_LOCKS_MAX + 10):
+    _ui._chat_lock(f"c{_i}")
+check(_ui._CHAT_LOCKS.get("held") is _held and _held.locked(), "chat locks: a held lock survives eviction")
+check(len(_ui._CHAT_LOCKS) <= _ui._CHAT_LOCKS_MAX, f"chat locks: the table stays at its cap while locks are free ({len(_ui._CHAT_LOCKS)})")
+_held.release()
+_ui._CHAT_LOCKS.clear()
 
 print("PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

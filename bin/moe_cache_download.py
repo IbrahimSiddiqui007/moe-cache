@@ -8,7 +8,7 @@ to <name>.bad so a retry starts clean.
 
 The catalogue is models.json (bin/moe_cache_pick.py CAT); the source is huggingface.co/<repo>/resolve/<revision>/<path>. Tests point BASE at a local
 fake server and replace catalogue() with a one-file model; no real model is ever fetched by a test."""
-import os, shutil, threading, time, urllib.error, urllib.request
+import os, re, shutil, threading, time, urllib.error, urllib.request
 
 import moe_cache_pick as pk
 
@@ -243,27 +243,36 @@ class Downloads:
             j.message = ""
 
     def get(self, j, url, part, have, want):
-        req = urllib.request.Request(url, headers={"User-Agent": "moe-cache-page", **({"Range": f"bytes={have}-"} if have else {})})
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            if have and r.status != 206:               # the server ignored Range: start this file again
-                have = 0
-            with open(part, "ab" if have else "wb") as out:
-                if not have:
-                    out.truncate(0)
+        while True:
+            req = urllib.request.Request(url, headers={"User-Agent": "moe-cache-page", **({"Range": f"bytes={have}-"} if have else {})})
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                if have and r.status != 206:               # the server ignored Range: ask again, from 0
+                    have = 0
+                    continue
+                if have:                                   # a 206 must confirm where it starts — a proxy answering from 0 would append a second copy and only sha256 would catch it
+                    cr = (r.headers.get("Content-Range") or "").split("/")[0].strip()
+                    m = re.match(r"bytes\s+(\d+)-", cr)
+                    if not m or int(m.group(1)) != have:
+                        have = 0                           # no usable or from-elsewhere Content-Range — never append; ask again from 0 (the retry lands on 0 or a correct resume), not a raise
+                        continue
+                with open(part, "ab" if have else "wb") as out:
+                    if not have:
+                        out.truncate(0)
+                        with j.lock:
+                            j.cur_done = 0
                     with j.lock:
-                        j.cur_done = 0
-                with j.lock:
-                    j.message = ""
-                while True:
-                    if j.cancel.is_set():
-                        raise Cancelled()
-                    b = r.read(CHUNK)
-                    if not b:
-                        break
-                    out.write(b)
-                    j.tick(len(b))
-            if os.path.getsize(part) < want:
-                raise ConnectionError(f"the connection closed after {os.path.getsize(part)} of {want} bytes")
+                        j.message = ""
+                    while True:
+                        if j.cancel.is_set():
+                            raise Cancelled()
+                        b = r.read(CHUNK)
+                        if not b:
+                            break
+                        out.write(b)
+                        j.tick(len(b))
+                if os.path.getsize(part) < want:
+                    raise ConnectionError(f"the connection closed after {os.path.getsize(part)} of {want} bytes")
+                return
 
     def verify(self, j):
         entry = j.entry
