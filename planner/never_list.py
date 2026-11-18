@@ -108,3 +108,49 @@ def user_notes(cmd, env, facts, environ=None):
             what = f"{r['name']} {v}" if r["kind"] == "flag" else f"{r['name']}={v}"
             out.append(f"moe-cache: note: {what} was measured as a loss ({r['loss']}; {r['source']}); the launcher never picks it on its own; yours is kept")
     return out
+
+
+# ---- answer classes (LAUNCHER-1225 step 2) ----
+INPUT_SETTINGS = ("free_gpu_gib", "ram_for_server_gib")      # plan-file rows that are measured inputs, not settings
+
+
+def answer_class(name, path=None):
+    """(class, gate) of an auto-tune dimension or plan-file setting: class exact / placement / quality / input; gate = the TOKEN_MODES row of a quality setting.
+    A name missing from the table is ("quality", None): never picked on its own (fail closed). Plan-file inputs (gpu_* sizes, free memory) are ("input", None)."""
+    if name in INPUT_SETTINGS or str(name).startswith(("gpu_", "walk_floor")):
+        return "input", None
+    try:
+        with open(path or PATH, encoding="utf-8") as f:
+            t = json.load(f).get("answer_classes") or {}
+    except (OSError, ValueError, AttributeError):
+        t = {}
+    r = t.get(name)
+    if not isinstance(r, dict) or r.get("class") not in ("exact", "placement", "quality"):
+        return "quality", None
+    return r["class"], r.get("gate")
+
+
+def gate_passed(gate):
+    """True when the quality-gate row `gate` of TOKEN_MODES (bin/moe_cache_approx.py) has status 'won'; False when unknown."""
+    if not gate:
+        return False
+    try:
+        import sys
+        b = os.path.join(os.path.dirname(HERE), "bin")
+        if b not in sys.path:
+            sys.path.insert(0, b)
+        import moe_cache_approx as ax
+        return ax.default_on(gate)
+    except Exception:
+        return False
+
+
+def tuner_may_pick(edits):
+    """(True, None) when the auto-tune may try and pick a candidate with these edits on its own: every dimension is exact or placement, or quality with a passed gate.
+    Else (False, "dim (why)")."""
+    for e in edits or []:
+        dim = e.get("dim")
+        cls, gate = answer_class(dim)
+        if cls == "quality" and not gate_passed(gate):
+            return False, f"{dim} ({'its quality gate ' + gate + ' has not passed' if gate else 'no answer class: counts as changing answers'})"
+    return True, None

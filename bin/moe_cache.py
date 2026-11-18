@@ -5107,7 +5107,7 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None, mtp=tune_mtp_ok(a, cmd), threads=tune_threads_of(cmd))
     cands, vetoed = never_filter(cands, getattr(a, "plan_facts", None) or {"ctx": ctx})       # LAUNCHER-1225: a setting measured as a loss in this scope is never tried
     if vetoed:
-        say_fn("moe-cache: auto-tune: not tried (measured as a loss, planner/never_list.json): " + ", ".join(vetoed))
+        say_fn("moe-cache: auto-tune: not tried (measured as a loss, or changes answers without a passed quality gate; planner/never_list.json): " + ", ".join(vetoed))
     if fits is not None and len(cands) > 1:          # LAUNCHER-1042: every command that would be loaded has passed the commit check first
         ok, why = fits(cmd, env)
         if not ok:
@@ -5273,8 +5273,11 @@ def never_filter(cands, facts):
     kept, out = cands[:1], []
     for c in cands[1:]:
         r = nl.veto(c.edits, facts)
+        ok, why = nl.tuner_may_pick(c.edits)          # answer classes: a setting that can change answers needs its passed quality gate
         if r:
             out.append(f"{c.id} ({r['source']})")
+        elif not ok:
+            out.append(f"{c.id} (changes answers: {why})")
         else:
             kept.append(c)
     return kept, out

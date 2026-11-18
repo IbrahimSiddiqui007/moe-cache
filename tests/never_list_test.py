@@ -59,5 +59,24 @@ check(nl.user_notes(["llama-server"], [], cu, environ={"GGML_VK_DISABLE_HOST_VIS
 check(nl.user_notes(["llama-server", "-ub=8192"], [], cu, environ={}) != [], "-ub=8192 spelling is seen too")
 check(nl.rows(os.path.join(HERE, "no-such-file.json")) == [], "a missing list vetoes nothing")
 
+# answer classes (LAUNCHER-1225 step 2): exact / placement picked freely, quality only with a passed gate, unknown = quality without a gate
+check(nl.answer_class("ncmoe") == ("placement", None) and nl.answer_class("ub")[0] == "exact" and nl.answer_class("np")[0] == "exact" and nl.answer_class("threads")[0] == "exact",
+      "classes: --n-cpu-moe placement; -ub, -np, threads exact")
+check(nl.answer_class("kv") == ("quality", "kv8") and nl.answer_class("fast")[0] == "quality" and nl.answer_class("approx")[0] == "quality" and nl.answer_class("mtp") == ("quality", "mtp"),
+      "classes: KV type, --fast, --approx, MTP are quality, each with its gate row")
+check(nl.answer_class("no-such-dim") == ("quality", None) and nl.answer_class("gpu_kv_mib")[0] == "input", "an unknown setting counts as quality without a gate; gpu_* sizes are inputs")
+check(nl.tuner_may_pick([{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": -2}])[0] and nl.tuner_may_pick([{"dim": "ub", "flag": "-ub", "value": "1024"}])[0], "the tuner may pick placement and exact settings")
+ok_q4, why_q4 = nl.tuner_may_pick([{"dim": "fast", "flag": "--fast", "value": "1"}])
+check(not ok_q4 and "fast1" in why_q4, f"--fast (gate fast1 lost) is never picked on its own ({why_q4})")
+check(not nl.tuner_may_pick([{"dim": "mystery", "flag": "--x", "value": "1"}])[0], "an unknown dimension is never picked on its own (fail closed)")
+check(nl.tuner_may_pick([{"dim": "kv", "flag": "-ctk", "value": "q8_0"}])[0] == nl.gate_passed("kv8") and nl.gate_passed("kv8") is True, "q8_0 KV: allowed because its gate row kv8 is 'won'")
+check(nl.tuner_may_pick([{"dim": "mtp", "flag": "--spec-type", "value": "draft-mtp"}])[0] is True, "MTP: allowed because its gate row mtp is 'won' (TOKEN_MODES)")
+cq = [at.Candidate("C0", "plan", []), at.Candidate("fast", "--fast", [{"dim": "fast", "flag": "--fast", "value": "1"}]), at.Candidate("np1", "-np 1", [{"dim": "np", "flag": "-np", "value": "1"}])]
+kept, out = mc.never_filter(cq, cu)
+check([c.id for c in kept] == ["C0", "np1"] and out and "changes answers" in out[0], f"the launcher's filter drops a quality candidate whose gate did not pass ({out})")
+import moe_cache_planfile as pf
+check(pf._row("n_cpu_moe", "20", "probe", "x")["class"] == "placement" and pf._row("kv_type", "q8_0", "probe", "x")["class"] == "quality" and pf._row("free_gpu_gib", 7.5, "probe", "x")["class"] == "input",
+      "plan file rows carry their answer class")
+
 print("PASS (0 failed)" if not fails else f"FAIL ({fails} failed)")
 sys.exit(1 if fails else 0)
