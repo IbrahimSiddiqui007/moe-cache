@@ -322,6 +322,56 @@ def lib_env_test(model):
     return bad
 
 
+def api_mismatch_test(model):
+    """LAUNCHER-1224: a plugin build for another ggml backend API than llama-server (and no build that matches) gives a plan made for stock llama-server (no plugin
+    environment, engine stock, the advice printed); with --always-plugin / --fast / --hybrid the start stops with the advice. Matching APIs keep the plugin plan."""
+    bad = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in ("llama-server", "libggml-moe-cache.so"):
+            open(os.path.join(tmp, f), "w").close()
+        saved = (mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS, os.environ.get("MOE_CACHE_LIB"))
+        mc.CACHE_DIR = os.path.join(tmp, "cache"); mc.KEY_FILE = os.path.join(mc.CACHE_DIR, "api.key")
+        mc.WINDOWS = False
+        mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
+        os.environ.pop("MOE_CACHE_LIB", None)
+
+        def make(ls_api_, lib_api_):
+            class M(FakeMachine):
+                def ls_api(self, ls): return ls_api_
+                def lib_api(self, lib): return lib_api_
+            return M(tmp)
+
+        def plan(machine, *more):
+            a, extra, argv = mc.parse_server([model, "--llama-server", os.path.join(tmp, "llama-server"), "--ram", "12", "--no-pin", "--plan-json", *more])
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    return mc.launch_plan(a, extra, argv, machine=machine, quiet=False), out.getvalue()
+            except SystemExit as e:
+                return None, str(e.code)
+        try:
+            p, txt = plan(make("3", "2"))
+            env = dict(p.env) if p else {}
+            checks = [(p is not None and p.engine == "stock" and not any(k.startswith("MOE_CACHE") or k == "LD_PRELOAD" for k in env) and "API 2" in txt and "API 3" in txt,
+                       "API 3 server, API 2 plugin: stock plan, no plugin environment, the advice printed")]
+            p2, txt2 = plan(make("3", "2"), "--always-plugin")
+            checks.append((p2 is None and "--always-plugin needs it" in txt2 and "ggml0.26" in txt2, "--always-plugin with the wrong build: stops with the advice"))
+            p3, txt3 = plan(make("3", "2"), "--fast")
+            checks.append((p3 is None and "--fast needs it" in txt3, "--fast with the wrong build: stops"))
+            p4, _ = plan(make("3", "3"))
+            checks.append((p4 is not None and p4.engine == "plugin", "matching APIs: the plugin plan is kept"))
+            p5, _ = plan(make(None, "2"))
+            checks.append((p5 is not None and p5.engine == "plugin", "server API unreadable: nothing assumed, plugin plan kept"))
+            for ok, what in checks:
+                print("  " + ("ok  " if ok else "FAIL") + " API mismatch: " + what)
+                bad += not ok
+        finally:
+            mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS = saved[:4]
+            if saved[4] is not None:
+                os.environ["MOE_CACHE_LIB"] = saved[4]
+    return bad
+
+
 def leave_room_test(model):
     """--leave-room (owner 2026-10-30): RAM = total minus max(8 GiB, 25 %), 2 GB of GPU memory kept free, -t = physical cores - 2, the low-priority marker;
     a --ram or -t the user gave is kept."""
@@ -438,7 +488,7 @@ def main():
             for cname, opts, extra in CASES:
                 results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
     fp = fingerprint(model)
-    inj_bad = injection_test(model) + lib_env_test(model) + leave_room_test(model) + page_test(model)
+    inj_bad = injection_test(model) + lib_env_test(model) + api_mismatch_test(model) + leave_room_test(model) + page_test(model)
     # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
     consistent_bad = 0
     with tempfile.TemporaryDirectory() as tmp:

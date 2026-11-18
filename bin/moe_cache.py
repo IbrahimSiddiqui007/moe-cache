@@ -3912,6 +3912,36 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
             "than stock llama-server, but a later re-run on the release code did not reproduce that, so on your machine it can be slower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
 
 
+def plugin_api_mismatch(ls, machine):
+    """LAUNCHER-1224: (llama-server's ggml backend API, the plugin build's API, the build) when the build plugin_lib_stage would use is for another API and no build for the
+    server's API is found, else None (also when either API cannot be read: nothing is assumed)."""
+    lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
+    want, have = machine.ls_api(ls), machine.lib_api(lib)
+    if not (want and have and want != have):
+        return None
+    alt = machine.pick_lib(ls)                # plugin_lib_stage lets a matching build replace an env value built for another API
+    if machine.lib_exists(alt) and machine.lib_api(alt) == want:
+        return None
+    return want, have, lib
+
+
+def api_mismatch_stage(a, ls, machine):
+    """LAUNCHER-1224, before the plugin build stage: the plugin refuses to load into a llama-server of another ggml backend API, and the plan used to stay plugin-shaped
+    (expert layers on the CPU for the cache, plugin settings) while plain llama.cpp ran it. Now the plan is made for stock llama-server, with one line that says why and how to
+    get the matching build; when the user asked for something only the plugin does (--fast, --hybrid, --always-plugin) the start stops with that advice instead.
+    Returns True when the plan must take the stock path (a.api_stock holds the line stock_env_stage prints)."""
+    m = plugin_api_mismatch(ls, machine)
+    if not m:
+        return False
+    want, have, lib = m
+    if a.fast or a.hybrid or a.always_plugin:
+        opt = "--hybrid" if a.hybrid else "--always-plugin" if a.always_plugin else "--fast"
+        raise SystemExit(f"moe-cache: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin cannot load, and {opt} needs it. " + api_advice(want))
+    a.api_stock = (f"moe-cache: WARNING: the plugin build {lib} is for ggml backend API {have} but {ls} uses API {want}: the plugin cannot load, so this plan is made for "
+                   "stock llama-server (no expert cache). To use the plugin: " + api_advice(want))
+    return True
+
+
 def plugin_lib_stage(ls, dry, stock, win, machine):
     """ENGINE-029, stage "plugin build": which plugin library goes with this llama-server (MOE_CACHE_LIB gives way to the matching build when its backend API differs), and the refusals: llama-server missing, plugin not built, API mismatch. Returns the library path."""
     lib = os.environ.get("MOE_CACHE_LIB")
@@ -4458,6 +4488,8 @@ def stock_env_stage(a, env, stock, ncmoe, size, avail, method):
     if stock:
         if a.stock:
             say("moe-cache: --stock: running stock llama-server without the plugin, as asked (to compare; a model bigger than RAM is read through the file cache)")
+        elif getattr(a, "api_stock", None):
+            say(a.api_stock, err=True)
         else:
             say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
@@ -5243,6 +5275,9 @@ def _launch_plan(a, extra, argv, machine):
         why = plugin_for_partial_offload(a, ls, model, ctx, machine, gpu, mm_bytes)
         if why:
             say(why); stock = False
+    a.api_stock = None
+    if not stock and api_mismatch_stage(a, ls, machine):
+        stock = True                  # LAUNCHER-1224: the plugin cannot load into this llama-server: plan the stock path, not a plugin-shaped plan that plain llama.cpp would run
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
