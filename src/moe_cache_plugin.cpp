@@ -51,6 +51,7 @@
 #include "mc_livecap.h"
 #include "mc_rebalance.h"
 #include "mc_peers.h"
+#include "mc_test_skip.h"
 #include "mc_env.h"
 #include "mc_guard.h"
 #include "mc_abort.h"

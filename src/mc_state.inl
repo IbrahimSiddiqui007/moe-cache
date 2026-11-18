@@ -602,6 +602,16 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
         }
+        if (const char * v = getenv("MOE_CACHE_TEST_SKIP_PCT")) {     // TEST-1170: timing only
+            test_skip_pct = mctestskip::parse_pct(v);
+            if (test_skip_pct >= 0) {
+                exec_force = true;       // the executor must run every step (no step-aside), or nothing would be skipped when the experts are resident
+                fprintf(stderr, "moe-cache: WARNING: MOE_CACHE_TEST_SKIP_PCT=%d is ON: %d %% of the CPU expert picks are NOT computed, output is not valid, timing test only "
+                        "(executor forced)%s\n", test_skip_pct, test_skip_pct, exec_on ? "" : "; MOE_CACHE_EXEC=0: the executor is off, so NOTHING is skipped");
+            } else if (*v) {
+                fprintf(stderr, "moe-cache: MOE_CACHE_TEST_SKIP_PCT='%s' is not a number from 0 to 100: ignored, switch is OFF\n", v);
+            }
+        }
         if (const char * v = getenv("MOE_CACHE_EXEC_FUSE")) {
             exec_fuse = mcenv::flag_value(v, true);
         }

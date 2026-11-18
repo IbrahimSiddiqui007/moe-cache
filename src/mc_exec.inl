@@ -420,6 +420,17 @@ struct exec_prep_t {
     size_t                 stride_i11 = 0, stride_tok = 0;
 };
 
+// TEST-1170: running counts (and a progress line about every 20000 expert ops, i.e. roughly every 140 decoded tokens on a 48-layer model)
+void test_skip_count(state_t & s, uint64_t skipped, uint64_t computed) {
+    s.test_skipped += skipped;
+    s.test_computed += computed;
+    static thread_local uint64_t ops = 0;
+    if (++ops % 20000 == 0) {
+        fprintf(stderr, "moe-cache: TEST_SKIP_PCT=%d so far: %llu picks skipped, %llu computed (timing test, output not valid)\n", s.test_skip_pct,
+                (unsigned long long) s.test_skipped.load(), (unsigned long long) s.test_computed.load());
+    }
+}
+
 void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip, int slot, exec_prep_t & pr, const exec_prep_t * share = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
@@ -518,12 +529,25 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
         auto rit = s.route_ids.find(ids);
         if (rit != s.route_ids.end()) routed = &rit->second;
     }
+    // TEST-1170 (MOE_CACHE_TEST_SKIP_PCT, timing only): one branch on a cached flag when off; when on, picks chosen by a fixed hash of (layer, expert)
+    // get a zeroed output row and no task (see src/mc_test_skip.h for exactly what is and is not skipped)
+    const int tskip_pct = s.test_skip_pct;
+    const int tskip_layer = tskip_pct >= 0 ? mctestskip::layer_of(w->name) : 0;
+    uint64_t tskip_n = 0, tcomp_n = 0;
     for (int t = 0; t < n_tok; t++) {
         for (int slot = 0; slot < n_ids; slot++) {
             if (skip && (*skip)[(size_t) t * (size_t) n_ids + (size_t) slot]) {   // computed elsewhere (hybrid: the GPU bank)
                 continue;
             }
             int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0] + (size_t) t * ids->nb[1]);
+            if (tskip_pct >= 0) {
+                if (e >= 0 && e < w->ne[2] && mctestskip::skip_pick(tskip_layer, e, tskip_pct)) {
+                    memset((char *) nd->data + (size_t) slot * nd->nb[1] + (size_t) t * nd->nb[2], 0, (size_t) w->ne[1] * sizeof(float));
+                    tskip_n++;
+                    continue;
+                }
+                tcomp_n++;
+            }
             if (routed) {
                 e = (*routed)[(size_t) t * (size_t) n_ids + (size_t) slot];
                 if (e < 0) {            // given up: this pick contributes nothing
@@ -561,6 +585,9 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
     }
     for (const auto & t : all) {
         task_of[(size_t) ((t.w - (const char *) w->data) / (ptrdiff_t) w->nb[2])] = -1;
+    }
+    if (tskip_pct >= 0) {
+        test_skip_count(s, tskip_n, tcomp_n);
     }
     std::vector<exec_task_t> tasks;
     tasks.reserve(all.size());
