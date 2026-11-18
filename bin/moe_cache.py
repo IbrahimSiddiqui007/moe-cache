@@ -5051,6 +5051,9 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     probe = runner or (lambda c, e, l, n: autotune_probe(c, e, l, n, record=recorder) if recorder is not None else autotune_probe(c, e, l, n))
     walk = at.walk_start(cmd, locked)          # planner map fix 2: --n-cpu-moe is walked down from the plan to the edge, one layer per load
     cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None)
+    cands, vetoed = never_filter(cands, getattr(a, "plan_facts", None) or {"ctx": ctx})       # LAUNCHER-1225: a setting measured as a loss in this scope is never tried
+    if vetoed:
+        say_fn("moe-cache: auto-tune: not tried (measured as a loss, planner/never_list.json): " + ", ".join(vetoed))
     if fits is not None and len(cands) > 1:          # LAUNCHER-1042: every command that would be loaded has passed the commit check first
         ok, why = fits(cmd, env)
         if not ok:
@@ -5119,6 +5122,44 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     for l in lines:
         say_fn(l)
     return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
+
+
+def never_facts(listing, dense, ctx):
+    """The scope facts the never-list (planner/never_list.py) checks a row against: GPU backend from the device listing, dense or MoE, context."""
+    try:
+        planner_path()
+        import never_list as nl
+        backend = nl.backend_of(listing)
+    except Exception:
+        backend = None
+    return {"backend": backend, "model": "dense" if dense else "moe", "ctx": int(ctx or 0)}
+
+
+def never_filter(cands, facts):
+    """(candidates without the ones the never-list forbids here, ["id (source)", ...] of those left out). C0 always stays. Never raises: a broken list vetoes nothing."""
+    try:
+        planner_path()
+        import never_list as nl
+    except Exception:
+        return cands, []
+    kept, out = cands[:1], []
+    for c in cands[1:]:
+        r = nl.veto(c.edits, facts)
+        if r:
+            out.append(f"{c.id} ({r['source']})")
+        else:
+            kept.append(c)
+    return kept, out
+
+
+def never_user_notes(cmd, env, facts):
+    """The never-list's notes for listed settings in the finished command or the environment (the user's own; the launcher picks none). [] on any error."""
+    try:
+        planner_path()
+        import never_list as nl
+        return nl.user_notes(cmd, env, facts or {})
+    except Exception:
+        return []
 
 
 def _max_floor(*floors):
@@ -5353,6 +5394,7 @@ def _launch_plan(a, extra, argv, machine):
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
+    a.plan_facts = never_facts(dev_listing, dense, ctx)      # LAUNCHER-1225: the scope the never-list rows are checked in (auto-tune candidates, the user's own settings)
     # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
     ncmoe0, ub0, kv_q80 = ncmoe, ub, kv_q8
     cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"),
@@ -5366,6 +5408,8 @@ def _launch_plan(a, extra, argv, machine):
         ncmoe = n_ if n_ is not None else ncmoe
         kv_q8 = kv_quantized(cmd)        # q8_0, the dense ladder's K q8_0 / V q4_0 and q4_0/q4_0 all count (a plain == "q8_0" read q4_0 as f16 and let the commit check put q8_0 back)
     cmd_picked = list(cmd)
+    for line in never_user_notes(cmd, env, a.plan_facts):
+        say(line, err=True)
     cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, list(argv) + user_extra, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
     if apply_cache_record(a, cmd, machine, ls, model, ctx, tuned) == 0:
         ncmoe, ub = arg_after(cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(cmd, "-ub", "--ubatch-size") or ub

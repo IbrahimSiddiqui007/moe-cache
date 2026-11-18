@@ -1,0 +1,21 @@
+{
+ "schema": 1,
+ "about": "Settings measured as a loss (LAUNCHER-1225 step 2, idea from the scout's planner study). The planner and the auto-tune never pick a row's setting inside its scope; when the user sets one, the launcher says what was measured and runs it anyway (the user's flags win). Each row names its evidence; one-run rows are forecasts. A row is removed only by a new measurement that beats it.",
+ "rows": [
+  {"id": "dflash-draft", "kind": "flag", "name": "--spec-type", "value": "draft-dflash",
+   "scope": {},
+   "loss": "decode 24.9 vs 27.8 tok/s without a drafter, prompt -46 % (Qwen3.8-27B Q3_K_XL, 64k, RX 9070 XT, one run, forecast)", "source": "DECODE-704"},
+  {"id": "vk-no-host-visible-vidmem", "kind": "env", "name": "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM", "value": "1",
+   "scope": {"backend": "vulkan"},
+   "loss": "decode +12.4 % but prompt -34 % and first token +52 % (Qwen3.8-27B IQ4_XS, 64k, RX 9070 XT, one run, forecast): a prompt loss for agent work", "source": "TEST-1205"},
+  {"id": "vk-suballoc-256m", "kind": "env", "name": "GGML_VK_SUBALLOCATION_BLOCK_SIZE", "value": "*",
+   "scope": {"backend": "vulkan"},
+   "loss": "decode +2.8 %, prompt -36 % (Qwen3.8-27B IQ4_XS, 64k, 256 MiB blocks, RX 9070 XT, one run, forecast)", "source": "TEST-1205"},
+  {"id": "ub-8192", "kind": "flag", "name": "-ub", "min": 8192,
+   "scope": {},
+   "loss": "prompt +8.5 % but decode -28 % against -ub 4096 (Flash-Next, 64k, our test PC)", "source": "PREFILL-185"},
+  {"id": "mtp-dense-128k", "kind": "flag", "name": "--spec-type", "value": "draft-mtp",
+   "scope": {"model": "dense", "ctx_min": 131072},
+   "loss": "decode 9.55 vs 15.4 tok/s without MTP (Qwen3.8-27B Q3_K_XL, 128k, RX 9070 XT)", "source": "LAUNCHER-1133"}
+ ]
+}
