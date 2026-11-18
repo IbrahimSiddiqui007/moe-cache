@@ -253,6 +253,23 @@ def find_llama_server(saved=None):
     return res
 
 
+def llama_candidates():
+    """LAUNCHER-1224 follow-up: every llama-server installed where the launcher looks (the kit's own bundled or patched one first, then the default folders, then the PATH),
+    as absolute paths, each once."""
+    out = []
+    dirs = llama_search_dirs()
+    kit = [d for d in dirs if os.path.abspath(d) == os.path.abspath(HERE) or os.path.abspath(d).startswith(os.path.abspath(HERE) + os.sep)]
+    for d in kit + [d for d in dirs if d not in kit]:
+        for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release")):
+            c = os.path.abspath(os.path.join(d, x, llama_exe()))
+            if os.path.isfile(c) and c not in out:
+                out.append(c)
+    w = shutil.which("llama-server")
+    if w and os.path.abspath(w) not in out:
+        out.append(os.path.abspath(w))
+    return out
+
+
 def planner_path():
     """Idea 28: the planner import path, inserted only when missing — every stage used to do its own sys.path.insert, so a long-lived process's sys.path grew one duplicate entry per stage."""
     p = os.path.join(HERE, "planner")
@@ -2669,6 +2686,7 @@ class Machine:
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
     def planner_answer(self, model, ctx, ram_gib, vram_gib): return planner_answer(model, ctx, ram_gib, vram_gib)
     def lib_exists(self, lib): return os.path.isfile(lib)
+    def llama_candidates(self): return llama_candidates()
 
     def other_llama_servers(self): return other_llama_servers()
 
@@ -3928,6 +3946,32 @@ def plugin_api_mismatch(ls, machine):
     return want, have, lib
 
 
+def matching_pair(ls, machine):
+    """LAUNCHER-1224 follow-up (owner: "why not our patched llama.cpp?"): (llama-server, plugin build) of another installed server whose ggml API a plugin build here matches,
+    the kit's own first; None when there is none. MOE_CACHE_LIB counts when its API fits that server."""
+    env_lib = os.environ.get("MOE_CACHE_LIB")
+    for c in machine.llama_candidates():
+        if os.path.abspath(c) == os.path.abspath(ls):
+            continue
+        want = machine.ls_api(c)
+        if not want:
+            continue
+        for lib in ([env_lib] if env_lib else []) + [machine.pick_lib(c)]:
+            if lib and machine.lib_exists(lib) and machine.lib_api(lib) == want:
+                return c, lib
+    return None
+
+
+def ls_chosen_by_user(ls):
+    """True when this llama-server was named by the user (--llama-server, LLAMA_SERVER, the control page's saved path), not found by the launcher's own search."""
+    try:
+        found = default_llama_server()
+        src = str(_LS.get("source") or "")
+    except Exception:
+        return True
+    return os.path.abspath(ls) != os.path.abspath(found) or src.startswith(("LLAMA_SERVER", "the control page"))
+
+
 def api_mismatch_stage(a, ls, machine):
     """LAUNCHER-1224, before the plugin build stage: the plugin refuses to load into a llama-server of another ggml backend API, and the plan used to stay plugin-shaped
     (expert layers on the CPU for the cache, plugin settings) while plain llama.cpp ran it. Now the plan is made for stock llama-server, with one line that says why and how to
@@ -3937,11 +3981,19 @@ def api_mismatch_stage(a, ls, machine):
     if not m:
         return False
     want, have, lib = m
+    # first choice: another installed llama-server that a plugin build here fits (the kit's own bundled / patched one first); plain llama.cpp without the cache is the last resort
+    pair = matching_pair(ls, machine)
+    if pair and not ls_chosen_by_user(ls):
+        say(f"moe-cache: {ls} uses ggml backend API {want}, which no plugin build here fits; using {pair[0]} (API {machine.ls_api(pair[0])}) with {pair[1]} instead, so the expert "
+            f"cache runs (--llama-server PATH chooses another)", err=True)
+        a.llama_server = pair[0]
+        return False
+    hint = (f" (or use {pair[0]}, which the plugin build {pair[1]} fits: --llama-server {pair[0]})" if pair else "")
     if a.fast or a.hybrid or a.always_plugin:
         opt = "--hybrid" if a.hybrid else "--always-plugin" if a.always_plugin else "--fast"
-        raise SystemExit(f"moe-cache: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin cannot load, and {opt} needs it. " + api_advice(want))
+        raise SystemExit(f"moe-cache: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin cannot load, and {opt} needs it. " + api_advice(want) + hint)
     a.api_stock = (f"moe-cache: WARNING: the plugin build {lib} is for ggml backend API {have} but {ls} uses API {want}: the plugin cannot load, so this plan is made for "
-                   "stock llama-server (no expert cache). To use the plugin: " + api_advice(want))
+                   "stock llama-server (no expert cache). To use the plugin: " + api_advice(want) + hint)
     return True
 
 
@@ -5398,6 +5450,8 @@ def _launch_plan(a, extra, argv, machine):
     a.api_stock = None
     if not stock and api_mismatch_stage(a, ls, machine):
         stock = True                  # LAUNCHER-1224: the plugin cannot load into this llama-server: plan the stock path, not a plugin-shaped plan that plain llama.cpp would run
+    if a.llama_server != ls:          # LAUNCHER-1224 follow-up: switched to an installed server that a plugin build fits
+        ls = a.llama_server           # the GPU facts above stay: the same machine and card (the device list later is read from this server)
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)

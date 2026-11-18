@@ -240,6 +240,7 @@ class FakeMachine(mc.Machine):
     def ls_looked(self): return "(fake)"
     def ls_api(self, ls): return "3"
     def lib_api(self, lib): return "3"
+    def llama_candidates(self): return []                 # no other installed llama-server (the real search would read this computer's folders)
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], "preload"
     def vk_cache_cap(self, ls, model, listing=None): return None, None
     def free_vram_bytes(self): return self.free_mib * 2**20
@@ -362,6 +363,29 @@ def api_mismatch_test(model):
             checks.append((p4 is not None and p4.engine == "plugin", "matching APIs: the plugin plan is kept"))
             p5, _ = plan(make(None, "2"))
             checks.append((p5 is not None and p5.engine == "plugin", "server API unreadable: nothing assumed, plugin plan kept"))
+            # LAUNCHER-1224 follow-up: another installed server that a plugin build fits is used before the stock fall-back (two fake servers)
+            other = os.path.join(tmp, "kit", "llama", "llama-server"); os.makedirs(os.path.dirname(other)); open(other, "w").close()
+            lib2 = os.path.join(tmp, "libggml-moe-cache-api2.so"); open(lib2, "w").close()
+            class Two(FakeMachine):
+                def ls_api(self, ls): return "2" if ls == other else "3"
+                def lib_api(self, lib): return "2"
+                def pick_lib(self, ls): return lib2 if ls == other else os.path.join(self.tmp, "libggml-moe-cache.so")
+                def llama_candidates(self): return [other, os.path.join(self.tmp, "llama-server")]
+            p6, txt6 = plan(Two(tmp))
+            checks.append((p6 is not None and p6.engine == "plugin" and p6.cmd[0] == other and p6.lib == lib2 and "using " + other in txt6,
+                           f"two servers: the one a plugin build fits is used, plugin plan, one line says so ({p6 and p6.cmd[0]}, {p6 and p6.engine})"))
+            class TwoNone(Two):
+                def llama_candidates(self): return [os.path.join(self.tmp, "llama-server")]
+            p7, _ = plan(TwoNone(tmp))
+            checks.append((p7 is not None and p7.engine == "stock", "no other matching server: the stock plan, as before"))
+            saved_def = mc.default_llama_server
+            mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "somewhere-else", "llama-server")      # the user named this server (not the launcher's find)
+            try:
+                p8, txt8 = plan(Two(tmp))
+            finally:
+                mc.default_llama_server = saved_def
+            checks.append((p8 is not None and p8.engine == "stock" and p8.cmd[0] != other and "--llama-server " + other in txt8,
+                           "a server the user named is kept: stock plan, the line names the matching server to use instead"))
             for ok, what in checks:
                 print("  " + ("ok  " if ok else "FAIL") + " API mismatch: " + what)
                 bad += not ok
