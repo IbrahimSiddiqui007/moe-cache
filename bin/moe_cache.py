@@ -3842,9 +3842,12 @@ def cpu_placement_note(line, cpu_run=False):
     text = line.decode(errors="replace") if isinstance(line, bytes) else line
     m = CPU_ATTN_RE.search(text)
     if m:
-        return ("attn", f"moe-cache: WARNING: llama-server put the attention over the KV cache of layer {m.group(1)} (weights on {m.group(2)}) on the CPU: the KV cache did not fit in GPU "
-                        "memory next to the model, and decode will be much slower (Qwen3.8-27B on the 16 GB RX 9070 XT at 64k: 35 -> 19 tok/s). A smaller --ctx or an 8-bit KV cache "
-                        "keeps it on the GPU; the 'all on GPU' line above says by how much it was short")
+        # LAUNCHER-1222 (3): llama.cpp prints this line for two causes it does not tell apart ("usually due to missing support"): the GPU backend cannot run this model's
+        # attention with these settings (it then turns flash attention off; Granite 1B on the PC's Vulkan decoded 530 tok/s after it), or the KV cache did not fit
+        return ("attn", f"moe-cache: WARNING: llama-server runs the attention over the KV cache of layer {m.group(1)} (weights on {m.group(2)}) on the CPU. Either the GPU backend "
+                        "does not support this model's attention with these settings (llama.cpp then turns flash attention off; often harmless, e.g. on a small model), or the KV "
+                        "cache did not fit in GPU memory next to the model, and then decode is much slower (Qwen3.8-27B on the 16 GB RX 9070 XT at 64k: 35 -> 19 tok/s, our test PC). "
+                        "If the decode speed looks fine, nothing to do; if it is slow, a smaller --ctx or an 8-bit KV cache keeps it on the GPU")
     m = OFFLOADED_RE.search(text)
     if m and not cpu_run and int(m.group(1)) < int(m.group(2)):
         return ("offload", f"moe-cache: WARNING: only {m.group(1)} of {m.group(2)} layers are on the GPU: the rest run on the CPU and decode will be slower. "
@@ -5577,8 +5580,9 @@ def run_launch_plan(plan):
             return None
         if a.project and slotdir:
             write_server_id(slotdir, model, ctx, new)      # the retry runs with the f16 KV cache: server.id must say so
-        say(f"moe-cache: llama.cpp aborted at load with the {was} KV cache (ggml-impl.h fatal error: seen with stock llama-server b12064 on Granite 1B with q8_0, any context): "
-            "trying again once with the f16 KV cache (--exact does that from the start)", err=True)
+        # LAUNCHER-1222 (3): the 'fatal error' line just above comes from llama.cpp and reads like a crash of the whole start; say first that it is handled
+        say(f"moe-cache: (expected, handled) the 'fatal error' line above is llama.cpp refusing the {was} KV cache for this model (a known llama.cpp limit, seen on Granite 1B with "
+            "q8_0 at any context): starting again once with the f16 KV cache, nothing else changes (--exact starts with f16 and skips this)", err=True)
         return new
     def tune_retry(rc, seen):
         """LAUNCHER-1045: llama-server stopped before it was ready with a plan the auto-tune picked (a stored pick is applied at every start, so a pick that fails once would fail

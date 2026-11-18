@@ -9,7 +9,7 @@ agents found on the PC. Every step reuses what exists (pick, check's facts, serv
 
 Standard library only. The decisions are plain functions of the answers and of `Deps` (the machine facts, pick's recommendation, running things),
 so tests/launch_test.py runs the whole walk-through on a fake machine."""
-import argparse, os, re, shutil, subprocess, sys, time
+import argparse, json, os, re, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
@@ -199,11 +199,50 @@ def stop_child(child):
         child.kill()
 
 
+def installed_command():
+    """LAUNCHER-1222 (2): the command the installer wrote for this kit (install.ps1: <root>/install.json "command"; install.sh: <prefix>/.installed "command="), when it
+    still exists; None in a checkout or when the record is missing. Looked for next to the kit (<root>/kit, <prefix>/current) and one folder above (<prefix>/versions/X)."""
+    for d in (os.path.dirname(mc.HERE), os.path.dirname(os.path.dirname(mc.HERE))):
+        try:
+            with open(os.path.join(d, "install.json"), encoding="utf-8-sig") as f:
+                cmd = (json.load(f) or {}).get("command")
+        except (OSError, ValueError, AttributeError):
+            cmd = None
+        if not cmd:
+            try:
+                with open(os.path.join(d, ".installed"), encoding="utf-8") as f:
+                    cmd = next((l.split("=", 1)[1].strip() for l in f if l.startswith("command=")), None)
+            except OSError:
+                cmd = None
+        if cmd and os.path.isfile(cmd):
+            return cmd
+    return None
+
+
 def command_word():
-    """How to write moe-cache in the commands we print: the installed command when there is one, else this interpreter and file."""
+    """How to write moe-cache in the commands we print: `moe-cache` when that is on the PATH; else the command the installer wrote (its full path: installed with -NoPath or
+    a PATH this terminal does not have yet); else this interpreter and file (a checkout)."""
     if shutil.which("moe-cache"):
         return "moe-cache"
+    cmd = installed_command()
+    if cmd:
+        return f'"{cmd}"' if " " in cmd else cmd
     return f'"{sys.executable}" "{os.path.join(mc.HERE, "bin", "moe_cache.py")}"'
+
+
+def agents_lines(say, found, use, cw, url, want_agent, started):
+    """Step 5 when nothing is connected now: no agent found, a plain-chat start (agents need agent mode), or a run that started no server (--dry-run, "show me the
+    commands"). LAUNCHER-1222 (2): names the connect command for the agents found (docs/INSTALL.md step 5) and the short `moe-cache launch --agent` line."""
+    names = "|".join(found) if found else "NAME"
+    if not found:
+        say("     none of hermes, opencode, claude found on this PC" + (f" ({want_agent} is not installed; skipped)" if want_agent not in (None, "all") else "")
+            + f" (install one, then: {cw} connect NAME --url {url} --write).")
+    elif use != "agents":
+        say(f"     found: {', '.join(found)}. Coding agents need agent mode (64k context, tool calls): " + ("stop this server and " if started else "") + f"run  {cw} launch --agent"
+            f"  (step 5 then offers: connect {names})")
+    else:
+        say(f"     found: {', '.join(found)}. " + ("Step 5 would offer" if not started else "Offered") + f":  {cw} connect {names} --url {url} --write"
+            "  (after the server is up; the old config is kept as .bak)")
 
 
 def this_pc_lines(spec, ls):
@@ -428,8 +467,10 @@ def launch(argv, deps=None):
     if start == "no" or a.dry_run:
         say("     the commands (nothing was started):")
         say("       " + shown["server" if start != "on-demand" else "on-demand"])
-        if use == "agents":
-            say(f"       {cw} connect opencode --url {url} --write      (or hermes, claude; after the server is up)")
+        # LAUNCHER-1222 (4): --dry-run (and "just show me the commands") used to end here, so step 5 was never shown; it now says what step 5 would offer
+        say("\n5/5  Coding agents" + (" (nothing connected: --dry-run)" if a.dry_run else " (nothing connected: the server was not started)"))
+        found = [x for x in AGENTS if deps.which(x)]
+        agents_lines(say, found, use, cw, url, a.agent, started=False)
         return 0
     cmd = server_cmd if start == "server" else od_cmd
     say("     starting: " + shown[start])
@@ -473,11 +514,8 @@ def launch(argv, deps=None):
     found = [x for x in AGENTS if deps.which(x)]
     if not ready:
         say(f"     the server is not answering yet, so no agent was connected (a config written now would point at nothing). When {url} answers:  {cw} connect NAME --write")
-    elif not found:
-        say("     none of hermes, opencode, claude found on this PC" + (f" ({a.agent} is not installed; skipped)" if a.agent not in (None, "all") else "")
-            + f" (install one, then: {cw} connect NAME --write).")
-    elif use != "agents":
-        say(f"     found: {', '.join(found)}. Agents need agent mode: run  {cw} launch --agent  to start that way.")
+    elif not found or use != "agents":
+        agents_lines(say, found, use, cw, url, a.agent, started=True)
     else:
         say(f"     found: {', '.join(found)}")
         want = []
