@@ -36,7 +36,7 @@ jobs:
           git fetch --depth 1 origin 23b0202a189c44a54625aadcb37a946dd1d6278d
           git checkout --detach FETCH_HEAD
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
-                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_USE_PREBUILT_WEBUI=OFF
           cmake --build build --target llama-server llama-perplexity -j "$(nproc)"
 
       - name: Plugin

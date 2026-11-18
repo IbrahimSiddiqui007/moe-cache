@@ -178,6 +178,9 @@ int main(int argc, char ** argv) {
     const bool check_only = argc > 2 && std::string(argv[2]) == "check";
     init_signs();
     void * hb = dlopen((dir + "/" LIB_BASE).c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (!hb) {   // upstream ggml moved to soversion 1 (libggml-base.so.1, 2026-11): the unversioned link works for any version
+        hb = dlopen((dir + "/libggml-base.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
+    }
     void * hc = dlopen((dir + "/" LIB_CPU).c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (!hc) {
         hc = dlopen((dir + "/libggml-cpu.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
