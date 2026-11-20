@@ -4551,7 +4551,7 @@ def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
     return cram
 
 
-def stock_env_stage(a, env, stock, ncmoe, size, avail, method):
+def stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=False):
     """ENGINE-029, stage "stock llama-server": a model that fits (or --stock) runs without the plugin: one line says so, every plugin setting leaves the environment, and a short-batch GPU offload threshold (T5, RESULTS 68) is added. Returns (environment, method)."""
     if stock:
         if a.stock:
@@ -4563,7 +4563,7 @@ def stock_env_stage(a, env, stock, ncmoe, size, avail, method):
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
         method = "none (stock)"
-        if ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):
+        if not dense and ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
             # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
             env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
@@ -5562,7 +5562,7 @@ def _launch_plan(a, extra, argv, machine):
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
     cram = prompt_cache_stage(a, extra, env, ls, machine, win, dry)
-    env, method = stock_env_stage(a, env, stock, ncmoe, size, avail, method)
+    env, method = stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=dense)
     if not env_has(env, "ZES_ENABLE_SYSMAN"):
         env += sycl_sysman_env(ls, listing)
     extra = leave_room_stage(a, env, extra, pinargs, machine)
