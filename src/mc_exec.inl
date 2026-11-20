@@ -733,7 +733,7 @@ void print_capabilities(state_t & s) {
         o += std::string(" long_prompt_gpu2=") + ggml_backend_dev_name(s.gpu_dev2);
     }
     if (s.fewer > 0) o += std::string(" approx_fewer=") + std::to_string(s.fewer);
-    if (s.route_mode) o += std::string(" approx_route=") + (s.route_mode == 1 ? "skip" : "subst");
+    if (s.route_mode) o += std::string(" approx_route=skip");
     {   // AUD-005: boolean switches that are set to something other than their default (one parse for all: mc_env.h)
         static const struct { const char * name; bool def; } flags[] = {
             { "MOE_CACHE_HOST_OUT", true }, { "MOE_CACHE_GPU_SUM", true }, { "MOE_CACHE_EXEC_SCRATCH", true }, { "MOE_CACHE_EXEC_SHARE_IN", true },

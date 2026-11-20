@@ -896,7 +896,7 @@ def token_mode_status(plan, mtp_on, s):
     known = bool(env)
     kv = (plan.get("kv_k") or "").startswith("q8")
     on = {"kv8": kv, "long-prompt": str(plan.get("ub")) == "4096", "mtp": mtp_on,
-          "fast1": env.get("MOE_CACHE_ROUTE") in ("skip", "subst") if known else None, "fast2": (env.get("MOE_CACHE_ROUTE_DROP") == "4") if known else None,
+          "fast1": env.get("MOE_CACHE_ROUTE") == "skip" if known else None, "fast2": (env.get("MOE_CACHE_ROUTE_DROP") == "4") if known else None,
           "fewer": (int(env.get("MOE_CACHE_FEWER") or 0) > 0) if known else None, "approx-tiers": bool(s.get("approx"))}
     return [{"id": m["id"], "what": m["what"], "switch": m["switch"], "status": m["status"], "active": on.get(m["id"])} for m in ap.TOKEN_MODES]
 

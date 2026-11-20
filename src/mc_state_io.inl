@@ -446,7 +446,7 @@
             }
             if (route_mode || fewer > 0) {      // GUI-042: the approximate modes' counters, live (cumulative; the stop-time lines below report the same numbers)
                 j += ",\"approx\":{\"route\":" + std::to_string(route_mode) + ",\"considered\":" + std::to_string(route_considered) + ",\"skipped\":" + std::to_string(route_skipped) +
-                     ",\"substituted\":" + std::to_string(route_substituted) + ",\"fewer\":" + std::to_string(fewer) + ",\"fewer_considered\":" + std::to_string(fewer_considered) +
+                     ",\"fewer\":" + std::to_string(fewer) + ",\"fewer_considered\":" + std::to_string(fewer_considered) +
                      ",\"fewer_dropped\":" + std::to_string(fewer_dropped) + "}";
                 // GUI-043: the newest decode steps, [ms, picks changed, tokens in the graph] each, newest last; "total" counts all steps so far, "now_ms" is this clock's time now
                 step_close_if_idle(100);                // the answer's last token: nothing follows it to end it
@@ -651,8 +651,8 @@
                 }
             }
             if (route_mode) {
-                fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
-                        route_mode == 1 ? "skip" : "subst", (unsigned long long) route_considered, (unsigned long long) route_skipped, (unsigned long long) route_substituted);
+                fprintf(stderr, "moe-cache: approximate routing (skip): %llu low-ranked picks looked at, %llu given up\n",
+                        (unsigned long long) route_considered, (unsigned long long) route_skipped);
             }
             if (fewer > 0) {
                 fprintf(stderr, "moe-cache: approximate: fewer experts (MOE_CACHE_FEWER=%d): %llu of the lowest-ranked picks on executor layers dropped\n", fewer, (unsigned long long) fewer_dropped);
