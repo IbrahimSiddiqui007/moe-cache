@@ -35,9 +35,17 @@ def plugin_env(server, lib):
     return {"LD_PRELOAD": lib, "MOE_CACHE_PRELOAD": "1"} if "libggml-cpu" in ldd else {"GGML_BACKEND_PATH": lib}
 
 
+def ppl_cmd(a, base_file, test, extra):
+    """The llama-perplexity command of one KL run. --window sets the length of each scored window (default 512, the gate's own protocol: -b 8 -ub 8). A longer window
+    (QUALITY-014: the KV cache error adds up with context, a 512-token window cannot show it) uses a 512-token batch, because -b 8 would make a 32k window take hours."""
+    win = int(getattr(a, "window", 512) or 512)
+    b = "8" if win == 512 else "512"
+    return [a.perplexity, "-m", a.model, "-f", a.text, "-c", str(win), "--chunks", str(a.chunks), "-b", b, "-ub", b, "-ngl", str(a.ngl), "-fa", "on",
+            "--n-cpu-moe", str(a.n_cpu_moe), "--kl-divergence-base", base_file] + a.common_args.split() + extra + (["--kl-divergence"] if test else [])
+
+
 def run_ppl(a, base_file, test, env, extra, log):
-    cmd = [a.perplexity, "-m", a.model, "-f", a.text, "-c", "512", "--chunks", str(a.chunks), "-b", "8", "-ub", "8", "-ngl", str(a.ngl), "-fa", "on",
-           "--n-cpu-moe", str(a.n_cpu_moe), "--kl-divergence-base", base_file] + a.common_args.split() + extra + (["--kl-divergence"] if test else [])
+    cmd = ppl_cmd(a, base_file, test, extra)
     e = dict(os.environ, **env)
     print("  $", " ".join(cmd), flush=True)
     t = time.time()
@@ -96,6 +104,7 @@ def main():
     ap.add_argument("--no-plugin", action="store_true", help="candidate = stock llama.cpp with --args (e.g. upstream --moe-cache-mib 1024), no plugin: measures a llama.cpp option against stock")
     ap.add_argument("--level", required=True, choices=sorted(LEVELS)); ap.add_argument("--smoke", action="store_true", help="CI smoke limits (small model)")
     ap.add_argument("--n-cpu-moe", default="999"); ap.add_argument("--ngl", default="99"); ap.add_argument("--ctx", type=int, default=4096)
+    ap.add_argument("--window", type=int, default=512, help="tokens per scored KL window (default 512, the gate protocol; 32768 / 65536 to judge a KV cache at the context where it runs; the text needs chunks x window tokens)")
     ap.add_argument("--chunks", type=int, default=3); ap.add_argument("--text", help="text for the KL run (default: README + docs of this repo)")
     ap.add_argument("--tasks-file", default=os.path.join(HERE, "quality_tasks.json")); ap.add_argument("--no-tasks", action="store_true"); ap.add_argument("--no-kl", action="store_true")
     ap.add_argument("--no-think", action="store_true"); ap.add_argument("--port", type=int, default=8098)
@@ -129,7 +138,7 @@ def main():
         plug.update(both_env)
     print(f"quality gate, level {a.level}{' (smoke limits)' if a.smoke else ''}: KLD <= {kld_max}, top-1 >= {top_min} %, tasks >= stock - {tol}; out {a.out}")
     print(f"candidate: env {cand_env}, args {cand_args}")
-    res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args, "no_plugin": a.no_plugin}, []
+    res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args, "no_plugin": a.no_plugin, "window": a.window, "chunks": a.chunks}, []
     if not a.no_kl:
         if not a.text:
             a.text = os.path.join(a.out, "text.txt")
