@@ -1943,10 +1943,10 @@ function monPanels() {
   const d = M.data, p = d.plan || {}, ex = d.extra || {}, a = d.approx || {}, m = d.mtp || {};
   const kv = p.kv_k || p.kv_v ? (p.kv_k || "f16") + (p.kv_v && p.kv_v != p.kv_k ? " / " + p.kv_v : "") : "";
   monKv("monplan", [["mode", p.mode], ["device", p.device || (d.totals || {}).gpu], ["GPU layers (-ngl)", p.ngl], ["experts on the CPU, layers", p.cpu_moe_all ? "all" : p.cpu_moe_layers], ["-ub / -b", p.ub ? p.ub + (p.b ? " / " + p.b : "") : ""],
-    ["KV cache type", kv], ["context", p.ctx], ["threads", p.threads], ["parallel slots", p.parallel], ["flash attention", p.flash_attn], ["agent mode", p.agent ? "yes" : ""], ["MTP", p.mtp ? "on" : ""], ["approximate tier", p.approx], ["cache policy", ex.policy]].concat(Object.entries(p.env || {}).filter(([k]) => !/_(LIB|GGUF|PROFILE)$/.test(k)).map(([k, v]) => [k.replace("MOE_CACHE_", ""), v])));
+    ["KV cache type", kv + (p.kv_approx ? " (" + p.kv_approx + ")" : "")], ["context", p.ctx], ["threads", p.threads], ["parallel slots", p.parallel], ["flash attention", p.flash_attn], ["agent mode", p.agent ? "yes" : ""], ["MTP", p.mtp ? "on" : ""], ["approximate tier", p.approx], ["cache policy", ex.policy]].concat(Object.entries(p.env || {}).filter(([k]) => !/_(LIB|GGUF|PROFILE)$/.test(k)).map(([k, v]) => [k.replace("MOE_CACHE_", ""), v])));
   $("mondec").innerHTML = (p.decisions || []).slice(-8).map(l => `<li>${esc(l)}</li>`).join("");
   monKv("moncount", [["MTP accepted / drafted", m.generated ? `${m.accepted} / ${m.generated} (${pct(m.rate)})` : ""],
-    ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up, ${a.replaced} replaced of ${a.considered} looked at (${a.live ? "live" : "at last stop"})` : ""],
+    ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up${a.replaced ? ", " + a.replaced + " replaced" : ""} of ${a.considered} looked at (${a.live ? "live" : "at last stop"})` : ""],
     ["fewer experts", a.fewer ? `${a.fewer}: ${a.fewer_dropped} dropped of ${a.fewer_considered || "?"} looked at` : ""],
     ["evictions", ex.evictions], ["prefetch used / issued / wasted", ex.pf_issued != null ? `${ex.pf_used} / ${ex.pf_issued} / ${ex.pf_wasted}` : ""], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
     ["cache resident / budget", ex.resident_bytes != null ? fmtGiB(ex.resident_bytes) + " / " + fmtGiB(ex.budget) : ""], ["requests running / queued", (d.metrics || {}).requests_processing != null ? `${d.metrics.requests_processing} / ${d.metrics.requests_deferred || 0}` : ""]]);

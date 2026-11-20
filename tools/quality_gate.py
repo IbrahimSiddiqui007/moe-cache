@@ -35,9 +35,40 @@ def plugin_env(server, lib):
     return {"LD_PRELOAD": lib, "MOE_CACHE_PRELOAD": "1"} if "libggml-cpu" in ldd else {"GGML_BACKEND_PATH": lib}
 
 
-def run_ppl(a, base_file, test, env, extra, log):
-    cmd = [a.perplexity, "-m", a.model, "-f", a.text, "-c", "512", "--chunks", str(a.chunks), "-b", "8", "-ub", "8", "-ngl", str(a.ngl), "-fa", "on",
-           "--n-cpu-moe", str(a.n_cpu_moe), "--kl-divergence-base", base_file] + a.common_args.split() + extra + (["--kl-divergence"] if test else [])
+def ppl_cmd(a, base_file, test, extra, ub=None):
+    """The llama-perplexity command of one KL run. --window sets the length of each scored window (default 512, the gate's own protocol: -b 8 -ub 8). A longer window
+    (QUALITY-014: the KV cache error adds up with context, a 512-token window cannot show it) uses a 512-token batch, because -b 8 would make a 32k window take hours.
+    --batch N sets -b (and -ub) for every window length, so a comparison across windows changes only the window (the critic of kvwin_2026-11-20 found 512-token windows
+    on -b 8 and longer ones on -b 512). ub: the micro-batch of the floor arm (half of -b)."""
+    win = int(getattr(a, "window", 512) or 512)
+    b = str(getattr(a, "batch", 0) or (8 if win == 512 else 512))
+    return [a.perplexity, "-m", a.model, "-f", a.text, "-c", str(win), "--chunks", str(a.chunks), "-b", b, "-ub", str(ub or b), "-ngl", str(a.ngl), "-fa", "on",
+            "--n-cpu-moe", str(a.n_cpu_moe), "--kl-divergence-base", base_file] + a.common_args.split() + extra + (["--kl-divergence"] if test else [])
+
+
+def floor_ub(a):
+    """Micro-batch of the floor arm: half of -b (the critic's floor: f16 KV, only -ub changed). None when -b is too small to halve."""
+    win = int(getattr(a, "window", 512) or 512)
+    b = int(getattr(a, "batch", 0) or (8 if win == 512 else 512))
+    return b // 2 if b >= 2 else None
+
+
+def judge(kld, top, floor_kld, floor_top, kld_max, top_min):
+    """The verdict of one KL cell: the mode's excess over the floor when a floor arm ran (QUALITY-014: a KL that an f16 KV cache with only the micro-batch changed also reaches
+    measures the model and text, not the KV type), else the absolute rule. -> (list of failures, absolute-rule failures for the continuity line)."""
+    absolute = ([f"mean KLD {kld} > {kld_max}"] if kld > kld_max else []) + ([f"same top token {top} % < {top_min} %"] if top < top_min else [])
+    if floor_kld is None or floor_top is None:
+        return absolute, absolute
+    f = []
+    if kld - floor_kld > kld_max:
+        f.append(f"mean KLD {kld} - floor {floor_kld} = {kld - floor_kld:.4f} > {kld_max}")
+    if floor_top - top > 100.0 - top_min:
+        f.append(f"same top token {top} % is {floor_top - top:.2f} points under the floor {floor_top} % (limit {100.0 - top_min})")
+    return f, absolute
+
+
+def run_ppl(a, base_file, test, env, extra, log, ub=None):
+    cmd = ppl_cmd(a, base_file, test, extra, ub)
     e = dict(os.environ, **env)
     print("  $", " ".join(cmd), flush=True)
     t = time.time()
@@ -96,6 +127,9 @@ def main():
     ap.add_argument("--no-plugin", action="store_true", help="candidate = stock llama.cpp with --args (e.g. upstream --moe-cache-mib 1024), no plugin: measures a llama.cpp option against stock")
     ap.add_argument("--level", required=True, choices=sorted(LEVELS)); ap.add_argument("--smoke", action="store_true", help="CI smoke limits (small model)")
     ap.add_argument("--n-cpu-moe", default="999"); ap.add_argument("--ngl", default="99"); ap.add_argument("--ctx", type=int, default=4096)
+    ap.add_argument("--batch", type=int, default=0, help="-b (and -ub) of every KL run; 0 = the old rule (8 at window 512, else 512). Give the same value to compare windows")
+    ap.add_argument("--no-floor", action="store_true", help="skip the floor arm (f16 KV, -ub halved): the verdict is then the old absolute rule")
+    ap.add_argument("--window", type=int, default=512, help="tokens per scored KL window (default 512, the gate protocol; 32768 / 65536 to judge a KV cache at the context where it runs; the text needs chunks x window tokens)")
     ap.add_argument("--chunks", type=int, default=3); ap.add_argument("--text", help="text for the KL run (default: README + docs of this repo)")
     ap.add_argument("--tasks-file", default=os.path.join(HERE, "quality_tasks.json")); ap.add_argument("--no-tasks", action="store_true"); ap.add_argument("--no-kl", action="store_true")
     ap.add_argument("--no-think", action="store_true"); ap.add_argument("--port", type=int, default=8098)
@@ -129,7 +163,7 @@ def main():
         plug.update(both_env)
     print(f"quality gate, level {a.level}{' (smoke limits)' if a.smoke else ''}: KLD <= {kld_max}, top-1 >= {top_min} %, tasks >= stock - {tol}; out {a.out}")
     print(f"candidate: env {cand_env}, args {cand_args}")
-    res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args, "no_plugin": a.no_plugin}, []
+    res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args, "no_plugin": a.no_plugin, "window": a.window, "chunks": a.chunks}, []
     if not a.no_kl:
         if not a.text:
             a.text = os.path.join(a.out, "text.txt")
@@ -150,12 +184,26 @@ def main():
         if not a.no_plugin and not re.search(r"moe-cache: (cache mode|pass-through mode)", txt):
             print("FAIL: the plugin was not active in the candidate run"); sys.exit(2)
         kld, kerr = num(txt, r"Mean +KLD"); top, terr = num(txt, r"Same top p"); mx, _ = num(txt, r"Maximum KLD")
-        res.update(kld=kld, kld_err=kerr, top1=top, top1_err=terr, kld_max=mx)
-        print(f"   mean KLD {kld} +- {kerr}, same top token {top} % +- {terr}, max KLD {mx}")
+        ppl_q, _ = num(txt, r"Mean PPL\(Q\)\s"); ppl_b, _ = num(txt, r"Mean PPL\(base\)"); ppl_r, _ = num(txt, r"Mean PPL\(Q\)/PPL\(base\)")
+        batch = str(getattr(a, "batch", 0) or (8 if a.window == 512 else 512))
+        res.update(kld=kld, kld_err=kerr, top1=top, top1_err=terr, max_kld=mx, ppl_q=ppl_q, ppl_base=ppl_b, ppl_ratio=ppl_r, batch=batch)
+        print(f"   mean KLD {kld} +- {kerr}, same top token {top} % +- {terr}, max KLD {mx}, PPL {ppl_q} vs base {ppl_b} (ratio {ppl_r}), -b {batch}")
         if kld is None or top is None:
             print("FAIL: could not read the KL result"); sys.exit(2)
-        if kld > kld_max: fails.append(f"mean KLD {kld} > {kld_max}")
-        if top < top_min: fails.append(f"same top token {top} % < {top_min} %")
+        fkld = ftop = None
+        fub = floor_ub(a)
+        if not a.no_floor and fub:
+            print(f"2b. KL: floor arm (f16 KV, -ub {fub} instead of {batch}, same base)")
+            ftxt = run_ppl(a, base, True, dict(plug), [], os.path.join(a.out, "kl_floor.log"), ub=fub)
+            fkld, _ = num(ftxt, r"Mean +KLD"); ftop, _ = num(ftxt, r"Same top p"); fppl, _ = num(ftxt, r"Mean PPL\(Q\)/PPL\(base\)")
+            if fkld is None or ftop is None:
+                print("FAIL: could not read the floor result"); sys.exit(2)
+            res.update(floor_kld=fkld, floor_top1=ftop, floor_ppl_ratio=fppl, floor_ub=fub, kld_over_floor=round(kld - fkld, 6), top1_under_floor=round(ftop - top, 3))
+            print(f"   floor: mean KLD {fkld}, same top token {ftop} %, PPL ratio {fppl}; the mode is {kld - fkld:+.4f} KLD and {top - ftop:+.2f} points of top token against it")
+        fl, absolute = judge(kld, top, fkld, ftop, kld_max, top_min)
+        if fkld is not None:
+            print("   old absolute rule (kept for continuity): " + ("would fail: " + "; ".join(absolute) if absolute else "would pass"))
+        fails.extend(fl)
     if not a.no_tasks:
         s_out = os.path.join(a.cache_dir, "tasks_stock.json") if a.cache_dir else ""
         if s_out and os.path.isfile(s_out):

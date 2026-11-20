@@ -134,6 +134,7 @@ try {
     Check ($r.Code -eq 0 -and $r.Out -match 'sha256 matches' -and $r.Out -match 'installed: moe-cache 9.9.1') 'install: hash checked, version printed'
     Check ((Test-Path (Join-Path $kit 'bin\moe_cache.py')) -and (Test-Path $shim)) '...kit and command written'
     Check ((Count-Entry $bin) -eq 1) '...the bin folder is on the user PATH, once'
+    Check ($r.Out -match 'folder added to your user PATH by this installer') '...and it says it added it'
     Check ($r.Out -match 'undo:' -and $r.Out -match '-Uninstall') '...it says how to undo'
     $o = (& $shim launch --x 2>&1 | Out-String).Trim()
     Check ($o -eq 'args: launch --x') "the moe-cache command runs the kit's moe_cache.py with its arguments ($o)"
@@ -219,6 +220,12 @@ try {
     $r = Run-Installer $good1 '9.9.1' @('-Uninstall')
     Check ($r.Code -eq 0 -and (Count-Entry $bin) -eq 1) '...and -Uninstall leaves it (this installer did not add it)'
     Set-UserPath $origPath
+
+    # LAUNCHER-1222 (1): -NoPath on a PATH without the folder must not say 'was already there'
+    $r = Run-Installer $good1 '9.9.1' @('-NoPath')
+    Check ($r.Code -eq 0 -and $r.Out -match 'NOT on your user PATH \(-NoPath\)' -and $r.Out -notmatch 'was already there' -and (Count-Entry $bin) -eq 0) '-NoPath: says the folder is NOT on the PATH, adds nothing'
+    $r = Run-Installer $good1 '9.9.1' @('-Uninstall')
+    Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
 
     $r = Run-Installer $good1 '9.9.1' @('-Uninstall')
     Check ($r.Code -eq 0 -and $r.Out -match 'nothing to remove') 'uninstall twice is harmless'

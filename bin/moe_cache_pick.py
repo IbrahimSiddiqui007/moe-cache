@@ -35,10 +35,12 @@ MODELS = {k: cat.legacy(m) for k, m in CAT.items()}
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
 # Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: 430.0 against 188.2 tok/s with moe-cache; the decode numbers of
-# those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record pending)
+# those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record not published;
+# IQ3_S is itself a 3-bit file: no Flash-Next file was measured against full precision)
 Q2_FAST = "reads prompts about 2.3 times as fast as IQ3_XXS in a 65k conversation (430.0 against 188.2 tok/s, v0.3.7 records) and decodes faster"
-Q2_LESS = "a little less exact (top-1 agreement with IQ3_S 73.3 % against 76.5 % for IQ3_XXS, measured 2026-11-05, record pending), 191/202 tasks against 193"
-SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file (owner 2026-11-07): 3-bit, the most tasks right (193/202), top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context",
+Q2_LESS = ("a little less exact (same top token as the 3-bit IQ3_S file, not full precision: 73.3 % against 76.5 % for IQ3_XXS; one run 2026-11-05, record not published), "
+           "191/202 tasks against 193")
+SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file (owner 2026-11-07): 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); slower than Q2_0 at long context",
                 "flash-next-q2_0": f"the faster option (owner 2026-11-07): 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
 
 
@@ -490,8 +492,8 @@ def recommend(spec, use, model=None):
                "no GPU, 12 GB RAM: 9.9-10.6 tok/s with moe-cache",
                "the smallest candidate (21.7 GB, 3B active)"),
               ("flash-next-q2_0", cap >= 11 and vram >= 6 and drive_ok("flash-next-q2_0"), 16384,
-               "12 GB RAM + 8 GB GPU (laptop, RESULTS 53): 9.5 tok/s with --fast, 13.7 with --fast=2 (both change some tokens)",
-               "a much bigger model through moe-cache; on this much RAM only with --fast (approximate)"),
+               None,       # the only laptop figures (9.5 / 13.7 tok/s) were measured with --fast / --fast=2, which are off (measured as no win) and not what --apply sets
+               "a much bigger model through moe-cache; with this little RAM most experts are read from the drive, so it is slow (no speed measured in the default mode)"),
               # never the automatic pick (the rows above always match first): offered as alternatives, or chosen with --model; untested here, so no speed is quoted
               ("gpt-oss-120b", cap >= 24 and vram >= 6 and drive_ok("gpt-oss-120b"), 32768, None,
                "OpenAI's gpt-oss-120b (63.4 GB): general chat and short answers. A reasoning model: if answers come back empty, give it room or lower its effort "

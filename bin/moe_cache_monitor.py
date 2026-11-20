@@ -30,7 +30,7 @@ RELEASE_RE = re.compile(r"stop processing: n_tokens = (\d+)")
 NEWPROMPT_RE = re.compile(r"new prompt,.*?task\.n_tokens = (\d+)")
 TOTAL_RE = re.compile(r"\btotal time =\s*([\d.]+) ms /\s*(\d+) tokens")
 MTP_RE = re.compile(r"draft acceptance rate = ([\d.]+)\s*\(\s*(\d+) accepted /\s*(\d+) generated")
-APPROX_RE = re.compile(r"moe-cache: approximate routing \((skip|subst)\): (\d+) low-ranked picks looked at, (\d+) given up, (\d+) replaced")
+APPROX_RE = re.compile(r"moe-cache: approximate routing \((skip|subst)\): (\d+) low-ranked picks looked at, (\d+) given up(?:, (\d+) replaced)?")      # "subst" / "replaced": logs of plugins before 2026-11-20
 FEWER_RE = re.compile(r"moe-cache: approximate: fewer experts \(MOE_CACHE_FEWER=(\d+)\): (\d+) of the lowest-ranked picks")
 LLAMA_RE = re.compile(r"^(?:[\d.]+ [A-Z] |srv |slot |llama_|load_tensors|print_info|main:|common_|ggml_|sched|clip_|build:|system info|init:|prompt eval|eval time|total time|request:|que |set_|update_slots|Device |[a-z_]+: )")
 LEVEL_RE = re.compile(r"^[\d.]+ ([A-Z]) ")
@@ -92,7 +92,19 @@ def plan_from_args(argv):
            "kv_k": val("-ctk", "--cache-type-k"), "kv_v": val("-ctv", "--cache-type-v"), "split_mode": val("-sm", "--split-mode"), "mmproj": val("--mmproj")}
     out["cpu_moe_all"] = "--cpu-moe" in argv or "-cmoe" in argv
     out["flash_attn"] = val("-fa", "--flash-attn")
+    out["kv_approx"] = kv_approx_text(out["kv_k"], out["kv_v"])
     return {k: v for k, v in out.items() if v not in (None, False)}
+
+
+EXACT_KV = ("f16", "bf16", "f32")
+
+
+def kv_approx_text(kv_k, kv_v):
+    """LAUNCHER-1063 / QUALITY-014: a KV cache stored below 16 bit is approximate (answers can differ from an f16 cache). The plain mark, with the types; None for f16 / bf16 / f32."""
+    k, v = (kv_k or "f16").lower(), (kv_v or "f16").lower()
+    if k in EXACT_KV and v in EXACT_KV:
+        return None
+    return "approximate: " + (f"K and V {k}" if k == v else f"K {k} / V {v}") + " (not identical to an f16 KV cache)"
 
 
 def split_command(cmd):
@@ -174,7 +186,7 @@ class Monitor:
                 self.pending_req["mtp"] = float(m.group(1))
             m = APPROX_RE.search(line)
             if m:
-                self.approx = {"mode": m.group(1), "considered": int(m.group(2)), "given_up": int(m.group(3)), "replaced": int(m.group(4)), "t": round(t, 1)}
+                self.approx = {"mode": m.group(1), "considered": int(m.group(2)), "given_up": int(m.group(3)), "replaced": int(m.group(4) or 0), "t": round(t, 1)}
             m = FEWER_RE.search(line)
             if m:
                 self.approx = dict(self.approx, fewer=int(m.group(1)), fewer_dropped=int(m.group(2)), t=round(t, 1))

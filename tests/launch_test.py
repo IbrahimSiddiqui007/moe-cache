@@ -138,6 +138,46 @@ check(rc == 0 and f.started == [] and "nothing was started" in f.text(), "--dry-
 f = Fake()
 rc = run(f, "--yes", "--model", MODEL, "--start", "no")
 check(rc == 0 and f.started == [], "--start no: prints the commands only")
+# LAUNCHER-1222 (4) and (2): --dry-run and --start no reach step 5 and say what it offers; a plain-chat start names the short `launch --agent` line and the connect step
+f = Fake()
+rc = run(f, "--yes", "--model", MODEL, "--dry-run", "--use", "agents")
+t = f.text()
+check(rc == 0 and "5/5  Coding agents (nothing connected: --dry-run)" in t and "connect opencode|claude --url http://127.0.0.1:8080 --write" in t and f.connected == [],
+      "--dry-run shows step 5 with the connect command for the agents found, connects nothing")
+f = Fake()
+rc = run(f, "--yes", "--model", MODEL, "--start", "no", "--use", "chat")
+t = f.text()
+check("5/5" in t and "launch --agent" in t and "stop this server" not in t and "connect opencode|claude" in t, "--start no, plain chat: step 5 names `launch --agent` and the connect step")
+f = Fake()
+rc = run(f, "--yes", "--model", MODEL, "--use", "chat")
+t = f.text()
+check("stop this server and run" in t and "launch --agent" in t and "connect opencode|claude" in t and f.connected == [], "plain chat with agents found: `launch --agent`, then connect is offered")
+f = Fake(agents=())
+rc = run(f, "--yes", "--model", MODEL, "--dry-run")
+check("none of hermes, opencode, claude found" in f.text(), "--dry-run with no agent installed says so in step 5")
+# the command word: the installer's command (install.json / .installed) when moe-cache is not on the PATH
+import tempfile, json as _json
+_saved_here, _saved_which = L.mc.HERE, L.shutil.which
+try:
+    with tempfile.TemporaryDirectory() as td:
+        kit = os.path.join(td, "root", "kit"); os.makedirs(kit)
+        shim = os.path.join(td, "root", "bin", "moe-cache.cmd"); os.makedirs(os.path.dirname(shim)); open(shim, "w").close()
+        L.mc.HERE = kit
+        L.shutil.which = lambda n: None
+        check(L.command_word().startswith('"') and "moe_cache.py" in L.command_word(), "no record, not on the PATH: interpreter and file")
+        with open(os.path.join(td, "root", "install.json"), "w", encoding="utf-8") as fh:
+            _json.dump({"command": shim}, fh)
+        check(L.command_word() == shim, f"install.ps1 record (-NoPath): the installed command's full path ({L.command_word()})")
+        os.remove(os.path.join(td, "root", "install.json"))
+        cur = os.path.join(td, "pre", "current"); os.makedirs(cur); sh2 = os.path.join(td, "b in", "moe-cache"); os.makedirs(os.path.dirname(sh2)); open(sh2, "w").close()
+        with open(os.path.join(td, "pre", ".installed"), "w") as fh:
+            fh.write(f"version=9\nprefix={td}/pre\ncommand={sh2}\n")
+        L.mc.HERE = cur
+        check(L.command_word() == f'"{sh2}"', f"install.sh record: the command, quoted when the path has a space ({L.command_word()})")
+        L.shutil.which = lambda n: "/usr/bin/moe-cache" if n == "moe-cache" else None
+        check(L.command_word() == "moe-cache", "on the PATH: just moe-cache")
+finally:
+    L.mc.HERE, L.shutil.which = _saved_here, _saved_which
 
 # ---- 3b. the download is checked against models.json (AUD-030) ----
 f = Fake(); f.verify_err = "the downloaded file does not match the catalogue: x. Nothing was started."

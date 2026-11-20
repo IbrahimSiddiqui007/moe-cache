@@ -318,7 +318,13 @@ function Install-MoeCache {
     Say ''
     Say "installed: $shown$(if ($old -and $old.version -ne $Version) { " (was $($old.version))" })"
     Say "  files:   $kit"
-    Say "  command: $shim   (folder on your user PATH: $(if ($added) { 'added by this installer' } else { 'was already there' }))"
+    # LAUNCHER-1222 (1): with -NoPath nothing was checked or added, and the old text said 'was already there' when the folder was not on the PATH at all
+    $onPath = [bool]((Split-PathList (Get-UserPathRaw)) | Where-Object { Same-Dir $_ $bin })
+    $pathWords = if ($NoPath -and -not $onPath) { "NOT on your user PATH (-NoPath): type the full path above, or add $bin to the PATH yourself" }
+                 elseif ($added -and -not $NoPath) { 'folder added to your user PATH by this installer' }
+                 elseif ($onPath) { 'folder on your user PATH: was already there' }
+                 else { 'folder not on your user PATH' }
+    Say "  command: $shim   ($pathWords)"
     Say '  undo:    powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall      (removes exactly the above; your models stay)'
     Say ('           or, without the file:  & ([scriptblock]::Create((irm https://github.com/' + $Repo + '/releases/latest/download/install.ps1))) -Uninstall')
     Say ''

@@ -34,6 +34,10 @@ check(c("slot release: id 0 | task 0 | stop processing", False)[1] == "info", "c
 plan = mm.plan_from_args("llama-server -m x.gguf -c 65536 -ngl 99 --n-cpu-moe 30 -ub 4096 -b 4096 -ctk q8_0 -ctv q8_0 -fa on -t 8 --parallel 1 --device CUDA0".split())
 check(plan["ub"] == "4096" and plan["kv_k"] == "q8_0" and plan["cpu_moe_layers"] == "30" and plan["ngl"] == "99" and plan["device"] == "CUDA0" and plan["ctx"] == "65536", f"plan_from_args ({plan})")
 check(mm.plan_from_args(["x", "--cpu-moe", "--ctx-size=8192"]) == {"cpu_moe_all": True, "ctx": "8192"}, "plan_from_args: --cpu-moe and --opt=value")
+check(plan["kv_approx"].startswith("approximate: K and V q8_0"), f"q8_0 KV: marked approximate with its type ({plan.get('kv_approx')})")
+p4 = mm.plan_from_args("llama-server -m x.gguf -ctk q4_0 -ctv q4_0".split()); p84 = mm.plan_from_args("llama-server -m x.gguf -ctk q8_0 -ctv q4_0".split())
+check("q4_0" in p4["kv_approx"] and "K q8_0 / V q4_0" in p84["kv_approx"], f"q4_0 and the mixed K q8_0 / V q4_0 cache: marked approximate ({p4['kv_approx']}; {p84['kv_approx']})")
+check("kv_approx" not in mm.plan_from_args("llama-server -m x.gguf".split()) and "kv_approx" not in mm.plan_from_args("llama-server -ctk f16 -ctv f16".split()), "f16 KV (given or default): no mark")
 check(mm.split_command('a "b c" d') == ["a", "b c", "d"] or os.name == "nt", "split_command")
 
 # ---- the Monitor: lines ----
@@ -44,7 +48,7 @@ m.add_line(3, 102.0, "slot update_slots: id 0 | task 5 | prompt processing done,
 m.add_line(4, 103.0, "prompt eval time =     400.00 ms /   812 tokens (    0.49 ms per token,  2030.00 tokens per second)")
 m.add_line(5, 104.0, "slot print_timing: draft acceptance rate = 0.75000 (   30 accepted /    40 generated)")
 m.add_line(6, 105.0, "       eval time =    2000.00 ms /    40 tokens (   50.00 ms per token,    20.00 tokens per second)")
-m.add_line(7, 106.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up, 0 replaced by a resident expert")
+m.add_line(7, 106.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up")
 check(m.starting is False and [x[2] for x in m.log][:2] == ["launcher", "launcher"], "lines up to the URL line are launcher")
 m.add_line(8, 107.0, "moe-cache: executor by type q4_k ops=5")
 check(m.log[-1][2] == "plugin", "a moe-cache line after the URL line is plugin")
@@ -115,8 +119,12 @@ check(pa["approx"]["mode"] == "skip" and pa["approx"]["live"] is True and pa["ap
 check(abs(pa["samples"][-1]["alt"] - ((400 + 80 + 900) - (100 + 20 + 300)) / 2) < 1e-6, f"picks changed per second between two snapshots ({pa['samples'][-1]['alt']})")
 mb = mm.Monitor(); mb.add_snapshot(1.0, {"hits": 1}); mb.add_snapshot(3.0, {"hits": 2}); mb.tick(4.0, None, None, None, None, None, False)
 check(mb.payload()["approx"] == {} and mb.payload()["samples"][-1]["alt"] is None, "no approximate mode: no counters and no rate (nothing invented)")
-mc_ = mm.Monitor(); mc_.add_line(1, 1.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up, 0 replaced by a resident expert")
+mc_ = mm.Monitor(); mc_.add_line(1, 1.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up")
 check(mc_.payload()["approx"]["mode"] == "skip" and "live" not in mc_.payload()["approx"], "an older plugin: the counters still come from its stop-time line")
+md_ = mm.Monitor(); md_.add_line(1, 1.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up, 0 replaced by a resident expert")
+check(md_.payload()["approx"]["given_up"] == 300 and md_.payload()["approx"]["replaced"] == 0, "a plugin from before 2026-11-20 (its line names 'replaced'): still read")
+me_ = mm.Monitor(); me_.add_snapshot(1.0, {"hits": 1, "approx": {"route": 1, "considered": 10, "skipped": 4, "fewer": 0}}); me_.tick(2.0, None, None, None, None, None, True)
+check(me_.payload()["approx"]["mode"] == "skip" and me_.payload()["approx"]["replaced"] == 0, "today's snapshot (no 'substituted' field, subst removed): replaced 0")
 
 # ---- GUI-043: decode steps the routing change touched, attributed to requests by time ----
 ms = mm.Monitor()

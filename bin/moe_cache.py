@@ -253,6 +253,23 @@ def find_llama_server(saved=None):
     return res
 
 
+def llama_candidates():
+    """LAUNCHER-1224 follow-up: every llama-server installed where the launcher looks (the kit's own bundled or patched one first, then the default folders, then the PATH),
+    as absolute paths, each once."""
+    out = []
+    dirs = llama_search_dirs()
+    kit = [d for d in dirs if os.path.abspath(d) == os.path.abspath(HERE) or os.path.abspath(d).startswith(os.path.abspath(HERE) + os.sep)]
+    for d in kit + [d for d in dirs if d not in kit]:
+        for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release")):
+            c = os.path.abspath(os.path.join(d, x, llama_exe()))
+            if os.path.isfile(c) and c not in out:
+                out.append(c)
+    w = shutil.which("llama-server")
+    if w and os.path.abspath(w) not in out:
+        out.append(os.path.abspath(w))
+    return out
+
+
 def planner_path():
     """Idea 28: the planner import path, inserted only when missing — every stage used to do its own sys.path.insert, so a long-lived process's sys.path grew one duplicate entry per stage."""
     p = os.path.join(HERE, "planner")
@@ -2510,14 +2527,15 @@ SERVER_HELP = """\
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
            llama.cpp's (EXACTNESS.md). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
---retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; not for a model over 40 % of RAM), for at most 180 s in
-           all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %) and stores
+--retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; one more expert layer on the GPU per load, 2 while far from a known fit limit; not for a model bigger than the memory the server may use; a first load over 60 s stops it), for at most 180 s in
+           all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %, and its second run, the confirm run, must win too) and stores
            it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
 --plan-file PATH  write the launch plan as JSON there: every setting the launcher decided, its value, where it came from (probe / measured / constant / user / llama) and a plain reason. A real start writes it to <cache>/plans/port-PORT.json and prints a short summary; --plan-json shows the same under "settings"
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
            the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
            llama.cpp's (against f16: KL 0.014-0.015, same top token in 94-95 % of positions, meaning kept in 10 of 10 checks at 55k). Not with --exact, --stock or your own --ub
+--kv-4bit        dense models: when the q8_0 KV cache would still spill the GPU, also try K q8_0 / V q4_0 and then q4_0 / q4_0 before moving layers to system RAM. Off by default (a quality cost, README); your own -ctk/-ctv win
 --no-long-prompt  turn the long-prompt mode off: -ub 2048 and the f16 KV cache, as before v0.3.8
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
@@ -2669,6 +2687,7 @@ class Machine:
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
     def planner_answer(self, model, ctx, ram_gib, vram_gib): return planner_answer(model, ctx, ram_gib, vram_gib)
     def lib_exists(self, lib): return os.path.isfile(lib)
+    def llama_candidates(self): return llama_candidates()
 
     def other_llama_servers(self): return other_llama_servers()
 
@@ -2821,6 +2840,7 @@ def parse_server(argv):
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
     ap.add_argument("--long-prompt", action="store_true")      # long-prompt mode (v0.3.8): -ub 4096 + --fast=kv when the memory plan allows; since 2026-11-08 also the DEFAULT (see kv_stage); the flag asks for it at any context
+    ap.add_argument("--kv-4bit", dest="kv_4bit", action="store_true")      # opt in to the 4-bit KV steps (K q8_0 / V q4_0, then q4_0 / q4_0) of the dense ladder; off by default since 2026-11-20 (owner)
     ap.add_argument("--no-long-prompt", action="store_true")   # opt out of the default long-prompt mode: -ub 2048 and the f16 KV cache, as before v0.3.8
     ap.add_argument("--retune", action="store_true")    # LAUNCHER-994: measure the candidate plans again and replace the stored auto-tune pick (bin/moe_cache_autotune.py)
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
@@ -3663,6 +3683,8 @@ def kv_quantized(cmd):
     return bool(kv_plan_type(cmd, False))
 
 
+KV_4BIT_COST = ("floor-corrected on Qwen3-30B-A3B MoE, a different model, laptop, one run each: K q8_0 / V q4_0 +0.003 to +0.006 KL, q4_0 / q4_0 +0.022 to +0.040 KL (limit 0.015), same top token up to 5.8 points under f16; "
+               "the dense 27B is not measured with a floor")
 KV_K8V4 = ("q8_0", "q4_0")          # LAUNCHER-1063: K q8_0 / V q4_0 (laptop, 27B, against f16: top-1 94.6 % between q8/q8 96.5 % and q4/q4 92.9 %: K matters more than V)
 
 
@@ -3842,9 +3864,12 @@ def cpu_placement_note(line, cpu_run=False):
     text = line.decode(errors="replace") if isinstance(line, bytes) else line
     m = CPU_ATTN_RE.search(text)
     if m:
-        return ("attn", f"moe-cache: WARNING: llama-server put the attention over the KV cache of layer {m.group(1)} (weights on {m.group(2)}) on the CPU: the KV cache did not fit in GPU "
-                        "memory next to the model, and decode will be much slower (Qwen3.8-27B on the 16 GB RX 9070 XT at 64k: 35 -> 19 tok/s). A smaller --ctx or an 8-bit KV cache "
-                        "keeps it on the GPU; the 'all on GPU' line above says by how much it was short")
+        # LAUNCHER-1222 (3): llama.cpp prints this line for two causes it does not tell apart ("usually due to missing support"): the GPU backend cannot run this model's
+        # attention with these settings (it then turns flash attention off; Granite 1B on the PC's Vulkan decoded 530 tok/s after it), or the KV cache did not fit
+        return ("attn", f"moe-cache: WARNING: llama-server runs the attention over the KV cache of layer {m.group(1)} (weights on {m.group(2)}) on the CPU. Either the GPU backend "
+                        "does not support this model's attention with these settings (llama.cpp then turns flash attention off; often harmless, e.g. on a small model), or the KV "
+                        "cache did not fit in GPU memory next to the model, and then decode is much slower (Qwen3.8-27B on the 16 GB RX 9070 XT at 64k: 35 -> 19 tok/s, our test PC). "
+                        "If the decode speed looks fine, nothing to do; if it is slow, a smaller --ctx or an 8-bit KV cache keeps it on the GPU")
     m = OFFLOADED_RE.search(text)
     if m and not cpu_run and int(m.group(1)) < int(m.group(2)):
         return ("offload", f"moe-cache: WARNING: only {m.group(1)} of {m.group(2)} layers are on the GPU: the rest run on the CPU and decode will be slower. "
@@ -3910,6 +3935,73 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
         return None                                       # every expert fits the GPU: nothing for the executor to do
     return ("moe-cache: the model fits in memory but some layers keep their experts on the CPU: the plugin's expert executor runs those layers (on our test laptop with one model it was faster "
             "than stock llama-server, but a later re-run on the release code did not reproduce that, so on your machine it can be slower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
+
+
+def plugin_api_mismatch(ls, machine):
+    """LAUNCHER-1224: (llama-server's ggml backend API, the plugin build's API, the build) when the build plugin_lib_stage would use is for another API and no build for the
+    server's API is found, else None (also when either API cannot be read: nothing is assumed)."""
+    lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
+    want, have = machine.ls_api(ls), machine.lib_api(lib)
+    if not (want and have and want != have):
+        return None
+    alt = machine.pick_lib(ls)                # plugin_lib_stage lets a matching build replace an env value built for another API
+    if machine.lib_exists(alt) and machine.lib_api(alt) == want:
+        return None
+    return want, have, lib
+
+
+def matching_pair(ls, machine):
+    """LAUNCHER-1224 follow-up (owner: "why not our patched llama.cpp?"): (llama-server, plugin build) of another installed server whose ggml API a plugin build here matches,
+    the kit's own first; None when there is none. MOE_CACHE_LIB counts when its API fits that server."""
+    env_lib = os.environ.get("MOE_CACHE_LIB")
+    for c in machine.llama_candidates():
+        if os.path.abspath(c) == os.path.abspath(ls):
+            continue
+        want = machine.ls_api(c)
+        if not want:
+            continue
+        for lib in ([env_lib] if env_lib else []) + [machine.pick_lib(c)]:
+            if lib and machine.lib_exists(lib) and machine.lib_api(lib) == want:
+                return c, lib
+    return None
+
+
+def ls_chosen_by_user(ls, argv=()):
+    """True when this llama-server was named by the user (--llama-server, LLAMA_SERVER, the control page's saved path), not found by the launcher's own search.
+    A --llama-server on the launcher's command line always counts, even when it is the same path the search finds (critic of 59abd70)."""
+    if any(x == "--llama-server" or str(x).startswith("--llama-server=") for x in argv or ()):
+        return True
+    try:
+        found = default_llama_server()
+        src = str(_LS.get("source") or "")
+    except Exception:
+        return True
+    return os.path.abspath(ls) != os.path.abspath(found) or src.startswith(("LLAMA_SERVER", "the control page"))
+
+
+def api_mismatch_stage(a, ls, machine, argv=()):
+    """LAUNCHER-1224, before the plugin build stage: the plugin refuses to load into a llama-server of another ggml backend API, and the plan used to stay plugin-shaped
+    (expert layers on the CPU for the cache, plugin settings) while plain llama.cpp ran it. Now the plan is made for stock llama-server, with one line that says why and how to
+    get the matching build; when the user asked for something only the plugin does (--fast, --hybrid, --always-plugin) the start stops with that advice instead.
+    Returns True when the plan must take the stock path (a.api_stock holds the line stock_env_stage prints)."""
+    m = plugin_api_mismatch(ls, machine)
+    if not m:
+        return False
+    want, have, lib = m
+    # first choice: another installed llama-server that a plugin build here fits (the kit's own bundled / patched one first); plain llama.cpp without the cache is the last resort
+    pair = matching_pair(ls, machine)
+    if pair and not ls_chosen_by_user(ls, argv):
+        say(f"moe-cache: {ls} uses ggml backend API {want}, which no plugin build here fits; using {pair[0]} (API {machine.ls_api(pair[0])}) with {pair[1]} instead, so the expert "
+            f"cache runs (--llama-server PATH chooses another)", err=True)
+        a.llama_server = pair[0]
+        return False
+    hint = (f" (or use {pair[0]}, which the plugin build {pair[1]} fits: --llama-server {pair[0]})" if pair else "")
+    if a.fast or a.hybrid or a.always_plugin:
+        opt = "--hybrid" if a.hybrid else "--always-plugin" if a.always_plugin else "--fast"
+        raise SystemExit(f"moe-cache: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin cannot load, and {opt} needs it. " + api_advice(want) + hint)
+    a.api_stock = (f"moe-cache: WARNING: the plugin build {lib} is for ggml backend API {have} but {ls} uses API {want}: the plugin cannot load, so this plan is made for "
+                   "stock llama-server (no expert cache). To use the plugin: " + api_advice(want) + hint)
+    return True
 
 
 def plugin_lib_stage(ls, dry, stock, win, machine):
@@ -4123,8 +4215,9 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
         kv128_default = True
-        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
-            "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; approximate: its quality was "
+            "measured at 4k-60k context, not at 128k or above (4k gate run: KL 0.0079, same top token 96.7 %; Flash-Next IQ3_XXS at 32k / 60k: KL 0.009 / 0.011), "
+            "docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     if (dense and ax.default_on("kv8") and not a.fast and not a.exact and not a.stock and not getattr(a, "approx_kv", False)
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)):
         # LAUNCHER-982 (PC 2026-11-08: Qwen3.8-27B UD-Q3_K_XL at --agent --ctx 65536 ran 18.9 tok/s against 35 at 24k: the f16 KV cache did not fit beside the model, llama.cpp's --fit
@@ -4138,22 +4231,29 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         if pair and not pair[0]["fits"]:
             a.fast, a.dense_kv = "kv", True
             if not pair[1]["fits"]:
-                # LAUNCHER-1063 (owner 2026-11-10): f16 -> q8_0/q8_0 -> K q8_0 / V q4_0 -> q4_0/q4_0 -> only then layers to RAM; each step only when the one before would spill; never a
-                # shorter context; --exact and your own -ctk/-ctv are gated above. Laptop, 27B, top-1 against f16: q8/q8 96.5 %, K q8/V q4 94.6 %, q4/q4 92.9 % (KL 0.173); PC, 27B 64k with the
-                # desktop on the card: decode 18.5 tok/s with q8_0 (spilling) against 27.8 with q4_0
+                # LAUNCHER-1063: f16 -> q8_0/q8_0 -> (only with --kv-4bit: K q8_0 / V q4_0 -> q4_0 / q4_0) -> layers to RAM; each step only when the one before would spill; never a shorter context;
+                # --exact and your own -ctk/-ctv are gated above. The two 4-bit steps were on by default from 2026-11-10; owner 2026-11-20: off (quality cost, floor-corrected on Qwen3-30B-A3B), reachable by --kv-4bit.
                 mixed, q4 = triple[2], triple[3]
                 over8 = pair[1]["over_gib"]
-                if mixed["fits"]:
+                k8v4_on = ax.default_on("kv-k8v4") or getattr(a, "kv_4bit", False)
+                q4_on = ax.default_on("kv-q4") or getattr(a, "kv_4bit", False)
+                if not (k8v4_on and mixed["fits"]) and not q4_on:
+                    say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache; it still spills {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}), so part of the model runs from system RAM; --exact keeps f16. "
+                        f"--kv-4bit would store the KV cache as K q8_0 / V q4_0 ({pair[1]['kv_gib'] - mixed['kv_gib']:.1f} GiB less KV cache, " + ("fits" if mixed["fits"] else f"still {mixed['over_gib']:.1f} GiB over") + ") or q4_0 / q4_0 "
+                        f"({pair[1]['kv_gib'] - q4['kv_gib']:.1f} GiB less, " + ("fits" if q4["fits"] else f"still {q4['over_gib']:.1f} GiB over") + f"), at a quality cost: {KV_4BIT_COST} (off by default, owner 2026-11-20)")
+                    a.dense_kv_types = None
+                elif k8v4_on and mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
-                    quality = "approximate: same top token in 94.6 % of positions against f16 (q8_0/q8_0: 96.5 %; measured on one laptop run, 27B, no published record yet)"
+                    quality = "approximate (--kv-4bit): " + KV_4BIT_COST
                 else:
                     a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
-                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173; measured on one laptop run, 27B, no published record yet (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
-                saves = pair[1]["kv_gib"] - got["kv_gib"]
-                say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
-                    f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else
-                    f"is still {got['over_gib']:.1f} GiB over ({gpu_fit_words(got, step)}), so part of the model runs from system RAM. ") +
-                    quality + "; --exact keeps f16, your own -ctk/-ctv after -- win")
+                    quality = "approximate (--kv-4bit): " + KV_4BIT_COST + (f"; K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB" if not mixed["fits"] else "")
+                if a.dense_kv_types:
+                    saves = pair[1]["kv_gib"] - got["kv_gib"]
+                    say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
+                        f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else
+                        f"is still {got['over_gib']:.1f} GiB over ({gpu_fit_words(got, step)}), so part of the model runs from system RAM. ") +
+                        quality + "; --exact keeps f16, your own -ctk/-ctv after -- win")
             elif pair[1]["fits"]:
                 say(f"moe-cache: context {ctx // 1024}k: the f16 KV cache does not fit the GPU next to the model ({gpu_fit_words(pair[0], 'f16')}): q8_0 KV cache, which does "
                     "(half the GPU memory for the same context; --exact keeps f16 and lets llama.cpp move work to the CPU)")
@@ -4198,7 +4298,8 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
         return kv_q8, tuned, desk_kw, ub_asked
     if tuned and tuned.get("ub") == 4096:
         say("moe-cache: long-prompt mode" + ("" if loud else " (the default; --no-long-prompt or --exact turns it off)") + ": a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, "
-            "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: same top token in 94-95 % of positions, the meaning stayed the same in our checks; measured on Flash-Next, other models can differ)")
+            "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: Flash-Next IQ3_XXS at 4k-8k against f16, KL 0.014-0.015, same top token in 94.1-94.8 % "
+            "of positions, the meaning stayed the same in our checks at 55k; other models can differ)")
         return kv_q8, tuned, desk_kw, ub_asked
     if getattr(a, "approx_kv", False) or getattr(a, "lp_with_fast", False):         # --approx safe / --fast asked for the 8-bit KV cache itself: it stays, the micro-batch is the usual one
         a.lp_kv = False
@@ -4453,17 +4554,19 @@ def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
     return cram
 
 
-def stock_env_stage(a, env, stock, ncmoe, size, avail, method):
+def stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=False):
     """ENGINE-029, stage "stock llama-server": a model that fits (or --stock) runs without the plugin: one line says so, every plugin setting leaves the environment, and a short-batch GPU offload threshold (T5, RESULTS 68) is added. Returns (environment, method)."""
     if stock:
         if a.stock:
             say("moe-cache: --stock: running stock llama-server without the plugin, as asked (to compare; a model bigger than RAM is read through the file cache)")
+        elif getattr(a, "api_stock", None):
+            say(a.api_stock, err=True)
         else:
             say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
         method = "none (stock)"
-        if ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):
+        if not dense and ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
             # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
             env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
@@ -4745,18 +4848,26 @@ AUTOTUNE_PROMPT = ("The lighthouse keeper had kept a logbook for thirty-one year
                    "he sat at his small wooden table for a long while before he picked up the pen. ")
 
 
-def autotune_probe(cmd, env, left_s, decode_n, record=None):
+def _takes_kw(fn, name):
+    try:
+        import inspect
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def autotune_probe(cmd, env, left_s, decode_n, record=None, load_cap=None):
     """(see _autotune_probe) plus LAUNCHER-1042: a probe the memory guard stopped says so in "guard_stop", which aborts the whole tune. record: a function cmd -> Recorder
     (load_recorder_for): the probe's load is a measurement like a real start's (follow-up 2)."""
     holder = {}
-    r = _autotune_probe(cmd, env, left_s, decode_n, holder, record)
+    r = _autotune_probe(cmd, env, left_s, decode_n, holder, record, load_cap)
     g = holder.get("guard")
     if not r.get("ok") and g is not None and getattr(g, "stopped", None):
         r["guard_stop"] = str(g.stopped)
     return r
 
 
-def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None):
+def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None, load_cap=None):
     """The real runner for moe_cache_autotune.tune: start llama-server with `cmd` on a free local port, wait until it is healthy (its load time), send one request that
     reads a ~1.5k-token prompt (prompt tok/s) and one that writes decode_n tokens (decode tok/s), stop the server. Never raises; a failure is {"ok": False, "error": ...}."""
     import moe_cache_autotune as at
@@ -4806,6 +4917,8 @@ def _autotune_probe(cmd, env, left_s, decode_n, holder, record=None):
                 return r
             if left() <= 0:
                 return {"ok": False, "error": "the load did not finish in the time left"}
+            if load_cap and time.monotonic() - t0 > load_cap:
+                return {"ok": False, "slow_load": True, "load_s": round(time.monotonic() - t0, 1), "error": f"the load took over {load_cap:.0f} s (stopped: too slow to tune)"}
             time.sleep(0.5)
         load_s = time.monotonic() - t0
         if left() <= 0:           # healthy, but after the time was up (a slow poll): the budget is the owner's limit, so this plan is not measured
@@ -4886,10 +4999,15 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         say_fn(line)
         return cmd, env, {"state": "off", "lines": [line], "why": f"off ({off})"}
     locked = at.locked_dims(a, argv, os.environ, windows=machine.windows, agent=bool(a.agent), project=bool(a.project), engine=engine)
+    if getattr(a, "spill_locked", False):           # critic of 59abd70: the dense spill rule set -ub and -np; the tuner leaves them as the rule set them
+        locked.setdefault("ub", "set by the dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1)")
+        locked.setdefault("np", "set by the dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1)")
     # what else shapes the plan a pick was measured on (LAUNCHER-1041): the user's memory caps, the modes (--fast, --mtp, --approx, long-prompt, --hybrid) and the settings the
     # tuner does not touch but the speed depends on (the prompt cache size the USER asked for - the planner's own value is not keyed: on Windows it follows the free commit of the moment -,
     # the KV type of the plan, flash attention)
     limits = {k: str(getattr(a, k)) for k in ('ram', 'vram', 'max_ram', 'gpu_margin', 'leave_room', 'fast', 'mtp', 'approx', 'long_prompt', 'no_long_prompt', 'hybrid', 'always_plugin') if getattr(a, k, None)}
+    # the opt-in candidates and the dense spill rule change what was measured: a result tuned with them is kept apart from one without (LAUNCHER-1225 step 2)
+    limits.update({k.lower(): "1" for k in ("MOE_CACHE_TUNE_MTP", "MOE_CACHE_TUNE_THREADS", "MOE_CACHE_DENSE_SPILL_RULE") if os.environ.get(k) == "1"})
     limits.update({k: str(v) for k, v in (("cache_ram", arg_after(argv, "--cache-ram", "-cram")), ("ctk", arg_after(cmd, "-ctk", "--cache-type-k")), ("fa", arg_after(cmd, "-fa", "--flash-attn"))) if v is not None})
     if vram_user is not _VRAM_AS_GIVEN:
         # gpu_stage / multi_gpu_start overwrite a.vram with the free memory of the moment (Windows AMD / Intel: "14.65"); keyed on that, a stored pick was found again only when free
@@ -4947,16 +5065,12 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     stored = None if a.retune else fresh(at.load(CACHE_DIR, parts))
     if stored:
         return apply_stored(stored)
-    # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). Measured nowhere: this
-    # is a size rule: more than 40 % of this computer's RAM, or more than the memory the server may use (the planner expects spill).
-    try:
-        ram = float(machine.mem_total())
-    except Exception:
-        ram = 0.0
-    if size and ((ram and float(size) > 0.40 * ram) or (avail and float(size) > float(avail))):
-        line = (f"moe-cache: auto-tune: skipped: the model ({float(size) / 1e9:.1f} GB) is " + (f"more than 40 % of this computer's RAM ({ram / 1e9:.0f} GB)" if ram and float(size) > 0.40 * ram
-                else f"bigger than the memory the server may use ({float(avail) / 1e9:.1f} GB)") +
-                f": loading it up to 5 times does not fit the {at.BUDGET_S:.0f} s budget, so the plan as it is runs untuned")
+    # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). The size rule is now only
+    # "bigger than the memory the server may use" (every load reads from the drive again). The old "more than 40 % of the RAM" part left the usual case (a 30B on a 32 GB machine)
+    # untuned (LAUNCHER-1225 step 2); a model that fits is tuned, and the load-time gate in the tuner (at.SLOW_LOAD_S) stops after the first load when one load is too slow.
+    if size and avail and float(size) > float(avail):
+        line = (f"moe-cache: auto-tune: skipped: the model ({float(size) / 1e9:.1f} GB) is bigger than the memory the server may use ({float(avail) / 1e9:.1f} GB): every load reads it "
+                f"from the drive again, so loading it up to 5 times does not fit the {at.BUDGET_S:.0f} s budget; the plan as it is runs untuned")
         if getattr(a, "autotune_probe", False):
             say_fn(line)             # a plan that only describes (--dry-run, --plan-json, the control page) shows it in plan.autotune and stays as it was
         return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
@@ -5013,9 +5127,17 @@ def autotune_free_vram(a, machine):
 
 def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=None, recorder=None, edge_floor=None):
     import moe_cache_autotune as at
-    probe = runner or (lambda c, e, l, n: autotune_probe(c, e, l, n, record=recorder) if recorder is not None else autotune_probe(c, e, l, n))
+    def default_probe(c, e, l, n, load_cap=None):
+        kw = {"record": recorder} if recorder is not None else {}
+        if load_cap and _takes_kw(autotune_probe, "load_cap"):          # a stand-in probe (tests) may not take it
+            kw["load_cap"] = load_cap
+        return autotune_probe(c, e, l, n, **kw)
+    probe = runner or default_probe
     walk = at.walk_start(cmd, locked)          # planner map fix 2: --n-cpu-moe is walked down from the plan to the edge, one layer per load
-    cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None)
+    cands = at.build_candidates(cmd, env, locked, ctx, n_layers, walk=walk is not None, mtp=tune_mtp_ok(a, cmd), threads=tune_threads_of(cmd))
+    cands, vetoed = never_filter(cands, getattr(a, "plan_facts", None) or {"ctx": ctx})       # LAUNCHER-1225: a setting measured as a loss in this scope is never tried
+    if vetoed:
+        say_fn("moe-cache: auto-tune: not tried (measured as a loss, or changes answers without a passed quality gate; planner/never_list.json): " + ", ".join(vetoed))
     if fits is not None and len(cands) > 1:          # LAUNCHER-1042: every command that would be loaded has passed the commit check first
         ok, why = fits(cmd, env)
         if not ok:
@@ -5048,7 +5170,8 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     if a.retune:       # not "first start": the stored pick is being replaced
         say_fn(f"moe-cache: auto-tune: --retune: measuring again, trying {how_many} for at most {at.BUDGET_S:.0f} s (the stored result for this model, machine and context is replaced)")
     else:
-        say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: trying {how_many} for at most {at.BUDGET_S:.0f} s (stored afterwards; --retune measures again)")
+        say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: tuning now, once: up to {at.BUDGET_S:.0f} s before the server starts (the result is stored; "
+               f"later starts skip this; --retune measures again, --exact skips it). Trying {how_many}")
     kv_f16 = [False]         # after llama.cpp's known load abort with the launcher's q8_0 KV: this and the later plans are measured with f16 KV (the start's own retry ends there too)
     def run(c, left_s, n):
         c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
@@ -5059,7 +5182,9 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
                 if not ok:
                     return {"ok": False, "error": f"not loaded: the commit check does not pass this plan with the f16 KV cache ({why[:120]})"}
         t_start = time.monotonic()
-        r = probe(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
+        cap = getattr(c, "load_cap", None)
+        r = (probe(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n, load_cap=cap) if cap and _takes_kw(probe, "load_cap")
+             else probe(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n))
         if not r.get("ok") and r.get("kv_abort") and not kv_f16[0] and "kv" not in locked:       # a KV type the user gave (or --exact) is never changed
             new_cmd, was = kv_retry_cmd(c_cmd)
             if was and (fits is None or fits(new_cmd, c_env)[0]):
@@ -5075,7 +5200,7 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     if walk is not None:
         res["base_ncmoe"] = walk                            # the plan's --n-cpu-moe the deltas were measured from (a later plan that learned from loads may differ)
     try:
-        if res.get("state") != "aborted":          # LAUNCHER-1042: a guard stop stores nothing
+        if res.get("state") not in ("aborted", "slow_load"):          # LAUNCHER-1042: a guard stop stores nothing; a load over SLOW_LOAD_S neither (tried again at the next start)
             at.save(CACHE_DIR, parts, res)
     except OSError as e:
         say_fn(f"moe-cache: auto-tune: could not store the result ({e}); it is measured again at the next start", err=True)
@@ -5084,6 +5209,124 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     for l in lines:
         say_fn(l)
     return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
+
+
+DENSE_SPILL_MIN_CTX = 65536
+DENSE_SPILL_UB = 256
+
+
+def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
+    """LAUNCHER-1067 / TEST-1205 arm D: a dense model that still spills out of GPU memory at 64k+ (after the KV ladder) gets -np 1 (one slot: llama.cpp's per-slot buffers go;
+    449 MiB freed on the 27B, LAUNCHER-1067) and -ub 256 (half the compute buffer: 280 -> 140 MiB on the 27B at 128k). Measured: PC, 27B IQ4_XS 64k, one run per arm, decode 12.22
+    -> 13.11 tok/s (+7.3 %), prompt -1.5 %, spill 3.17 -> 2.59 GiB (TEST-1205, forecast); 27B Q3_K_XL 128k 15.7 -> 20.5 tok/s (A B B A). OFF until the PC's 6-turn A B B A:
+    MOE_CACHE_DENSE_SPILL_RULE=1 switches it on (the chain's test switch). Never with --exact, the user's own -np / --parallel / -ub / --ub, or a plan that does not spill.
+    Returns (cmd, ub)."""
+    if os.environ.get("MOE_CACHE_DENSE_SPILL_RULE") != "1" or not dense or a.exact or int(ctx or 0) < DENSE_SPILL_MIN_CTX:
+        return cmd, ub
+    if a.ub != "auto" or any(x in ("-np", "--parallel", "-ub", "--ubatch-size") or x.startswith(("--parallel=", "--ubatch-size=")) for x in user_argv):
+        say("moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1): your own -np / -ub win: not applied", err=True)
+        return cmd, ub
+    try:
+        triple = dense_gpu_fit_pair(a, a.model, ctx, machine, with_q4=True, skip_mtp=mtp_layer_skipped(ls, cmd, machine))
+        fit = triple[kv_fit_index(arg_after(cmd, "-ctk", "--cache-type-k"), arg_after(cmd, "-ctv", "--cache-type-v"))] if triple else None
+    except Exception:
+        fit = None
+    if not fit or fit.get("fits"):
+        say("moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1): " + ("the plan does not spill: not applied" if fit else "no GPU memory estimate: not applied"), err=True)
+        return cmd, ub
+    new = [x for x in cmd]
+    new = set_cmd_flag(new, "-ub", str(DENSE_SPILL_UB), ("--ubatch-size",))
+    new = set_cmd_flag(new, "-np", "1", ("--parallel",))
+    a.spill_locked = True             # the auto-tune leaves -ub / -np alone (autotune_stage)
+    say(f"moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1, test switch, off by default): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k: -np 1 (one request at a "
+        f"time; frees llama.cpp's per-slot buffers) and -ub {DENSE_SPILL_UB} (half the compute buffer); one PC run: 27B 64k +7.3 % decode, prompt -1.5 % (forecast, TEST-1205)")
+    return new, str(DENSE_SPILL_UB)
+
+
+def set_cmd_flag(cmd, name, value, also=()):
+    """cmd with `name value` (every spelling in also replaced) at the place of the first one, or appended."""
+    names = (name,) + tuple(also)
+    out, i, done = [], 0, False
+    while i < len(cmd):
+        if cmd[i] in names and i + 1 < len(cmd):
+            if not done:
+                out += [name, value]
+                done = True
+            i += 2
+            continue
+        out.append(cmd[i])
+        i += 1
+    return out if done else out + [name, value]
+
+
+def tune_mtp_ok(a, cmd):
+    """LAUNCHER-1169 (test switch MOE_CACHE_TUNE_MTP=1, off by default): MTP drafting is an auto-tune candidate for a DENSE model with an MTP head on a llama-server that has
+    draft-mtp, when the plan has no drafting yet (the MoE agent default turns it on by rule). False on any doubt."""
+    if os.environ.get("MOE_CACHE_TUNE_MTP") != "1" or (getattr(a, "plan_facts", None) or {}).get("model") != "dense" or "--spec-type" in cmd:
+        return False
+    try:
+        planner_path()
+        from gguf_plan import mtp_layers
+        return bool(mtp_layers(a.model)[0]) and "draft-mtp" in ls_help(cmd[0])
+    except Exception:
+        return False
+
+
+def tune_threads_of(cmd):
+    """LAUNCHER-1225 step 2 (test switch MOE_CACHE_TUNE_THREADS=1, off by default): the plan's thread count for a 'two fewer threads' auto-tune candidate: -t in the command, else
+    the physical cores (llama.cpp's own default). None when switched off or unknown."""
+    if os.environ.get("MOE_CACHE_TUNE_THREADS") != "1":
+        return None
+    t = arg_after(cmd, "-t", "--threads")
+    if t is not None:
+        return int(t) if str(t).isdigit() else None
+    try:
+        return int(physical_cores()) or None
+    except Exception:
+        return None
+
+
+def never_facts(listing, dense, ctx):
+    """The scope facts the never-list (planner/never_list.py) checks a row against: GPU backend from the device listing, dense or MoE, context."""
+    try:
+        planner_path()
+        import never_list as nl
+        backend = nl.backend_of(listing)
+    except Exception:
+        backend = None
+    return {"backend": backend, "model": "dense" if dense else "moe", "ctx": int(ctx or 0)}
+
+
+def never_filter(cands, facts):
+    """(candidates without the ones the never-list forbids here or whose answer class needs a quality gate that has not passed, ["id (why)", ...] of those left out).
+    C0 always stays. Never raises. A missing or broken never_list.json vetoes no row; the answer classes then come from never_list.BUILTIN_CLASSES (the known
+    dimensions), and an unknown dimension still counts as changing answers (fail closed)."""
+    try:
+        planner_path()
+        import never_list as nl
+    except Exception:
+        return cands, []
+    kept, out = cands[:1], []
+    for c in cands[1:]:
+        r = nl.veto(c.edits, facts)
+        ok, why = nl.tuner_may_pick(c.edits)          # answer classes: a setting that can change answers needs its passed quality gate
+        if r:
+            out.append(f"{c.id} ({r['source']})")
+        elif not ok:
+            out.append(f"{c.id} (changes answers: {why})")
+        else:
+            kept.append(c)
+    return kept, out
+
+
+def never_user_notes(cmd, env, facts):
+    """The never-list's notes for listed settings in the finished command or the environment (the user's own; the launcher picks none). [] on any error."""
+    try:
+        planner_path()
+        import never_list as nl
+        return nl.user_notes(cmd, env, facts or {})
+    except Exception:
+        return []
 
 
 def _max_floor(*floors):
@@ -5243,6 +5486,20 @@ def _launch_plan(a, extra, argv, machine):
         why = plugin_for_partial_offload(a, ls, model, ctx, machine, gpu, mm_bytes)
         if why:
             say(why); stock = False
+    a.api_stock = None
+    if not stock and api_mismatch_stage(a, ls, machine, argv):
+        stock = True                  # LAUNCHER-1224: the plugin cannot load into this llama-server: plan the stock path, not a plugin-shaped plan that plain llama.cpp would run
+    if a.llama_server != ls:          # LAUNCHER-1224 follow-up: switched to an installed server that a plugin build fits
+        ls = a.llama_server
+        if win:                       # critic of 59abd70: on Windows the device listing, the picked GPU (and --device below) come from llama-server itself: read them from the new one
+            a.vram = vram_user
+            vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
+            a.plan_gpu_ident = f"listdev:{gpu[1]}:{int(gpu[3])}" if gpu and len(gpu) > 3 and gpu[3] else ""
+            if a.plan_gpu_ident:
+                try:
+                    a.plan_gpu_ident += ";driver " + (machine.win_driver_version(gpu[1]) or "?")
+                except Exception:
+                    pass
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
@@ -5285,7 +5542,7 @@ def _launch_plan(a, extra, argv, machine):
     gcache = default_gpu_cache_stage(a, extra, ls, machine, dev_listing, dense, method == "none (stock)", gcache, ncmoe_user)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
-    # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock,
+    # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock; not measured at 128k+,
     # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (prompts about 2x). Not with --stock (that compares
     # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
     # -ctk/-ctv after --) keeps llama.cpp's f16 KV
@@ -5308,13 +5565,15 @@ def _launch_plan(a, extra, argv, machine):
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
     cram = prompt_cache_stage(a, extra, env, ls, machine, win, dry)
-    env, method = stock_env_stage(a, env, stock, ncmoe, size, avail, method)
+    env, method = stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=dense)
     if not env_has(env, "ZES_ENABLE_SYSMAN"):
         env += sycl_sysman_env(ls, listing)
     extra = leave_room_stage(a, env, extra, pinargs, machine)
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
+    cmd, ub = dense_spill_stage(a, cmd, ub, list(argv) + user_extra, ctx, ls, machine, dense)
+    a.plan_facts = never_facts(dev_listing, dense, ctx)      # LAUNCHER-1225: the scope the never-list rows are checked in (auto-tune candidates, the user's own settings)
     # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
     ncmoe0, ub0, kv_q80 = ncmoe, ub, kv_q8
     cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"),
@@ -5328,6 +5587,8 @@ def _launch_plan(a, extra, argv, machine):
         ncmoe = n_ if n_ is not None else ncmoe
         kv_q8 = kv_quantized(cmd)        # q8_0, the dense ladder's K q8_0 / V q4_0 and q4_0/q4_0 all count (a plain == "q8_0" read q4_0 as f16 and let the commit check put q8_0 back)
     cmd_picked = list(cmd)
+    for line in never_user_notes(cmd, env, a.plan_facts):
+        say(line, err=True)
     cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, list(argv) + user_extra, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
     if apply_cache_record(a, cmd, machine, ls, model, ctx, tuned) == 0:
         ncmoe, ub = arg_after(cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(cmd, "-ub", "--ubatch-size") or ub
@@ -5542,8 +5803,9 @@ def run_launch_plan(plan):
             return None
         if a.project and slotdir:
             write_server_id(slotdir, model, ctx, new)      # the retry runs with the f16 KV cache: server.id must say so
-        say(f"moe-cache: llama.cpp aborted at load with the {was} KV cache (ggml-impl.h fatal error: seen with stock llama-server b12064 on Granite 1B with q8_0, any context): "
-            "trying again once with the f16 KV cache (--exact does that from the start)", err=True)
+        # LAUNCHER-1222 (3): the 'fatal error' line just above comes from llama.cpp and reads like a crash of the whole start; say first that it is handled
+        say(f"moe-cache: the 'fatal error' line above came from llama.cpp at load; most likely it refused the {was} KV cache for this model (a known llama.cpp limit, seen on Granite 1B "
+            "with q8_0 at any context): starting again once with the f16 KV cache, nothing else changes; if that start fails too, the cause was something else (--exact starts with f16)", err=True)
         return new
     def tune_retry(rc, seen):
         """LAUNCHER-1045: llama-server stopped before it was ready with a plan the auto-tune picked (a stored pick is applied at every start, so a pick that fails once would fail

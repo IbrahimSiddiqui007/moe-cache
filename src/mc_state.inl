@@ -649,7 +649,10 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             }
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE")) {
-            route_mode = strcmp(v, "skip") == 0 ? 1 : (strcmp(v, "subst") == 0 ? 2 : 0);
+            route_mode = strcmp(v, "skip") == 0 ? 1 : 0;
+            if (strcmp(v, "subst") == 0) {      // removed (owner 2026-11-20): it put a different expert's weights in place of the picked one, with no quality gate
+                fprintf(stderr, "moe-cache: MOE_CACHE_ROUTE=subst was removed (it replaced a picked expert by a different one); routing stays exact. MOE_CACHE_ROUTE=skip is the remaining approximate mode\n");
+            }
         }
         if (const char * v = getenv("MOE_CACHE_FEWER")) {
             fewer = std::max(0, std::min(64, atoi(v)));

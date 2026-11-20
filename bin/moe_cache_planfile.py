@@ -10,6 +10,7 @@ File: <cache dir>/plans/port-<PORT>.json (next to the auto-tune picks in <cache 
 """
 import json
 import os
+import sys
 
 SCHEMA = 1
 SOURCES = ("probe", "measured", "constant", "user", "llama")
@@ -30,7 +31,19 @@ def _has(args, *names):
 def _row(name, value, source, why):
     if source not in SOURCES:
         raise ValueError(source)
-    return {"setting": name, "value": value, "source": source, "why": why}
+    return {"setting": name, "value": value, "source": source, "why": why, "class": _class(name)}
+
+
+def _class(name):
+    """LAUNCHER-1225 step 2: the setting's answer class (exact / placement / quality / input), planner/never_list.json; "unknown" when the table cannot be read."""
+    try:
+        here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "planner")
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import never_list
+        return never_list.answer_class(name)[0]
+    except Exception:
+        return "unknown"
 
 
 def build(plan):

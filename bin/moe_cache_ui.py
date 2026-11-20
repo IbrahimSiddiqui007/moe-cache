@@ -633,7 +633,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="default", agent=False,
         elif mode == "exact":
             R.append("exact (--exact): same output as plain llama.cpp, so no long-prompt mode, no q8_0 KV default and no MTP unless you set it; experts that are not in RAM are read from the SSD")
         else:
-            R.append("default: the launcher's own settings (long-prompt mode from 32k context when the card has room, q8_0 KV cache, MTP where the model has it); answers are not byte-identical to plain llama.cpp; experts that are not in RAM are read from the SSD")
+            R.append("default: the launcher's own settings (long-prompt mode from 32k context when the card has room, a q8_0 KV cache from 128k, for a dense model a q8_0 KV cache instead of f16 when the GPU is short (the 4-bit steps are off: --kv-4bit), MTP drafting in agent mode where the model has the head); answers are not byte-identical to plain llama.cpp; experts that are not in RAM are read from the SSD")
     if gpu_layers:
         R.append(f"{gpu_layers} of {layers} layers keep their experts on the GPU ({plan['free_vram_GiB']:.1f} GiB free VRAM)")
     elif out["kind"] != "stock" or plan["free_vram_GiB"] == 0:
@@ -896,7 +896,7 @@ def token_mode_status(plan, mtp_on, s):
     known = bool(env)
     kv = (plan.get("kv_k") or "").startswith("q8")
     on = {"kv8": kv, "long-prompt": str(plan.get("ub")) == "4096", "mtp": mtp_on,
-          "fast1": env.get("MOE_CACHE_ROUTE") in ("skip", "subst") if known else None, "fast2": (env.get("MOE_CACHE_ROUTE_DROP") == "4") if known else None,
+          "fast1": env.get("MOE_CACHE_ROUTE") == "skip" if known else None, "fast2": (env.get("MOE_CACHE_ROUTE_DROP") == "4") if known else None,
           "fewer": (int(env.get("MOE_CACHE_FEWER") or 0) > 0) if known else None, "approx-tiers": bool(s.get("approx"))}
     return [{"id": m["id"], "what": m["what"], "switch": m["switch"], "status": m["status"], "active": on.get(m["id"])} for m in ap.TOKEN_MODES]
 

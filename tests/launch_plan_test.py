@@ -240,6 +240,7 @@ class FakeMachine(mc.Machine):
     def ls_looked(self): return "(fake)"
     def ls_api(self, ls): return "3"
     def lib_api(self, lib): return "3"
+    def llama_candidates(self): return []                 # no other installed llama-server (the real search would read this computer's folders)
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], "preload"
     def vk_cache_cap(self, ls, model, listing=None): return None, None
     def free_vram_bytes(self): return self.free_mib * 2**20
@@ -318,6 +319,99 @@ def lib_env_test(model):
             if saved[4] is None:
                 os.environ.pop("MOE_CACHE_LIB", None)
             else:
+                os.environ["MOE_CACHE_LIB"] = saved[4]
+    return bad
+
+
+def api_mismatch_test(model):
+    """LAUNCHER-1224: a plugin build for another ggml backend API than llama-server (and no build that matches) gives a plan made for stock llama-server (no plugin
+    environment, engine stock, the advice printed); with --always-plugin / --fast / --hybrid the start stops with the advice. Matching APIs keep the plugin plan."""
+    bad = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in ("llama-server", "libggml-moe-cache.so"):
+            open(os.path.join(tmp, f), "w").close()
+        saved = (mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS, os.environ.get("MOE_CACHE_LIB"))
+        mc.CACHE_DIR = os.path.join(tmp, "cache"); mc.KEY_FILE = os.path.join(mc.CACHE_DIR, "api.key")
+        mc.WINDOWS = False
+        mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
+        os.environ.pop("MOE_CACHE_LIB", None)
+
+        def make(ls_api_, lib_api_):
+            class M(FakeMachine):
+                def ls_api(self, ls): return ls_api_
+                def lib_api(self, lib): return lib_api_
+            return M(tmp)
+
+        def plan(machine, *more, named=True):
+            a, extra, argv = mc.parse_server([model] + (["--llama-server", os.path.join(tmp, "llama-server")] if named else []) + ["--ram", "12", "--no-pin", "--plan-json", *more])
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    return mc.launch_plan(a, extra, argv, machine=machine, quiet=False), out.getvalue()
+            except SystemExit as e:
+                return None, str(e.code)
+        try:
+            p, txt = plan(make("3", "2"))
+            env = dict(p.env) if p else {}
+            checks = [(p is not None and p.engine == "stock" and not any(k.startswith("MOE_CACHE") or k == "LD_PRELOAD" for k in env) and "API 2" in txt and "API 3" in txt,
+                       "API 3 server, API 2 plugin: stock plan, no plugin environment, the advice printed")]
+            p2, txt2 = plan(make("3", "2"), "--always-plugin")
+            checks.append((p2 is None and "--always-plugin needs it" in txt2 and "ggml0.26" in txt2, "--always-plugin with the wrong build: stops with the advice"))
+            p3, txt3 = plan(make("3", "2"), "--fast")
+            checks.append((p3 is None and "--fast needs it" in txt3, "--fast with the wrong build: stops"))
+            p4, _ = plan(make("3", "3"))
+            checks.append((p4 is not None and p4.engine == "plugin", "matching APIs: the plugin plan is kept"))
+            p5, _ = plan(make(None, "2"))
+            checks.append((p5 is not None and p5.engine == "plugin", "server API unreadable: nothing assumed, plugin plan kept"))
+            # LAUNCHER-1224 follow-up: another installed server that a plugin build fits is used before the stock fall-back (two fake servers)
+            other = os.path.join(tmp, "kit", "llama", "llama-server"); os.makedirs(os.path.dirname(other)); open(other, "w").close()
+            lib2 = os.path.join(tmp, "libggml-moe-cache-api2.so"); open(lib2, "w").close()
+            class Two(FakeMachine):
+                def ls_api(self, ls): return "2" if ls == other else "3"
+                def lib_api(self, lib): return "2"
+                def pick_lib(self, ls): return lib2 if ls == other else os.path.join(self.tmp, "libggml-moe-cache.so")
+                def llama_candidates(self): return [other, os.path.join(self.tmp, "llama-server")]
+            p6, txt6 = plan(Two(tmp), named=False)          # found by the launcher's own search (no --llama-server given)
+            checks.append((p6 is not None and p6.engine == "plugin" and p6.cmd[0] == other and p6.lib == lib2 and "using " + other in txt6,
+                           f"two servers: the one a plugin build fits is used, plugin plan, one line says so ({p6 and p6.cmd[0]}, {p6 and p6.engine})"))
+            class TwoNone(Two):
+                def llama_candidates(self): return [os.path.join(self.tmp, "llama-server")]
+            p7, _ = plan(TwoNone(tmp), named=False)
+            p6b, txt6b = plan(Two(tmp))                      # critic of 59abd70: --llama-server on the command line, the same path the search finds: kept
+            checks.append((p6b is not None and p6b.engine == "stock" and p6b.cmd[0] != other and "--llama-server " + other in txt6b,
+                           "--llama-server given on the command line (same path as the search's): never switched away from, the line names the other server"))
+            asked = []
+            class TwoWin(Two):
+                windows = True
+                def nvidia_reports(self): return False
+                def win_dedicated_vram(self): return {}
+                def win_driver_version(self, name): return "1.0"
+                def list_devices(self, ls):
+                    asked.append(ls)
+                    return ("Available devices:\n  Vulkan0: New GPU (16304 MiB, 15000 MiB free)\n" if ls == other else "Available devices:\n  Vulkan0: Old GPU (8188 MiB, 2000 MiB free)\n")
+            mc.WINDOWS = True
+            try:
+                p9, txt9 = plan(TwoWin(tmp), named=False)
+            finally:
+                mc.WINDOWS = False
+            checks.append((p9 is not None and p9.cmd[0] == other and other in asked and "New GPU" in txt9 and
+                           any("New GPU" in l and "GiB free" in l for l in txt9.splitlines()[txt9.splitlines().index(next(l for l in txt9.splitlines() if "using " + other in l)):]),
+                           f"Windows: after the switch the device listing and the GPU pick are read from the new server ({[os.path.basename(os.path.dirname(x)) for x in asked]})"))
+            checks.append((p7 is not None and p7.engine == "stock", "no other matching server: the stock plan, as before"))
+            saved_def = mc.default_llama_server
+            mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "somewhere-else", "llama-server")      # the user named this server (not the launcher's find)
+            try:
+                p8, txt8 = plan(Two(tmp))
+            finally:
+                mc.default_llama_server = saved_def
+            checks.append((p8 is not None and p8.engine == "stock" and p8.cmd[0] != other and "--llama-server " + other in txt8,
+                           "a server the user named is kept: stock plan, the line names the matching server to use instead"))
+            for ok, what in checks:
+                print("  " + ("ok  " if ok else "FAIL") + " API mismatch: " + what)
+                bad += not ok
+        finally:
+            mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS = saved[:4]
+            if saved[4] is not None:
                 os.environ["MOE_CACHE_LIB"] = saved[4]
     return bad
 
@@ -438,7 +532,7 @@ def main():
             for cname, opts, extra in CASES:
                 results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
     fp = fingerprint(model)
-    inj_bad = injection_test(model) + lib_env_test(model) + leave_room_test(model) + page_test(model)
+    inj_bad = injection_test(model) + lib_env_test(model) + api_mismatch_test(model) + leave_room_test(model) + page_test(model)
     # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
     consistent_bad = 0
     with tempfile.TemporaryDirectory() as tmp:

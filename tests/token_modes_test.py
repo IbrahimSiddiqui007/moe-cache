@@ -19,8 +19,10 @@ def check(ok, what):
 # --- the table ---
 ids = [m["id"] for m in ax.TOKEN_MODES]
 check(len(ids) == len(set(ids)), "mode ids are unique")
-check(all(m["status"] in ("won", "lost", "unmeasured") and m["reason"] and m["what"] and m["switch"] for m in ax.TOKEN_MODES), "every row has a status (won / lost / unmeasured), a reason, a description and its switch")
-check(ax.default_ids() == ["kv8", "long-prompt", "mtp"], f"today's won rows: q8_0 KV from 128k, long-prompt from 32k, MTP in agent mode ({ax.default_ids()})")
+check(all(m["status"] in ("won", "kept", "lost", "unmeasured") and m["reason"] and m["what"] and m["switch"] for m in ax.TOKEN_MODES), "every row has a status (won / kept / lost / unmeasured), a reason, a description and its switch")
+check(all("failed" in m["reason"] and "owner" in m["reason"] and "approximate" in m["reason"] for m in ax.TOKEN_MODES if m["status"] == "kept"),
+      "a 'kept' row says it failed its gate, that the owner kept it, and that it is approximate")
+check(ax.default_ids() == ["kv8", "long-prompt", "mtp"], f"today's rows on by default: q8_0 KV from 128k, long-prompt from 32k, MTP in agent mode; the dense 4-bit KV steps are off since 2026-11-20 ({ax.default_ids()})")
 check(all(m["status"] == "lost" and "2026-11-09" in m["reason"] for m in ax.TOKEN_MODES if m["id"] in ("fast1", "fast2", "fewer", "approx-tiers")), "expert skipping and the tiers are marked lost with the 2026-11-09 screen as the reason, so off by default")
 
 def cmd(r):

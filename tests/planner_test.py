@@ -103,10 +103,16 @@ rc, out = dry_nolib("--ram", FIT, "--vram", "0.3")
 del os.environ["GGML_OP_OFFLOAD_MIN_BATCH"]
 check(rc == 0 and "GGML_OP_OFFLOAD_MIN_BATCH=512" not in out, "launcher stock: the user's GGML_OP_OFFLOAD_MIN_BATCH is kept")
 check("GGML_OP_OFFLOAD_MIN_BATCH" not in dry("--vram", "0.3"), "launcher plugin run: no GGML_OP_OFFLOAD_MIN_BATCH")
+# DECODE-1168: the threshold was measured for MoE stock runs with CPU expert layers only; a dense layer split (Qwen3.8-27B, laptop, 8.9k-token prompt: 173 tok/s with 512, 300 unset) never gets it
+import types, moe_cache as _mc
+_a = types.SimpleNamespace(stock=True, api_stock=None)
+_env, _ = _mc.stock_env_stage(_a, [], True, "28", 10e9, 30e9, "plugin", dense=False)
+check(("GGML_OP_OFFLOAD_MIN_BATCH", "512") in _env, "stock_env_stage: MoE with CPU expert layers -> GGML_OP_OFFLOAD_MIN_BATCH=512 (where it was measured)")
+_env, _ = _mc.stock_env_stage(_a, [], True, "28", 10e9, 30e9, "plugin", dense=True)
+check(not any(k == "GGML_OP_OFFLOAD_MIN_BATCH" for k, _ in _env), "stock_env_stage: dense layer split -> no GGML_OP_OFFLOAD_MIN_BATCH (DECODE-1168)")
 # plugin_for_partial_offload (v0.3.8): the model fits in RAM, then (a) every expert fits the GPU -> stock; (b) some expert layers stay on the CPU -> the plugin;
 # --stock, --cpu-only and MOE_CACHE_STOCK_WHEN_FITS=1 -> stock; the plugin library missing (above) -> stock without asking for it. Real plugin build, no --always-plugin.
 sys.path.insert(0, os.path.join(HERE, "bin"))
-import moe_cache as _mc
 def dry_lib(*extra, env_extra=None):
     env = dict(os.environ, MOE_CACHE_MAX_RAM_GB="0", **(env_extra or {}))
     env.setdefault("MOE_CACHE_LIB", os.path.join(HERE, "build", "libggml-moe-cache.so"))

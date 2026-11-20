@@ -510,11 +510,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 int64_t blk_changed = 0;                // picks this block changed: added to the current decode step below
                 std::vector<int32_t> eff((size_t) (n_used * n_tok));
                 for (int64_t t = 0; t < n_tok; t++) {
-                    std::vector<char> taken((size_t) t0.n_expert, 0);
                     for (int64_t u = 0; u < n_used; u++) {
                         const int32_t e = *(const int32_t *) ((const char *) ids->data + u * ids->nb[0] + t * ids->nb[1]);
                         eff[(size_t) (t * n_used + u)] = e;
-                        if (e >= 0 && e < (int32_t) taken.size()) taken[(size_t) e] = 1;
                     }
                     // B3: the lowest-ranked picks are given up whether or not they are in RAM (at least half of the picks always stay)
                     const int keep_fewer = s.fewer > 0 ? (int) std::max<int64_t>(n_used - s.fewer, (n_used + 1) / 2) : (int) n_used;
@@ -532,26 +530,10 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                         if (e < 0 || e >= (int32_t) t0.n_expert) continue;
                         s.route_considered++;
                         if (s.nodes[(size_t) (t0.node0 + e)].resident) continue;     // in RAM (or already being read): use it
-                        int32_t best = -1;
-                        if (s.route_mode == 2) {
-                            uint64_t best_epoch = 0;
-                            for (int32_t c = 0; c < (int32_t) t0.n_expert; c++) {
-                                const node_t & nd2 = s.nodes[(size_t) (t0.node0 + c)];
-                                if (!taken[(size_t) c] && nd2.resident && !nd2.loading && (best < 0 || (uint64_t) nd2.epoch > best_epoch)) {
-                                    best = c;
-                                    best_epoch = (uint64_t) nd2.epoch;
-                                }
-                            }
-                        }
+                        // skip only: the "subst" mode (a different resident expert in its place: wrong weights, no gate) was removed (owner 2026-11-20)
                         if (e < (int32_t) used.size() && used[(size_t) e] > 0) used[(size_t) e]--;
-                        eff[(size_t) (t * n_used + u)] = best;
-                        if (best >= 0) {
-                            taken[(size_t) best] = 1;
-                            if (best < (int32_t) used.size()) used[(size_t) best]++;
-                            s.route_substituted++;
-                        } else {
-                            s.route_skipped++;
-                        }
+                        eff[(size_t) (t * n_used + u)] = -1;
+                        s.route_skipped++;
                         blk_changed++;
                     }
                 }

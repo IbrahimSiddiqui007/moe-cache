@@ -56,7 +56,7 @@ Releases are normal (not pre-release) releases, so the `releases/latest/` addres
 | 2. Models | two or three models that fit this PC, from `pick`: size, whether they are already on the PC, the speed **only if it was measured on a PC like this one** (otherwise "not measured"), why | the number of the model (Enter = the first). Your own `.gguf` file: `--model FILE` |
 | 3. Getting the model | if it is not on the PC: the exact download command (`hf download ...`), the size and the folder | `y` runs that command (needs the `hf` tool: `pip install -U huggingface_hub`); anything else prints it and stops, you run it yourself. Disk too small: it says so and stops |
 | 4. Starting | | **1** the server in this window (Ctrl+C stops it), **2** on-demand: a small listener that loads the model on the first request and lets go of the memory when idle, **3** only print the commands. It waits until the model answers |
-| 5. Coding agents | the agents found on this PC (`hermes`, `opencode`, `claude`) | `y` per agent runs `connect NAME --write` (the old config is kept as `.bak`; Claude Code: this folder's `.claude/settings.local.json` only). Needs agent mode (answer 2 at "What for") |
+| 5. Coding agents | the agents found on this PC (`hermes`, `opencode`, `claude`) | in agent mode (answer 2 at "What for"): `y` per agent runs `connect NAME --write` (the old config is kept as `.bak`; Claude Code: this folder's `.claude/settings.local.json` only). In plain chat it connects nothing: it names the agents found and the command to start in agent mode, `moe-cache launch --agent`. With `--dry-run` or "only print the commands" it prints the `connect` command it would offer |
 
 A short session (typed answers after each question; `[...]` is trimmed output):
 
