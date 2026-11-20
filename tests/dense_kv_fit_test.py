@@ -96,42 +96,39 @@ with tempfile.TemporaryDirectory() as tmp:
     check(abs(kv8 / kv16 - 34 / 64) < 0.02 and abs(kv4 / kv16 - 18 / 64) < 0.02 and abs(kvx / kv16 - 52 / 128) < 0.02, "planner: bytes per value q8_0 34/32, q4_0 18/32, f16 2; the mix is K q8_0 + V q4_0 (ratios on the KV part)")
     check(gp.kv_bytes(model, ctx, "q8_0") == kv8 and gp.kv_bytes(model, ctx, "f16") == kv16 and gp.kv_bytes(model, ctx, ("q4_0", "q4_0")) == kv4, "planner: the type can also be given by name or as a pair")
     check(gp.kv_bytes(model, ctx, ("q4_0", "q8_0")) == gp.kv_bytes(model, ctx, ("q8_0", "q4_0")), "planner: K q4_0 / V q8_0 costs the same bytes as K q8_0 / V q4_0 (this model has equal K and V lengths)")
-    between8 = run((q8_need + mx_need) / 2)
+    between8 = run((q8_need + mx_need) / 2, ["--kv-4bit"])
     check("-ctk q8_0 -ctv q4_0" in cmd(between8) and "-c 8192" in cmd(between8), "dry run, q8_0/q8_0 would spill but K q8_0 / V q4_0 fits: that mix, the context stays")
     t8 = out(between8)
-    check("KV K q8_0 / V q4_0: q8_0 / q8_0 would spill by" in t8 and "this step saves" in t8 and "does not spill" in t8 and "94.6 %" in t8 and "measured on one laptop run, 27B" in t8 and "--exact keeps f16" in t8, "...and the plan line names the step, the spill and the GiB it saves")
+    check("KV K q8_0 / V q4_0: q8_0 / q8_0 would spill by" in t8 and "this step saves" in t8 and "does not spill" in t8 and "+0.003 to +0.006 KL" in t8 and "one run each" in t8 and "--exact keeps f16" in t8, "...and the plan line names the step, the spill, the GiB it saves and the quality cost")
     import re as _re
     sv = float(_re.search(r"this step saves ([0-9.]+) GiB", t8).group(1))
     check(abs(sv - (kv8 - kvx) / GIB) < 0.06, f"...the GiB saved is the KV difference to q8_0/q8_0 ({sv:.1f} vs {(kv8 - kvx) / GIB:.2f})")
-    between4 = run((mx_need + q4_need) / 2)
+    between4 = run((mx_need + q4_need) / 2, ["--kv-4bit"])
     check("-ctk q4_0 -ctv q4_0" in cmd(between4) and "-ctk q8_0 -ctv q4_0" not in cmd(between4) and "-c 8192" in cmd(between4), "dry run, the mix would spill too but q4_0/q4_0 fits: q4_0/q4_0, the context stays")
     t4 = out(between4)
-    check("KV q4_0 / q4_0: q8_0 / q8_0 would spill by" in t4 and "does not spill" in t4 and "92.9 %" in t4 and "measured on one laptop run, 27B" in t4 and "K q8_0 / V q4_0 would still spill by" in t4, "...and the plan line says why, by how much, and that the mix would still spill")
+    check("KV q4_0 / q4_0: q8_0 / q8_0 would spill by" in t4 and "does not spill" in t4 and "+0.022 to +0.040 KL" in t4 and "one run each" in t4 and "K q8_0 / V q4_0 would still spill by" in t4, "...and the plan line says why, by how much, and that the mix would still spill")
     check("runs from system RAM" not in t4 and "all on GPU" not in t4, "...with no 'runs from RAM' line")
-    still = run(q4_need / 2)
+    still = run(q4_need / 2, ["--kv-4bit"])
     check("-ctk q4_0 -ctv q4_0" in cmd(still) and "-c 8192" in cmd(still) and "is still" in out(still) and "system RAM" in out(still) and "all on GPU" not in out(still),
-          "dry run, not even q4_0/q4_0 fits: q4_0/q4_0, the context stays, the line says part runs from RAM (layers spill only after the last step)")
+          "dry run with --kv-4bit, not even q4_0/q4_0 fits: q4_0/q4_0, the context stays, the line says part runs from RAM (layers spill only after the last step)")
     q8ok = run((f16_need + q8_need) / 2)
     check("-ctk q8_0 -ctv q8_0" in cmd(q8ok) and "q4_0" not in cmd(q8ok), "dry run, q8_0/q8_0 fits: it stays the choice (q4_0 only when q8_0 would spill)")
-    # QUALITY-014: each smaller step follows its own TOKEN_MODES row; a row that is off ends the ladder at the step before
+    # owner 2026-11-20: the two 4-bit steps are off by default and come only with --kv-4bit (or your own -ctk/-ctv)
     import moe_cache_approx as ax
-    check(ax.token_mode("kv-k8v4")["gate"] == "kv" and ax.token_mode("kv-q4")["gate"] == "kv" and ax.default_on("kv-k8v4") and ax.default_on("kv-q4"),
-          "the two steps have their own rows, gate level kv, on today (won or kept by the owner's decision)")
-    saved_st = (ax.token_mode("kv-k8v4")["status"], ax.token_mode("kv-q4")["status"])
-    try:
-        ax.token_mode("kv-q4")["status"] = "lost"
-        off4 = run((mx_need + q4_need) / 2)
-        check("q4_0" not in cmd(off4) and "-ctk q8_0 -ctv q8_0" in cmd(off4) and "smaller KV steps are off" in out(off4) and "-c 8192" in cmd(off4),
-              "kv-q4 off: where only q4_0/q4_0 would fit, q8_0/q8_0 stays (spilling, said), the context stays")
-        check("-ctk q8_0 -ctv q4_0" in cmd(run((q8_need + mx_need) / 2)), "...the K q8_0 / V q4_0 step is not affected")
-        ax.token_mode("kv-k8v4")["status"] = "lost"; ax.token_mode("kv-q4")["status"] = saved_st[1]
-        offm = run((q8_need + mx_need) / 2)
-        check("-ctk q4_0 -ctv q4_0" in cmd(offm), "kv-k8v4 off: where the mix would fit, the ladder goes on to q4_0/q4_0 (its own row is on)")
-    finally:
-        ax.token_mode("kv-k8v4")["status"], ax.token_mode("kv-q4")["status"] = saved_st
-    ex4 = run((q8_need + mx_need) / 2, ["--exact"])
-    check("-ctk" not in cmd(ex4) and "q4_0" not in cmd(ex4), "dry run, --exact keeps f16 even where q8_0 would spill")
-    us8 = run((q8_need + mx_need) / 2, extra=["-ctk", "q8_0", "-ctv", "q8_0"])
+    check(ax.token_mode("kv-k8v4")["gate"] == "kv" and ax.token_mode("kv-q4")["gate"] == "kv" and not ax.default_on("kv-k8v4") and not ax.default_on("kv-q4")
+          and all("2026-11-20" in ax.token_mode(i)["reason"] and "--kv-4bit" in ax.token_mode(i)["switch"] for i in ("kv-k8v4", "kv-q4")),
+          "the two steps have their own rows, gate level kv, off today (owner 2026-11-20), switch --kv-4bit")
+    for need, what in (((q8_need + mx_need) / 2, "the mix would fit"), ((mx_need + q4_need) / 2, "only q4_0/q4_0 would fit"), (q4_need / 2, "nothing fits")):
+        d = run(need)
+        o = out(d)
+        check("q4_0" not in cmd(d) and "-ctk q8_0 -ctv q8_0" in cmd(d) and "-c 8192" in cmd(d) and "still spills" in o and "system RAM" in o and "--kv-4bit would store" in o
+              and "GiB less KV cache" in o and "quality cost" in o and "owner 2026-11-20" in o,
+              f"default, {what}: q8_0/q8_0 stays, the context stays, the line says part runs from RAM and what --kv-4bit would cost and gain")
+    check("-ctk q8_0 -ctv q4_0" in cmd(run((q8_need + mx_need) / 2, ["--kv-4bit"])) and "-ctk q4_0 -ctv q4_0" in cmd(run((mx_need + q4_need) / 2, ["--kv-4bit"])), "--kv-4bit brings both steps back")
+    sv_on = run((q8_need + mx_need) / 2, ["--kv-4bit"]); check("-ctk q8_0 -ctv q8_0" in cmd(run(q8_need + 0.01)) and "q4_0" not in cmd(run(q8_need + 0.01, ["--kv-4bit"])), "--kv-4bit changes nothing where q8_0/q8_0 fits")
+    ex4 = run((q8_need + mx_need) / 2, ["--exact", "--kv-4bit"])
+    check("-ctk" not in cmd(ex4) and "q4_0" not in cmd(ex4), "dry run, --exact keeps f16 even with --kv-4bit where q8_0 would spill")
+    us8 = run((q8_need + mx_need) / 2, extra=["--kv-4bit", "-ctk", "q8_0", "-ctv", "q8_0"])
     check(cmd(us8).count("-ctk") == 1 and "-ctk q8_0" in cmd(us8) and "q4_0" not in cmd(us8), "dry run, your own -ctk q8_0 stands (not changed)")
     usf = run((q8_need + mx_need) / 2, extra=["-ctk", "f16", "-ctv", "f16"])
     check(cmd(usf).count("-ctk") == 1 and "-ctk f16" in cmd(usf) and "q4_0" not in cmd(usf), "dry run, your own -ctk f16 stands")
@@ -180,8 +177,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check(kt(["-ctk", "q4_0", "-ctv", "q4_0"], True) == "q4_0" and kt(["-ctk", "q8_0"], False) == ("q8_0", "f16") and kt([], True) is True and kt([], False) is False
           and kt(["-ctk", "q8_0", "-ctv", "q4_0"], False) == ("q8_0", "q4_0") and kt(["-ctk", "q8_0", "-ctv", "q8_0"], False) is True and kt(["-ctk", "f16", "-ctv", "f16"], True) is False,
           "kv_plan_type: both types from the command (a missing one is f16), a pair for a mix, the launcher's flag when the command has none")
-    none = run(q8_need / 2)
-    check("-ctk q4_0" in cmd(none) and "-c 8192" in cmd(none) and "system RAM" in out(none) and "all on GPU" not in out(none), "dry run, q8_0 does not fit either: q4_0 (was q8_0), the context stays, says part runs from RAM, no 'all on GPU' line")
+    none = run(q8_need / 2, ["--kv-4bit"])
+    check("-ctk q4_0" in cmd(none) and "-c 8192" in cmd(none) and "system RAM" in out(none) and "all on GPU" not in out(none), "dry run with --kv-4bit, q8_0 does not fit either: q4_0, the context stays, says part runs from RAM, no 'all on GPU' line")
+    none_d = run(q8_need / 2)
+    check("-ctk q8_0 -ctv q8_0" in cmd(none_d) and "q4_0" not in cmd(none_d) and "-c 8192" in cmd(none_d) and "system RAM" in out(none_d) and "all on GPU" not in out(none_d), "dry run by default, q8_0 does not fit either: q8_0 stays, the context stays, says part runs from RAM")
     check("all on GPU" not in out(roomy) and "all on GPU" not in out(tight), "no 'all on GPU' line anywhere")
     # --- automatic best GPU (owner's choice: --device only to leave integrated GPUs out) ---
     listing = ("Available devices:\n  Vulkan0: AMD Radeon(TM) Graphics (24000 MiB, 23000 MiB free)\n  Vulkan1: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n")

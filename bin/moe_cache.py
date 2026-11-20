@@ -2535,6 +2535,7 @@ SERVER_HELP = """\
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
            the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
            llama.cpp's (against f16: KL 0.014-0.015, same top token in 94-95 % of positions, meaning kept in 10 of 10 checks at 55k). Not with --exact, --stock or your own --ub
+--kv-4bit        dense models: when the q8_0 KV cache would still spill the GPU, also try K q8_0 / V q4_0 and then q4_0 / q4_0 before moving layers to system RAM. Off by default (a quality cost, README); your own -ctk/-ctv win
 --no-long-prompt  turn the long-prompt mode off: -ub 2048 and the f16 KV cache, as before v0.3.8
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
@@ -2839,6 +2840,7 @@ def parse_server(argv):
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
     ap.add_argument("--long-prompt", action="store_true")      # long-prompt mode (v0.3.8): -ub 4096 + --fast=kv when the memory plan allows; since 2026-11-08 also the DEFAULT (see kv_stage); the flag asks for it at any context
+    ap.add_argument("--kv-4bit", dest="kv_4bit", action="store_true")      # opt in to the 4-bit KV steps (K q8_0 / V q4_0, then q4_0 / q4_0) of the dense ladder; off by default since 2026-11-20 (owner)
     ap.add_argument("--no-long-prompt", action="store_true")   # opt out of the default long-prompt mode: -ub 2048 and the f16 KV cache, as before v0.3.8
     ap.add_argument("--retune", action="store_true")    # LAUNCHER-994: measure the candidate plans again and replace the stored auto-tune pick (bin/moe_cache_autotune.py)
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
@@ -3681,6 +3683,8 @@ def kv_quantized(cmd):
     return bool(kv_plan_type(cmd, False))
 
 
+KV_4BIT_COST = ("floor-corrected on Qwen3-30B-A3B MoE, a different model, laptop, one run each: K q8_0 / V q4_0 +0.003 to +0.006 KL, q4_0 / q4_0 +0.022 to +0.040 KL (limit 0.015), same top token up to 5.8 points under f16; "
+               "the dense 27B is not measured with a floor")
 KV_K8V4 = ("q8_0", "q4_0")          # LAUNCHER-1063: K q8_0 / V q4_0 (laptop, 27B, against f16: top-1 94.6 % between q8/q8 96.5 % and q4/q4 92.9 %: K matters more than V)
 
 
@@ -4227,23 +4231,23 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         if pair and not pair[0]["fits"]:
             a.fast, a.dense_kv = "kv", True
             if not pair[1]["fits"]:
-                # LAUNCHER-1063 (owner 2026-11-10): f16 -> q8_0/q8_0 -> K q8_0 / V q4_0 -> q4_0/q4_0 -> only then layers to RAM; each step only when the one before would spill; never a
-                # shorter context; --exact and your own -ctk/-ctv are gated above. Laptop, 27B UD-Q3_K_XL, top-1 against f16: q8/q8 96.5 %, K q8/V q4 94.6 %, q4/q4 92.9 % (KL 0.173; no floor arm, see TOKEN_MODES; floor-corrected on Qwen3-30B-A3B q4/q4 +0.022 to +0.040 KL); PC, 27B 64k with the
-                # desktop on the card: decode 18.5 tok/s with q8_0 (spilling) against 27.8 with q4_0
+                # LAUNCHER-1063: f16 -> q8_0/q8_0 -> (only with --kv-4bit: K q8_0 / V q4_0 -> q4_0 / q4_0) -> layers to RAM; each step only when the one before would spill; never a shorter context;
+                # --exact and your own -ctk/-ctv are gated above. The two 4-bit steps were on by default from 2026-11-10; owner 2026-11-20: off (quality cost, floor-corrected on Qwen3-30B-A3B), reachable by --kv-4bit.
                 mixed, q4 = triple[2], triple[3]
                 over8 = pair[1]["over_gib"]
-                # QUALITY-014: each smaller step has its own TOKEN_MODES row (kv-k8v4, kv-q4); a row that is off ends the ladder at the step before (q8_0 / q8_0, spilling)
-                k8v4_on, q4_on = ax.default_on("kv-k8v4"), ax.default_on("kv-q4")
+                k8v4_on = ax.default_on("kv-k8v4") or getattr(a, "kv_4bit", False)
+                q4_on = ax.default_on("kv-q4") or getattr(a, "kv_4bit", False)
                 if not (k8v4_on and mixed["fits"]) and not q4_on:
-                    say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache; it still spills {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}): the smaller KV steps are off "
-                        "(TOKEN_MODES rows kv-k8v4 / kv-q4), so part of the model runs from system RAM; --exact keeps f16")
+                    say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache; it still spills {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}), so part of the model runs from system RAM; --exact keeps f16. "
+                        f"--kv-4bit would store the KV cache as K q8_0 / V q4_0 ({pair[1]['kv_gib'] - mixed['kv_gib']:.1f} GiB less KV cache, " + ("fits" if mixed["fits"] else f"still {mixed['over_gib']:.1f} GiB over") + ") or q4_0 / q4_0 "
+                        f"({pair[1]['kv_gib'] - q4['kv_gib']:.1f} GiB less, " + ("fits" if q4["fits"] else f"still {q4['over_gib']:.1f} GiB over") + f"), at a quality cost: {KV_4BIT_COST} (off by default, owner 2026-11-20)")
                     a.dense_kv_types = None
                 elif k8v4_on and mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
-                    quality = ("approximate, kept by the owner's decision: on the 27B UD-Q3_K_XL (8k windows of real chats; measured on one laptop run, 27B, no floor arm) same top token 94.6 % against f16, KL 0.109 (q8_0/q8_0: 96.5 %), partly the model's own noise; with that noise taken off, on Qwen3-30B-A3B (laptop, one run each) K q8_0 / V q4_0 costs +0.003 to +0.006 KL (Qwen3-30B-A3B MoE, a different model; the dense 27B is not measured with a floor))")
+                    quality = "approximate (--kv-4bit): " + KV_4BIT_COST
                 else:
                     a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
-                    quality = f"approximate, kept by the owner's decision: on the 27B UD-Q3_K_XL (8k windows of real chats; measured on one laptop run, 27B, no floor arm) same top token 92.9 % against f16, KL 0.173; with the model's own noise taken off, on Qwen3-30B-A3B (laptop, one run each; MoE, a different model, the dense 27B is not measured with a floor) q4_0 / q4_0 still costs +0.022 to +0.040 KL, over the 0.015 limit (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
+                    quality = "approximate (--kv-4bit): " + KV_4BIT_COST + (f"; K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB" if not mixed["fits"] else "")
                 if a.dense_kv_types:
                     saves = pair[1]["kv_gib"] - got["kv_gib"]
                     say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
