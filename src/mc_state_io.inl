@@ -101,10 +101,18 @@
         if (la_ecores) {
             if (const char * m = getenv("MOE_CACHE_ECORE_MASK")) {
                 DWORD_PTR set = 0;
+                int skipped = 0;
                 for (int c : mask_cpus(m)) {
                     if (c < 64) {
                         set |= (DWORD_PTR) 1 << c;
+                    } else {
+                        skipped++;
                     }
+                }
+                static bool noted = false;
+                if (skipped > 0 && !noted) {
+                    noted = true;       // one line, once: the mask named CPUs this thread cannot be pinned to (Windows processor group 0 only)
+                    fprintf(stderr, "moe-cache: note: CPUs at 64 and above in the efficiency-core mask are skipped (%d of them; Windows processor group 0 only)\n", skipped);
                 }
                 if (set) {
                     SetThreadAffinityMask(GetCurrentThread(), set);
@@ -611,6 +619,13 @@
                 fprintf(stderr, "moe-cache: of those, %llu ran on the second card %s (MOE_CACHE_GPU_DEV2)\n", (unsigned long long) gpu_alt_blocks.load(), ggml_backend_dev_name(gpu_dev2));
             }
         }
+        if (test_skip_pct >= 0) {       // TEST-1170: always printed (not only with MOE_CACHE_STATS): a timing run must say what it skipped
+            const uint64_t sk = test_skipped, co = test_computed;
+            fprintf(stderr, "moe-cache: TEST_SKIP_PCT=%d (timing test, output not valid): executor expert picks skipped %llu, computed %llu (%.1f%% skipped); "
+                    "executor ran %llu ops; CPU path %.2fs of %.2fs backend time (%.1f%%; backend only, not the whole token: the CPU expert share f is 1 - decode time at 100 %% / decode time at 0 %% across the arms)%s\n", test_skip_pct, (unsigned long long) sk,
+                    (unsigned long long) co, sk + co ? 100.0 * sk / (double) (sk + co) : 0.0, (unsigned long long) exec_ops.load(), ns_cpu / 1e9, ns_total / 1e9,
+                    ns_total ? 100.0 * ns_cpu / (double) ns_total : 0.0, sk + co ? "" : " -- NOTHING reached the executor, nothing was skipped");
+        }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
             if (read_fallbacks) {
@@ -700,7 +715,7 @@
                     classlru ? (" | policy classlru (" + std::to_string(nclass) + " classes, half-life " + std::to_string((int) classlru_hl) + " tokens): promotions " +
                                 std::to_string(cls_promotions) + ", demotions " + std::to_string(cls_demotions)).c_str() : "",
                     rb_on ? rb_summary().c_str() : "",
-                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows)).c_str() : "");
+                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows) + (live_keep ? ", live-follow shrinks " + std::to_string(live_shrinks) + ", grows " + std::to_string(live_grows) : std::string())).c_str() : "");
         }
     }
 

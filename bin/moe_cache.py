@@ -253,6 +253,14 @@ def find_llama_server(saved=None):
     return res
 
 
+def planner_path():
+    """Idea 28: the planner import path, inserted only when missing — every stage used to do its own sys.path.insert, so a long-lived process's sys.path grew one duplicate entry per stage."""
+    p = os.path.join(HERE, "planner")
+    if p not in sys.path:
+        sys.path.insert(0, p)
+    return p
+
+
 def default_llama_server(refresh=False):
     """llama-server when --llama-server is not given (see find_llama_server; kept per process, refresh=True looks again). When nothing is found:
     LLAMA_SERVER as set, else plain "llama-server" (the callers then say it is missing and where this looked: ls_looked())."""
@@ -399,8 +407,30 @@ def ggml_api_in_dll(data):
     return ggml_api_of(*max(v for v, _ in found)) if found else None
 
 
+def _file_id(p):
+    """(mtime_ns, size) of a file for memo keys; None when it cannot be stat'd."""
+    try:
+        st = os.stat(p)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+_LS_API_CACHE, _LIB_API_CACHE = {}, {}       # (resolved path, mtime, size) -> answer; ls_api runs ldd (a process) and lib_api reads the whole library, several times per launch.
+# ls_api is keyed on llama-server's own file only: a libggml-base swapped underneath an unchanged llama-server is not noticed until the launcher restarts (finding the library needs ldd, which is what the memo avoids)
+
+
 def ls_api(ls):
     """Backend API of the ggml this llama-server uses, from its libggml-base version (0.24-0.25 -> 2, 0.26 and newer -> 3); None when unknown."""
+    key = (ls, _file_id(ls))
+    if key in _LS_API_CACHE:
+        return _LS_API_CACHE[key]
+    api = _ls_api(ls)
+    _LS_API_CACHE[key] = api
+    return api
+
+
+def _ls_api(ls):
     if WINDOWS:
         # no ldd there (the warning never fired on the Claw): ggml-base.dll next to llama-server.exe holds its version as a plain string ("0.27.0")
         try:
@@ -420,11 +450,16 @@ def ls_api(ls):
 
 def lib_api(lib):
     """API a plugin build was made for (a plain string inside the library); None for builds from before 0.2.3."""
+    key = (lib, _file_id(lib))
+    if key in _LIB_API_CACHE:
+        return _LIB_API_CACHE[key]
     try:
         m = re.search(rb"moe-cache-api=(\d+)", open(lib, "rb").read())
-        return m.group(1).decode() if m else None
+        api = m.group(1).decode() if m else None
     except OSError:
-        return None
+        api = None
+    _LIB_API_CACHE[key] = api
+    return api
 
 
 def default_lib():
@@ -711,77 +746,10 @@ def nvidia_reports():
         return False
 
 def vk_tensor_limits():
-    """[(device name, largest tensor in bytes)] for each Vulkan GPU, read from the Vulkan loader (vulkan-1.dll / libvulkan.so.1) as ggml-vulkan
-    reads it: the largest buffer (maxBufferSize with maintenance4, else maxMemoryAllocationSize) and maxStorageBufferRange. ggml-vulkan's
-    supports_op rejects a bigger tensor (the range is skipped only with VK_EXT_shader_64bit_indexing, which depends on how llama.cpp was built,
-    so both count here). GGML_VK_FORCE_MAX_BUFFER_SIZE overrides the buffer size as in ggml. [] when there is no Vulkan loader or GPU."""
-    import ctypes
-    try:
-        vk = ctypes.WinDLL("vulkan-1.dll") if WINDOWS else ctypes.CDLL("libvulkan.so.1")
-    except OSError:
-        return []
-    VP, U32, U64 = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint64
-
-    class AppInfo(ctypes.Structure):
-        _fields_ = [("sType", U32), ("pNext", VP), ("pApplicationName", ctypes.c_char_p), ("applicationVersion", U32),
-                    ("pEngineName", ctypes.c_char_p), ("engineVersion", U32), ("apiVersion", U32)]
-
-    class InstInfo(ctypes.Structure):
-        _fields_ = [("sType", U32), ("pNext", VP), ("flags", U32), ("pApplicationInfo", ctypes.POINTER(AppInfo)), ("enabledLayerCount", U32),
-                    ("ppEnabledLayerNames", VP), ("enabledExtensionCount", U32), ("ppEnabledExtensionNames", VP)]
-
-    class Maint(ctypes.Structure):          # VkPhysicalDeviceMaintenance3Properties / ...Maintenance4Properties share the head
-        _fields_ = [("sType", U32), ("pNext", VP), ("a", U32), ("b", U64)]
-
-    class Ext(ctypes.Structure):
-        _fields_ = [("extensionName", ctypes.c_char * 256), ("specVersion", U32)]
-
-    vk.vkGetInstanceProcAddr.restype = VP
-    vk.vkGetInstanceProcAddr.argtypes = [VP, ctypes.c_char_p]
-    app = AppInfo(0, None, b"moe-cache", 1, b"moe-cache", 1, (1 << 22) | (1 << 12))      # VK_API_VERSION_1_1
-    info = InstInfo(1, None, 0, ctypes.pointer(app), 0, None, 0, None)
-    inst = VP()
-    create = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.POINTER(InstInfo), VP, ctypes.POINTER(VP))(vk.vkGetInstanceProcAddr(None, b"vkCreateInstance"))
-    if create(ctypes.byref(info), None, ctypes.byref(inst)) != 0:
-        return []
-    fn = lambda name, *args: ctypes.CFUNCTYPE(ctypes.c_int, *args)(vk.vkGetInstanceProcAddr(inst, name))
-    out = []
-    try:
-        enum = fn(b"vkEnumeratePhysicalDevices", VP, ctypes.POINTER(U32), VP)
-        props2 = fn(b"vkGetPhysicalDeviceProperties2", VP, VP)
-        exts = fn(b"vkEnumerateDeviceExtensionProperties", VP, ctypes.c_char_p, ctypes.POINTER(U32), VP)
-        destroy = ctypes.CFUNCTYPE(None, VP, VP)(vk.vkGetInstanceProcAddr(inst, b"vkDestroyInstance"))
-        n = U32(0)
-        enum(inst, ctypes.byref(n), None)
-        devs = (VP * n.value)()
-        enum(inst, ctypes.byref(n), devs)
-        for d in devs[:n.value]:
-            ne = U32(0)
-            exts(d, None, ctypes.byref(ne), None)
-            el = (Ext * ne.value)()
-            exts(d, None, ctypes.byref(ne), el)
-            names = {e.extensionName.decode(errors="replace") for e in el[:ne.value]}
-            m4, m3 = Maint(1000413001, None), Maint(1000168000, None)        # MAINTENANCE_4_PROPERTIES, MAINTENANCE_3_PROPERTIES
-            # VkPhysicalDeviceProperties2: sType, pNext, then VkPhysicalDeviceProperties (824 bytes) at offset 16
-            buf = (ctypes.c_ubyte * 1024)()
-            ctypes.memmove(buf, ctypes.byref(U32(1000059001)), 4)                # PHYSICAL_DEVICE_PROPERTIES_2
-            ctypes.memmove(ctypes.addressof(buf) + 8, ctypes.byref(VP(ctypes.addressof(m3))), ctypes.sizeof(VP))
-            props2(d, buf)                     # first without maintenance4: it may only be chained when the device has it
-            api = U32.from_buffer(buf, 16).value
-            if api >= (1 << 22) | (3 << 12) or "VK_KHR_maintenance4" in names:
-                m3.pNext = ctypes.addressof(m4)
-                props2(d, buf)
-            dev_type = U32.from_buffer(buf, 16 + 16).value                 # VkPhysicalDeviceType: 1 integrated, 2 discrete, 3 virtual, 4 CPU
-            name = bytes(buf[36:36 + 256]).split(b"\0")[0].decode(errors="replace")
-            ssbo = U32.from_buffer(buf, 16 + 296 + 28).value                 # limits (offset 296) .maxStorageBufferRange (8th uint32)
-            big = int(os.environ["GGML_VK_FORCE_MAX_BUFFER_SIZE"]) if os.environ.get("GGML_VK_FORCE_MAX_BUFFER_SIZE", "").isdigit() else \
-                (m4.b if m4.b else m3.b)
-            if dev_type in (1, 2, 3) and big and ssbo:
-                out.append((name, min(big, ssbo)))
-        destroy(inst, None)
-    except Exception:
-        pass
-    return out
+    """[(device name, largest tensor in bytes)] per Vulkan GPU — the probe itself lives in moe_cache_vkprobe.py: the crash-isolation
+    child imports that ~80-line module instead of this whole launcher (it used to re-import 7,000 lines for one function, ~0.3-0.5 s per launch)."""
+    import moe_cache_vkprobe
+    return moe_cache_vkprobe.vk_tensor_limits()
 
 
 def vk_cache_cap(ls, model, listing=None):
@@ -794,7 +762,7 @@ def vk_cache_cap(ls, model, listing=None):
     if not vkdevs:
         return None, None
     try:
-        r = subprocess.run([python_cmd(), "-c", "import json, sys; sys.path.insert(0, sys.argv[1]); import moe_cache as m; print(json.dumps(m.vk_tensor_limits()))",
+        r = subprocess.run([python_cmd(), "-c", "import json, sys; sys.path.insert(0, sys.argv[1]); import moe_cache_vkprobe as m; print(json.dumps(m.vk_tensor_limits()))",
                             os.path.join(HERE, "bin")], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
                            creationflags=0x08000000 if WINDOWS else 0)          # CREATE_NO_WINDOW: no console flash under pythonw
         lim = json.loads(r.stdout.strip().splitlines()[-1])
@@ -803,7 +771,7 @@ def vk_cache_cap(ls, model, listing=None):
     match = [b for n, b in lim if n.strip() in vkdevs] or [b for n, b in lim]     # the listed devices by name, else all
     if not match:
         return None, None
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     from gguf_plan import gpu_cache_cap_mib
     return gpu_cache_cap_mib(model, min(match)), min(match)
 
@@ -863,13 +831,25 @@ def hip_missing_hint(ls, listing, windows=None, find=None, names=None):
             + ": llama.cpp then loads the backend without a device")
 
 
-def list_devices(ls):
+_LIST_DEVICES_CACHE = {}    # ls -> (time, output) — every plan stage asked for the device list again, each one a full `--list-devices` spawn (1-10 s per launch on a Vulkan box)
+
+
+def list_devices(ls, ttl=60.0):
+    """ the `--list-devices` text of this llama-server, memoized for `ttl` seconds: one spawn per launch instead of one per stage.
+    A failed or empty run is not cached: a server still unpacking may answer nothing once and fine the next time."""
+    hit = _LIST_DEVICES_CACHE.get(ls)
+    now = time.time()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
     try:
         out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
                              env=dict(os.environ, **dict(sycl_sysman_env(ls))))
-        return out.stdout + out.stderr
+        text = out.stdout + out.stderr
     except Exception:
         return ""
+    if text:
+        _LIST_DEVICES_CACHE[ls] = (now, text)
+    return text
 
 def parse_core_records(buf, groups=None):
     """Cores from a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: [(efficiency_class, [logical CPUs])], processor group 0 only
@@ -1022,7 +1002,7 @@ def mem_cap():
     if v is not None:
         try:
             f = float(leading_number(v))
-            if f == f and f >= 0:            # not nan
+            if math.isfinite(f) and f >= 0:            # not nan, not inf (review finding 21: inf silently switched the cap off)
                 return f * 1e9 if f > 0 else None
         except ValueError:
             pass
@@ -1103,6 +1083,17 @@ def parse_cpus(text):
             out += range(int(a), int(b) + 1)
         elif part:
             out.append(int(part))
+    return out
+
+
+def split_equals_flags(extra):
+    """Review finding 1/2: the checks on the flags after `--` (arg_after, -ngl, --cache-ram, --host ...) compare whole tokens, so `--host=0.0.0.0` was invisible to them
+    (the bind gate and the forced API key were skipped). Splits `--name=value` (long flags only) into `--name value`, once, where the arguments after `--` are read;
+    every later check and the command llama-server gets then see one form. Short flags (-c=1) are left alone. Known limit: a VALUE that itself looks like `--name=text` (e.g. `-r "--stop=1"`) would be split too; llama.cpp takes such a value only after its flag, which is rare."""
+    out = []
+    for x in extra:
+        m = re.match(r"^(--[A-Za-z][A-Za-z0-9-]*)=(.*)$", x, re.S)
+        out += [m.group(1), m.group(2)] if m else [x]
     return out
 
 
@@ -1403,6 +1394,27 @@ def gb_arg(s):
     return s
 
 
+def max_ram_arg(s):
+    """--max-ram: 0 (any spelling: 0, 0.0, 0.00) = no cap, else the same check as --ram (review finding 21)."""
+    try:
+        if float(s) == 0:
+            return "0"
+    except ValueError:
+        pass
+    return gb_arg(s)
+
+
+def port_arg(s):
+    """argparse check for --port: 1-65535 (review finding 22: 0 and 70000 reached llama-server and died with a raw bind error)."""
+    try:
+        v = int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a port number: {s!r}")
+    if not 1 <= v <= 65535:
+        raise argparse.ArgumentTypeError(f"a port is 1-65535: {s!r}")
+    return v
+
+
 def take_api_key_from_args(extra):
     """Remove a user-given `--api-key KEY` from llama-server's arguments (it would show in the process list) and return KEY, else None."""
     for i, x in enumerate(extra):
@@ -1582,7 +1594,7 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
     if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is not None:
         return []
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import model_key
         if not (model_key(model) or "").startswith("qwen4exp"):
             return []
@@ -1610,7 +1622,7 @@ MTP_DENSE_WHY = ("a dense model runs every layer for every token, and MTP measur
 def is_dense_model(path):
     """True for a dense model (no expert layers), from the GGUF header; False when the header cannot be read (the MoE rule then applies)."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import model_layout
         lay = model_layout(path)
         return not lay["n_layers"] or not lay["expert_bytes_per_layer"]
@@ -1699,7 +1711,7 @@ def sampling_args(off, agent, model, extra):
     if off:
         return []
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import sampling_meta
         args, why = sampling_decide(sampling_meta(model), model, extra, agent)
     except Exception:
@@ -1718,7 +1730,7 @@ def mtp_args(want, agent, ls, model, extra, exact=False, dense=None):
     import moe_cache_approx as ax
     agent = agent and ax.default_on("mtp")          # the default-on in agent mode follows the table; --mtp still asks for it
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import mtp_layers
         head, declared = mtp_layers(model)
     except Exception as e:
@@ -1981,7 +1993,7 @@ def cache_record_ident(a, machine, ls, model):
     try:
         if not load_record_on() or getattr(a, "vram_user", a.vram):
             return None
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         import load_record as lr
         gid = (machine.gpu_identity() if hasattr(machine, "gpu_identity") else "") or getattr(a, "plan_gpu_ident", "")
         build, mid = lr.build_id(ls), lr.model_id(model)
@@ -2164,7 +2176,7 @@ def start_commit_guard(p, env, say_fn=None, probe=None, loading=None):
     Linux 1 GB) llama-server is stopped cleanly and the reason said, before the system starts killing programs. Windows stops by default; Linux only warns unless
     MOE_CACHE_COMMIT_GUARD=stop (the Linux line is not measured). =warn only warns, =off is off.
     Returns the guard (its .stopped holds the reason after a stop) or None."""
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     import commit_guard as cgd
     asked = env.get("MOE_CACHE_COMMIT_GUARD", os.environ.get("MOE_CACHE_COMMIT_GUARD"))
     mode = cgd.parse_mode(asked if asked else ("stop" if WINDOWS else "warn"))      # Linux warns only until the 1 GiB MemAvailable line is measured on real loads
@@ -2237,7 +2249,7 @@ def start_ram_note(p, env, say_fn=None, probe=None):
     why the desktop got slow (other programs paged out). Read-only, rate limited (30 min), MOE_CACHE_RAM_NOTE=0 turns it off. Returns the note or None."""
     if env.get("MOE_CACHE_RAM_NOTE", os.environ.get("MOE_CACHE_RAM_NOTE", "")) == "0":
         return None
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     import commit_guard as cgd
     n = cgd.RamNote(probe or (lambda: ram_note_probe(p.pid)), say_fn or (lambda m: say(m, err=True)))
     n.start(lambda: p.poll() is None)
@@ -2288,7 +2300,7 @@ def load_recorder_for(a, plan_cmd, machine, ls, model, ctx, engine):
     real start and for the auto-tune's probe loads (follow-up 2: a probe is a load like any other)."""
     if not load_record_on() or getattr(a, "vram_user", a.vram) or arg_after(plan_cmd, "--n-cpu-moe", "-ncmoe") is None:
         return None
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     import load_record as lr
     from gguf_plan import model_layout, gpu_expert_bytes
     gid = (machine.gpu_identity() if hasattr(machine, "gpu_identity") else "") or getattr(a, "plan_gpu_ident", "")
@@ -2358,7 +2370,7 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
     p = subprocess.Popen(cmd, **kw)
     if env.get("MOE_CACHE_GPU_MEM_LOG", "") not in ("", "0"):         # R2-06, default off: dedicated / shared GPU memory of llama-server, once a second
         try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            planner_path()
             from gguf_plan import start_gpu_mem_log
             start_gpu_mem_log(p.pid, lambda m: say(m, err=True), WINDOWS, env, lambda: p.poll() is None)
         except Exception:
@@ -2386,7 +2398,7 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
         pass
     def pump():
         out = getattr(sys.stderr, "buffer", None)
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from load_record import LineFilter
         shown = LineFilter()
         for line in iter(p.stderr.readline, b""):
@@ -2635,6 +2647,8 @@ class Machine:
     def physical_cores(self): return physical_cores()
     def mem_cap(self): return mem_cap()
     def mem_for_server(self, ram_gb): return mem_for_server(ram_gb)
+    def cgroup_limit(self): return cgroup_mem_limit()
+    def mem_available(self): return _mem_for_server(None)      # the RAM available now, not clipped at mem_cap() (the reserve is taken once, in ram_cap_decision)
     def win_memory(self): return win_memory()
     def win_commit(self): return win_commit()
     def win_dedicated_vram(self): return win_dedicated_vram()
@@ -2661,23 +2675,23 @@ class Machine:
     def gpu_process_text(self): return win_gpu_process_text()       # LAUNCHER-1133
 
     def free_vram_bytes(self):
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import free_vram_bytes
         return free_vram_bytes()
 
     def free_vram_source(self):
         """Where free_vram_bytes' last figure came from: "nvidia-smi", "amd-sysfs" or None."""
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         import gguf_plan
         return gguf_plan.LAST_FREE_SOURCE[0]
 
     def gpu_identity(self):
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import gpu_identity
         return gpu_identity()
 
     def gpu_total_free_bytes(self):
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import gpu_total_free_bytes
         return gpu_total_free_bytes()
 
@@ -2799,8 +2813,8 @@ def parse_server(argv):
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model", nargs="?", help="the .gguf file (leave out to use the one `moe_cache.py pick --apply` chose)")
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
-    ap.add_argument("--max-ram", type=lambda v: "0" if v.strip() in ("0", "0.0") else gb_arg(v))    # 0 = no cap (the help says so; gb_arg refused it)
-    ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--max-ram", type=max_ram_arg)    # 0 = no cap (the help says so; gb_arg refused it)
+    ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=port_arg, default=8080)
     ap.add_argument("--llama-server", default=default_llama_server())
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default=""); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
@@ -2837,7 +2851,7 @@ def parse_server(argv):
     ap.add_argument("--plan-json", action="store_true")      # print the launch plan as JSON (argv, environment, reasons, warnings) and exit; nothing is started
     extra = []
     if "--" in argv:
-        i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
+        i = argv.index("--"); argv, extra = argv[:i], split_equals_flags(argv[i + 1:])
     a = ap.parse_args(fast_levels_only(argv))
     return a, extra, argv
 
@@ -3049,7 +3063,7 @@ def vision_dense_start(a, extra, model, stock, size, avail):
     """Two jobs. (1) --mmproj (PROTOTYPE, MM6): find the projector (`--mmproj auto` or a file), pass it to llama-server, count its size in the RAM decision
     (added to the model's size) and report it for the VRAM plan. (2) Every launch (LAUNCHER-732): read the GGUF header and detect a dense model (no experts), which gets
     the dense route. Returns (mmproj file, its bytes, dense, stock, size)."""
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     mm, mmb = None, 0
     if a.mmproj:
         have = arg_after(extra, "--mmproj", "-mm")
@@ -3130,7 +3144,7 @@ def multi_gpu_start(a, extra, machine, ls, listing, vram_user, win):
     """--multi-gpu, first half (PROTOTYPE): read the cards and, when the planner will be asked for one card's number anyway, make that the card the launcher
     names (MG4: the planner took line 0 of nvidia-smi, the launcher's pick_gpu the card with most free memory). Returns the facts for multi_gpu_apply."""
     say("moe-cache: --multi-gpu is a PROTOTYPE: planned from the device list, not speed-tested on a machine with two discrete GPUs (docs/PLATFORMS.md)")
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     import multigpu
     listing = listing if listing is not None else machine.list_devices(ls)
     cards = multigpu.list_cards(listing, machine.win_dedicated_vram() if win else None)
@@ -3246,7 +3260,7 @@ def plan_placement(a, model, ctx, ncmoe, machine):
     ncmoe: --n-cpu-moe as the user gave it (None: the tuner decides; "999" stands in until it does). Returns (n_cpu_moe as text, the planner's answer as a dict or None, why it failed or None)."""
     planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
     if ncmoe is None:
-        ram_gib = float(f"{(avail_reserve_gib(a, machine) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None      # the planner plans with the capped memory too
+        ram_gib = float(f"{(avail_reserve_gib(a, machine, model=model) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None      # the planner plans with the capped memory too
         vram_gib = float(a.vram) if a.vram else None
         try:
             planner_info = machine.planner_answer(model, ctx, ram_gib, vram_gib)
@@ -3269,7 +3283,7 @@ def gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None, say_leave=None):
     growth reserve (ROOM_RESERVE_MIB): dropping it (follow-up 4) is HELD for the owner (decision (b)); a --gpu-margin is the user's number and stays as given, --leave-room
     keeps its 2 GB in all (the room's own reserve counts toward them). say_desk / say_leave: called with the line about the desk reserve / --leave-room's reserve (None: not said).
     Returns {"free": bytes or None, "kw": the tune() arguments reserve_gb / free_source, "desk_kw": GB the desktop forced or None, "use_room": bool}."""
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
     if mm_bytes and free:
         free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
@@ -3326,7 +3340,7 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
     if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
         try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            planner_path()
             from gguf_plan import tune
             inp = gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None if getattr(a, "lp_retune", False) else say, say_leave=say)
             free, kw, desk_kw, use_room = inp["free"], inp["kw"], inp["desk_kw"], inp["use_room"]
@@ -3351,9 +3365,11 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
             try:            # the walk's limit never costs the placement (critic F3)
                 a.walk_floor = walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=bool(getattr(machine, "windows", False)), use_room=use_room)
-            except Exception:
+            except Exception as e:
+                say(f"moe-cache: the autotune walk-floor could not be computed ({type(e).__name__}: {e}): continuing without it", err=True)       # a bug here must not be invisible
                 a.walk_floor = None
-        except Exception:
+        except Exception as e:
+            say(f"moe-cache: the model header or GPU plan is unreadable, so every expert stays on the CPU ({type(e).__name__}: {e})", err=True)      # the fallback stays, the reason is no longer silent
             tuned = None
     return tuned, desk_kw, ub_asked
 
@@ -3392,7 +3408,7 @@ def measured_loads(a, ls, model, ctx, kv_q8, machine, plugin, mtp, ub_asked=None
     if not load_record_on() or getattr(a, "vram_user", a.vram):
         return {}
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         import load_record as lr
         if not os.path.isfile(lr.store_path(CACHE_DIR)):
             return {}                           # nothing recorded yet on this machine: no GPU name asked for
@@ -3508,7 +3524,7 @@ def win_gpu_process_text():
     now = time.monotonic()
     if _GPU_PROC[1] and now - _GPU_PROC[0] < GPU_PROC_TTL_S:
         return _GPU_PROC[1]
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     from gguf_plan import counters_text
     text = counters_text()
     if text:
@@ -3522,7 +3538,7 @@ def real_room_stage(a, g, machine):
     Sets a.room_gib = the card's size minus the other programs' dedicated use minus a reserve when that is smaller than the driver's figure (the dense fit plans against it) and a.room_used_gib
     (what the desk reserve counts as used). The counters unreadable: the driver's figure as before, said in one line. Never raises."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import others_dedicated_mib, real_room_mib, ROOM_RESERVE_MIB
         total, driver = float(g[3]), float(g[2])
         others = others_dedicated_mib(machine.gpu_process_text())
@@ -3595,7 +3611,7 @@ def dense_fit_free(a, machine):
     """(free GPU bytes, gap in GiB) for the dense fit estimate: --vram or the figure llama-server's own --list-devices gave (Windows AMD / Intel; no gap) else nvidia-smi / sysfs
     (SMI_GAP_GIB too high, see planner/gguf_plan.py); (None, 0) without a GPU figure."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import SMI_GAP_GIB
         if a.vram:
             room = getattr(a, "room_gib", None)           # LAUNCHER-1133: the room the card really gives (gpu_stage; never set for the user's own --vram)
@@ -3677,7 +3693,7 @@ def load_mode_cache_none(a, cmd, extra, machine, model, cram):
     2 runs with it, 1 without): prompt +14-20 %, decode +8-11 %; llama.cpp itself warns that mmap is slow with CPU-side experts. `none` copies the whole file into private RAM, so only when the
     file plus the prompt cache (`cram` MiB) plus the reserve fit the server's RAM; the reserve is the one load_mode_low_ram uses (the larger of 4 GiB and what the machine keeps free).
     Not for --exact / --stock, -ot, a load flag of your own, or a cache flag you passed yourself after --. Returns the plain note, or None."""
-    if a.exact or a.stock or "-ot" in cmd or any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
+    if a.exact or a.stock or ("-ot" in cmd or "--override-tensor" in cmd) or any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
     try:
         size = os.path.getsize(model)
@@ -3688,7 +3704,7 @@ def load_mode_cache_none(a, cmd, extra, machine, model, cram):
     if not size or not avail:
         return None
     margin = max(LOAD_MODE_RAM_MARGIN_GIB, (total - cap) / 2**30 if total and cap and total > cap else 0.0)
-    need = size / 2**30 + (int(cram) / 1024 if str(cram).isdigit() else 0.0) + margin
+    need = size / 2**30 + cram_gib(cram, 0.0) + margin
     if need > avail / 2**30:
         return None
     return (f"GPU expert cache: the {size / 2**30:.1f} GiB model fits the {avail / 2**30:.1f} GiB of RAM this server may use (with the prompt cache and a {margin:.1f} GiB reserve): "
@@ -3699,7 +3715,7 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
     """LAUNCHER-1068: Windows, a dense model that fits fully on the GPU (the LAUNCHER-982 estimate, not --fit spilling, no -ot) loads with `--load-mode none`: the default mmap load
     spiked used RAM by ~12 GB for Qwen3.8-27B on the PC (2026-11-10), `--load-mode none` added 2-6 GB and was ready in under a minute. Returns the plain note, or None (mmap stays):
     Linux, --exact / --stock, a layout that spills to RAM (mmap keeps those weights file-backed), an unknown fit, or a load flag of your own (--load-mode / -lm / --mmap / --no-mmap / --mlock)."""
-    if not machine.windows or a.exact or a.stock or not pair or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0":
+    if not machine.windows or a.exact or a.stock or not pair or ("-ot" in cmd or "--override-tensor" in cmd) or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0":
         return None
     if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
@@ -3714,6 +3730,53 @@ LOAD_MODE_RAM_MARGIN_GIB = 4.0
 LOAD_MODE_SMALL_SPILL_GIB = 3.0      # the part of a dense model that stays in RAM (planner) up to which the GPU takes "almost all" of it
 
 
+def mmap_working_set_short(size_gib, avail_gib, cram_gib, margin_gib):
+    """True when a memory-mapped load leaves less than the reserve: the whole file (every page it reads, also the part that stays in RAM) enters the working set, plus the prompt cache
+    (`--cache-ram`), against the RAM available to the server. Pure; GiB in, bool out."""
+    return avail_gib - size_gib - cram_gib < margin_gib
+
+
+LLAMA_PROMPT_CACHE_GIB = 8.0      # llama-server's own --cache-ram default (and what -1, "no limit", is counted as: a floor, the real use can be larger)
+
+
+def cram_gib(v, absent=LLAMA_PROMPT_CACHE_GIB):
+    """GiB of host RAM a --cache-ram value lets llama-server's prompt cache take (one parser for load_mode_low_ram and load_mode_cache_none): "0" is off (0), "-1" is no limit (counted as
+    llama's own default of 8 GiB: unknown / large), digits are MiB, a missing flag is `absent` (llama's default of 8 GiB unless the caller knows better; anything else unreadable counts as `absent`)."""
+    if v is None:
+        return absent
+    v = str(v).strip()
+    if v == "-1":
+        return LLAMA_PROMPT_CACHE_GIB
+    if v.isdigit():
+        return int(v) / 1024
+    return absent
+
+
+def prompt_cache_gib(extra):
+    """GiB of host RAM llama-server's prompt cache may take, read from the --cache-ram in the command (command_stage has put the launcher's own value there by then: 2048 MiB, 0 below 16 GB
+    of memory, MOE_CACHE_PROMPT_CACHE_MIB, cut to the free commit): 0 = off, -1 = unknown / large (8 GiB), no flag = llama's own default (8 GiB)."""
+    return cram_gib(arg_after(extra, "--cache-ram", "-cram"))
+
+
+MMAP_SPIKE_ENV = "MOE_CACHE_MMAP_SPIKE"
+
+
+def mmap_spike_on():
+    """The whole-file working-set rule of load_mode_low_ram is OFF unless MOE_CACHE_MMAP_SPIKE=1 (owner R1: a default change; not measured at a 5-9 GiB spill, where `none` puts the spill
+    into pinned Vulkan host memory)."""
+    return os.environ.get(MMAP_SPIKE_ENV, "") == "1"
+
+
+def model_file_bytes(model):
+    """Bytes of the whole model: every shard of a split GGUF, else the file."""
+    try:
+        planner_path()
+        from gguf_plan import shards
+        return sum(os.path.getsize(p) for p in shards(model))
+    except Exception:
+        return os.path.getsize(model)
+
+
 def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     """LAUNCHER-1133 follow-up (critic 2026-11-12: bounded, margin from the cap): a dense model that does NOT fit fully on the GPU keeps mmap (the weights that stay in RAM are file-backed and
     can be evicted), unless the mmap load itself would eat the RAM the server may use: chain's real load of f5af74c (27B UD-Q3_K_XL, 64k, q4_0, mmap) read ~9-12 GB of mapped file pages into
@@ -3723,12 +3786,12 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
         go up by that part; a 40 GiB file with 14 GiB available stays mmap).
     The reserve is the larger of 4 GiB and what the machine keeps free (physical RAM minus mem_cap(): max(4 GiB, 12.5 %)). Same exceptions as load_mode_fit_none (Linux, --exact / --stock, -ot,
     CPU-only, a load flag of your own). Unknown spill -> mmap stays. Returns the plain note, or None."""
-    if not machine.windows or a.exact or a.stock or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0" or spill_gib is None:
+    if not machine.windows or a.exact or a.stock or ("-ot" in cmd or "--override-tensor" in cmd) or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0" or spill_gib is None:
         return None
     if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
     try:
-        size = os.path.getsize(model)
+        size = model_file_bytes(model)
         avail = machine.mem_for_server(a.ram)
         total, cap = machine.mem_total(), machine.mem_cap()
     except (OSError, TypeError):
@@ -3744,8 +3807,18 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     # critic L3: the mmap load stages what goes to the GPU (file minus the part that stays in RAM) through RAM at once; mmap stays only when that, the reserve and a second reserve for the
     # desktop's own growth fit in the RAM available to the server; and `none` copies the part that stays in RAM, which has to fit too (a 40 GiB file with 14 GiB available stays mmap).
     stage = size / 2**30 - spill_gib
-    if avail / 2**30 >= stage + 2 * margin or spill_gib + margin > avail / 2**30:
+    if spill_gib + margin > avail / 2**30:
+        return None                                                    # `none` would copy the part that stays in RAM, and that does not fit either
+    cram = prompt_cache_gib(extra)
+    # critic fix 8: the whole-file rule reads the RAM available now (not clipped at mem_cap(), which already holds the reserve) and the size of every shard
+    avail_now = machine.mem_for_server(a.ram) if a.ram else (getattr(machine, "mem_available", lambda: None)() or avail)
+    ws_short = mmap_spike_on() and mmap_working_set_short(size / 2**30, avail_now / 2**30, cram, margin)
+    if avail / 2**30 >= stage + 2 * margin and not ws_short:
         return None
+    if ws_short and avail / 2**30 >= stage + 2 * margin:
+        return (f"the memory-mapped load would put the whole {size / 2**30:.1f} GiB file into the working set (file-backed pages, also the part that stays in RAM) and, with the "
+                f"{cram:.1f} GiB prompt cache, leave under the {margin:.1f} GiB the machine keeps free ({avail_now / 2**30:.1f} GiB available now): --load-mode none (switched on by "
+                f"{MMAP_SPIKE_ENV}=1; not measured at this size; --exact or --load-mode after -- keeps llama.cpp's default)")
     return (f"the model file is {size / 2**30:.1f} GiB, {avail / 2**30:.1f} GiB of RAM is available to the server and a memory-mapped load would stage about {stage:.1f} GiB of it through RAM "
             f"(plus {margin:.1f} GiB the machine keeps free, twice); about {spill_gib:.1f} GiB stays in RAM: --load-mode none (the weights are read into memory as the GPU takes them; "
             "--exact or --load-mode after -- keeps llama.cpp's default)")
@@ -3820,8 +3893,8 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
             have = machine.lib_api(lib)
         if not machine.lib_exists(lib) or (want and have and want != have):
             return None                                   # no matching plugin build here: stock stays (this only ever adds the plugin when it can load)
-        ram_gib = float(f"{(avail_reserve_gib(a, machine) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        ram_gib = float(f"{(avail_reserve_gib(a, machine, model=model) or (machine.mem_for_server(a.ram) / 2**30,))[0]:.3f}") if (a.ram or machine.mem_cap()) else None
+        planner_path()
         from gguf_plan import tune
         # the same GPU room and reserve as the plan itself (gpu_room_inputs: the room figure on Windows AMD / Intel, the desk reserve for the desktop, --gpu-margin, --leave-room): the
         # engine is chosen after the GPU facts are known and with the memory the plan will really have (follow-ups 5 and 9)
@@ -3830,7 +3903,8 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
         t = tune(model, ctx, free=inp["free"], want_cache=False, plugin=False, **inp["kw"],
                  measured=measured_loads(a, ls, model, ctx, False, machine, False, False, None, inp["kw"]["free_source"]))      # as stock runs it: does every expert fit the GPU?
         ncmoe = min(int(t["n_cpu_moe"]), int(lay_n))
-    except Exception:
+    except Exception as e:
+        say(f"moe-cache: not using the expert executor: the stock check failed ({type(e).__name__}: {e})", err=True)      # "stock stays" was silent — a tuner bug looked like a normal dense-model answer
         return None                                       # dense, unreadable or no planner answer: stock stays
     if ncmoe <= 0:
         return None                                       # every expert fits the GPU: nothing for the executor to do
@@ -3878,7 +3952,7 @@ def profile_stage(a, model, pname, dry):
     if not os.path.isfile(profile) and not a.no_starter and not dry:
         # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
         try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            planner_path()
             from gguf_plan import model_key
             key = model_key(model)
             starter = os.path.join(HERE, "profiles", key + ".usage") if key else None
@@ -3891,20 +3965,69 @@ def profile_stage(a, model, pname, dry):
     return profile
 
 
-def avail_reserve_gib(a, machine, stock=False):
-    """GiB the plugin's cache may plan with on Windows: the RAM available now minus the reserve the whole-server cap keeps (max(4 GiB, 12.5 % of the RAM)), at least 4 GiB; None when this does not
-    apply (Linux, stock, --ram or MOE_CACHE_RAM_GIB given, no figure). Chain's Flash-Next probe 2026-11-13: without it the default cache left 1.3 GB available beside the open programs."""
-    if not getattr(machine, "windows", False) or stock or a.ram or os.environ.get("MOE_CACHE_RAM_GIB"):      # (a test double without the field is not Windows)
+RAM_KEEP_MIN, RAM_KEEP_FRAC = 4 * 2**30, 0.125      # RAM kept free for the OS and the user's programs: max(4 GiB, 12.5 %), the same line as the whole-server cap (mem_cap)
+RAM_STREAM_GIB = 2.0         # extra RAM kept free when the model file is bigger than the cache can hold, so every request streams it through memory-mapped pages. ASSUMED, not measured: the
+#                              PC re-run with apps open (chain 2026-11-17) is what shows whether it is enough; MOE_CACHE_STREAM_GIB changes it
+
+
+def ram_keep_bytes(total):
+    """Bytes kept free for the OS and the user's programs on a machine with `total` bytes of RAM."""
+    return max(RAM_KEEP_MIN, total * RAM_KEEP_FRAC)
+
+
+def ram_cap_decision(avail, total, *, windows, ram_flag=None, env_ram=None, stock=False, cgroup_limit=None, model_bytes=None, stream_gib=RAM_STREAM_GIB):
+    """The one decision of how much RAM the plugin may plan with, from the RAM available at start (bytes). Returns None when it does not apply (stock, the user's --ram or
+    MOE_CACHE_RAM_GIB, a cgroup limit on Linux (the plugin reads that itself), no figure) or a dict: gib (what MOE_CACHE_RAM_GIB gets), avail, keep, stream (GiB kept for
+    the streamed file, 0 when the model fits), source (where `avail` came from), why (one line for the plan). Windows: GlobalMemoryStatusEx ullAvailPhys; Linux: MemAvailable
+    (page cache and other reclaimable memory count as available there). Pure: no probes, no environment."""
+    if stock or ram_flag or env_ram or not avail or not total or (not windows and cgroup_limit):
+        return None
+    keep = ram_keep_bytes(total)
+    stream = 0.0
+    if model_bytes and model_bytes > avail - keep:           # the file does not fit next to the reserve: reads go through mapped pages that stay in the working set
+        stream = float(stream_gib)
+    gib = max((avail - keep) / 2**30 - stream, 4.0)
+    if gib * 2**30 >= avail:
+        return None
+    source = "Windows GlobalMemoryStatusEx" if windows else "Linux MemAvailable"
+    why = (f"{avail / 2**30:.1f} GiB available now ({source}), {keep / 2**30:.1f} GiB kept free for your programs (max(4 GiB, 12.5 % of the RAM))"
+           + (f" and {stream:.1f} GiB for the model file read through memory-mapped pages (the file is bigger than the cache; assumed, not measured)" if stream else ""))
+    return {"gib": gib, "avail": avail, "keep": keep, "stream": stream, "source": source, "why": why}
+
+
+def live_keep_decision(total, *, stock=False, exact=False, env_keep=None, off=None):
+    """RAM-LIVE: GiB of the system's available RAM the plugin keeps free WHILE it runs (it gives experts back under it and takes them back slowly above it); None when it is
+    off: stock (no plugin), --exact (as before), the user's own MOE_CACHE_AVAIL_KEEP_GIB (it passes through untouched), MOE_CACHE_LIVE_FOLLOW=0, no RAM figure. Pure."""
+    if stock or exact or env_keep or not total or off in ("0", "off", "no"):
+        return None
+    return ram_keep_bytes(total) / 2**30
+
+
+def avail_reserve_gib(a, machine, stock=False, model=None):
+    """GiB the plugin's cache may plan with: ram_cap_decision() with this machine's figures: (gib, avail, keep, decision) or None when it does not apply. Windows and Linux; --exact
+    behaves as before (Windows keeps the reserve, Linux has none). Chain's Flash-Next probe 2026-11-13 and the 2026-11-17 daily-use run: without it the cache left 1.3 GB, then 0, available beside the open programs."""
+    windows = bool(getattr(machine, "windows", False))      # (a test double without the field is not Windows)
+    if not windows and getattr(a, "exact", False):
         return None
     try:
-        avail, total = machine.mem_for_server(None), machine.mem_total()
+        avail, total = getattr(machine, "mem_available", lambda: machine.mem_for_server(None))(), machine.mem_total()
+        limit = None if windows else getattr(machine, "cgroup_limit", lambda: None)()
     except Exception:
         return None
-    if not avail or not total:
-        return None
-    keep = max(4 * 2**30, total / 8)
-    gib = max((avail - keep) / 2**30, 4.0)
-    return (gib, avail, keep) if gib * 2**30 < avail else None
+    size = None
+    if model:
+        try:
+            size = sum(os.path.getsize(p) for p in model_parts(model))
+        except OSError:
+            size = None
+    try:
+        sg = float(os.environ.get("MOE_CACHE_STREAM_GIB", RAM_STREAM_GIB))
+    except ValueError:
+        sg = RAM_STREAM_GIB
+    if getattr(a, "exact", False):
+        size = None                       # --exact: exactly the figure of before the stream term
+    d = ram_cap_decision(avail, total, windows=windows, ram_flag=a.ram, env_ram=os.environ.get("MOE_CACHE_RAM_GIB"), stock=stock, cgroup_limit=limit, model_bytes=size, stream_gib=sg)
+    return (d["gib"], d["avail"], d["keep"], d) if d else None
 
 
 def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
@@ -3918,16 +4041,25 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
-    elif (ar := avail_reserve_gib(a, machine, stock)):
-        gib, avail, keep = ar
+    elif (ar := avail_reserve_gib(a, machine, stock, model)):
+        gib, avail, keep, dec = ar
         env.append(("MOE_CACHE_RAM_GIB", f"{gib:.3f}"))
         # the plugin's budget = this - margin (1 GiB + the prompt-cache reserve, up to 2 GiB) - the rest of the process (3.5 GiB guess until measured), at least 0.5 GiB; fixed at the start
         # (with the variable set the plugin does not read the available RAM again after the upload)
         expect = gib - 3.0 - 3.5
-        say(f"moe-cache: RAM: {avail / 2**30:.1f} GiB available now, {keep / 2**30:.1f} GiB kept free for your programs (physical RAM minus max(4 GiB, 12.5 %)): the cache plans with "
+        say(f"moe-cache: RAM: {dec['why']}: the cache plans with "
             f"{gib:.1f} GiB, about {max(expect, 0.5):.1f} GiB of expert cache after the margin and the rest of the server; fixed at the start (--ram GB sets it by hand)")
         if expect < 2.0:
             say("moe-cache: warning: very little RAM is available for the expert cache (under 2 GiB): the server will be slow; close programs, or pass --ram GB to give it more", err=True)
+    try:
+        lk = live_keep_decision(machine.mem_total(), stock=stock, exact=getattr(a, "exact", False), env_keep=os.environ.get("MOE_CACHE_AVAIL_KEEP_GIB"),
+                                off=os.environ.get("MOE_CACHE_LIVE_FOLLOW"))
+    except Exception:
+        lk = None
+    if lk:
+        env.append(("MOE_CACHE_AVAIL_KEEP_GIB", f"{lk:.3f}"))
+        say(f"moe-cache: live RAM follow: while the server runs the cache gives experts back when the system's available RAM falls under {lk:.1f} GiB and takes them back slowly above it "
+            "(about 1 GiB over the line, 256 MiB a second); it can only give back the cache's own memory; MOE_CACHE_LIVE_FOLLOW=0 turns it off")
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
@@ -4073,8 +4205,9 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
         loud and say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card; your --fast / --approx keeps its 8-bit KV cache with the usual micro-batch")
         return kv_q8, tuned, desk_kw, ub_asked
     # -ub 4096 does not fit this card's memory plan: undo the KV cache and plan again as without the flag
+    tk, tv = getattr(a, "dense_kv_types", None) or ("q8_0", "q8_0")           # review finding 8: the pair the launcher added (the same types as kv_stage), not only the q8_0/q8_0 spelling
     for i in range(len(extra) - 3):
-        if extra[i:i + 4] == ["-ctk", "q8_0", "-ctv", "q8_0"]:
+        if extra[i:i + 4] == ["-ctk", tk, "-ctv", tv]:
             del extra[i:i + 4]
             break
     a.fast, a.lp_kv = None, False
@@ -4366,7 +4499,7 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
     if getattr(a, "no_ffn_ram", False) or any(x in ("-ot", "--override-tensor") or x.startswith("--override-tensor=") for x in extra):
         return None
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import dense_ffn_split
         free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()
         if free and mm_bytes:
@@ -4401,7 +4534,7 @@ def dense_oom_replan(cmd, model, ctx, kv_q8, free_bytes, margin_gib, user_ot=Fal
     if user_ot:
         return None, "your own -ot stands"
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import dense_ffn_split
         r = dense_ffn_split(model, ctx, free_bytes, kv_q8=kv_q8, margin_gib=margin_gib) if free_bytes else None
     except Exception:
@@ -4518,7 +4651,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         say("moe-cache: dense model, no experts: no -ngl 99 (it makes a file bigger than the GPU abort at load); llama.cpp's --fit places the layers by free GPU memory" + margin
             + ("" if a.auto_fit else ". --no-auto-fit brings -ngl 99 back"))
     # LAUNCHER-983: tell the log scan whether work on the CPU is part of this plan (experts on the CPU by design, FFN weights in RAM, CPU-only, a dense model the estimate says is over the GPU)
-    expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and "-ot" in cmd))
+    expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and ("-ot" in cmd or "--override-tensor" in cmd)))
     r = None
     if dense and not expect:
         pair = dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True, skip_mtp=mtp_layer_skipped(ls, extra, machine))
@@ -4560,7 +4693,7 @@ def template_stage(a, extra, model, dry=False):
     model's own template, planner/chat_template_fix.py) with --chat-template-file, plus --jinja when the template file needs it. Your own --chat-template[-file] / --no-jinja
     after -- win. Returns the flags to add."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         import chat_template_fix as ctf
         if ctf.user_chose_template(extra):
             return []
@@ -4765,7 +4898,7 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         if vram_user:
             limits["vram"] = str(vram_user)
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from load_record import build_id
         build = build_id(ls)
     except Exception:
@@ -4965,7 +5098,7 @@ def known_failed_edge(a, machine, ls, model, ctx, cmd, engine):
     try:
         if not load_record_on() or getattr(a, "vram_user", a.vram):
             return None
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         import load_record as lr
         gid = (machine.gpu_identity() if hasattr(machine, "gpu_identity") else "") or getattr(a, "plan_gpu_ident", "")
         build, mid = lr.build_id(ls), lr.model_id(model)
@@ -5000,7 +5133,7 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
         say("moe-cache: warning: Windows did not report the commit figures: the commit check is skipped for this start", err=True)
         return cmd, ncmoe, ub, kv_q8, None
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         import commit_guard as cgd
         f = cgd.facts_from_model(model)
     except Exception as e:
@@ -5044,6 +5177,7 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
 
 
 def _launch_plan(a, extra, argv, machine):
+    extra = split_equals_flags(extra)          # review finding 1/2: callers that did not come through parse_server (tests, on-demand, plan files)
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
     if not a.model:
@@ -5103,8 +5237,8 @@ def _launch_plan(a, extra, argv, machine):
     if a.plan_gpu_ident:
         try:
             a.plan_gpu_ident += ";driver " + (machine.win_driver_version(gpu[1]) or "?")         # a new driver changes the buffer sizes: measured anew (follow-up 6)
-        except Exception:
-            pass
+        except Exception as e:
+            say(f"moe-cache: could not read the GPU driver version ({type(e).__name__}: {e}): the plan keeps no driver tag", err=True)      # the version was lost silently
     if stock and not dense and not a.stock:
         why = plugin_for_partial_offload(a, ls, model, ctx, machine, gpu, mm_bytes)
         if why:
@@ -5194,7 +5328,7 @@ def _launch_plan(a, extra, argv, machine):
         ncmoe = n_ if n_ is not None else ncmoe
         kv_q8 = kv_quantized(cmd)        # q8_0, the dense ladder's K q8_0 / V q4_0 and q4_0/q4_0 all count (a plain == "q8_0" read q4_0 as f16 and let the commit check put q8_0 back)
     cmd_picked = list(cmd)
-    cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
+    cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, list(argv) + user_extra, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
     if apply_cache_record(a, cmd, machine, ls, model, ctx, tuned) == 0:
         ncmoe, ub = arg_after(cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(cmd, "-ub", "--ubatch-size") or ub
     tune_fallback = None
@@ -5211,7 +5345,7 @@ def _launch_plan(a, extra, argv, machine):
         tuned_env = {k for k, v in env_t if (k, v) not in before_env} | {k for k, v in before_env if (k, v) not in env_t}
         def tune_fallback():
             """LAUNCHER-1045: the plan as the planner made it (through the same commit check), for the one retry when the picked plan does not load -> (cmd, env list) or None."""
-            c2, _n, _u, _k, refusal = commit_stage(a, list(before_cmd), list(before_env), argv, model, ctx, ncmoe0, ub0, kv_q80, gpu, machine, mm_bytes)
+            c2, _n, _u, _k, refusal = commit_stage(a, list(before_cmd), list(before_env), list(argv) + user_extra, model, ctx, ncmoe0, ub0, kv_q80, gpu, machine, mm_bytes)
             if refusal:
                 return None
             return c2, [(k, v) for k, v in env if k not in tuned_env] + [(k, v) for k, v in before_env if k in tuned_env]
@@ -5322,11 +5456,11 @@ def run_launch_plan(plan):
         if what_cache == "fallback":
             # LAUNCHER-1200: the cache is the launcher's own choice: start once more with the static plan and no cache, and remember the size that failed
             try:
-                sys.path.insert(0, os.path.join(HERE, "planner"))
+                planner_path()
                 from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes
                 def free_now():
                     if WINDOWS:
-                        g = pick_gpu_full(list_devices(ls))
+                        g = pick_gpu_full(list_devices(ls, ttl=0))       # ttl=0: fresh numbers after a failed load (the memo must not answer with the plan-time free MiB)
                         return (g[3] * 2**20, g[2] * 2**20) if g and g[3] > 0 else None
                     return gpu_total_free_bytes()
                 time.sleep(2)                          # the failed server's memory is given back a moment after it exits
@@ -5353,7 +5487,7 @@ def run_launch_plan(plan):
                 except Exception:
                     free = None
             if free is None and WINDOWS:
-                g = pick_gpu_full(list_devices(ls))
+                g = pick_gpu_full(list_devices(ls, ttl=0))       # ttl=0: fresh numbers after a failed load (see the tune_free site below)
                 free = g[3] * 2**20 if g and g[3] > 0 else None
             margin = a.gpu_margin if a.gpu_margin is not None else 0.25
             user_ot = any(x in ("-ot", "--override-tensor") or x.startswith("--override-tensor=") for x in extra)
@@ -5368,10 +5502,10 @@ def run_launch_plan(plan):
             say("moe-cache: llama-server ran out of GPU memory while loading: free some GPU memory, or give a larger --n-cpu-moe / smaller -ub / --gpu-margin", err=True)
             return None
         try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            planner_path()
             from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes, model_layout
             if WINDOWS:
-                g = pick_gpu_full(list_devices(ls))
+                g = pick_gpu_full(list_devices(ls, ttl=0))       # ttl=0: fresh numbers after a failed load (the memo must not answer with the plan-time free MiB)
                 tf = (g[3] * 2**20, g[2] * 2**20) if g and g[3] > 0 else None
             else:
                 tf = gpu_total_free_bytes()
@@ -6592,7 +6726,7 @@ def gpu_driver(name):
 
 def gpu_summary(listing, ok):
     """moe-cache-check, MG3: when llama.cpp lists more than one device, say which ones it will use and which it leaves out (one line, nothing for one device)."""
-    sys.path.insert(0, os.path.join(HERE, "planner"))
+    planner_path()
     import multigpu
     listed = multigpu.DEVICE_RE.findall(listing or "")
     if len(listed) < 2:
@@ -6777,7 +6911,7 @@ def check(argv):
                 fail("model", "not a GGUF file")
             facts["model"] = f"{os.path.basename(a.model)}, {size:.1f} GB"
             try:
-                sys.path.insert(0, os.path.join(HERE, "planner"))
+                planner_path()
                 from gguf_plan import sampling_meta
                 march = (sampling_meta(a.model).get("arch") or "").lower()
             except Exception:
@@ -6839,7 +6973,7 @@ def header_has_experts(path):
     """LAUNCHER-005 (A3-27): True when the GGUF header has an <arch>.expert_count key, read as keys and not as a text search in the first 4 MiB (a model with a big
     tokenizer written before the architecture keys pushed it out of the window)."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        planner_path()
         from gguf_plan import read_meta, shards
         return any(k.endswith(".expert_count") and isinstance(v, int) and v > 0 for k, v in read_meta(shards(path)[0]).items())
     except Exception:

@@ -196,9 +196,9 @@ if exe:
 else:
     print("  skip real gputaskman (not installed here)")
 cf = rr.probe().commit_free()
-check(cf is None or cf > 0, f"real probe commit_free: {cf if cf is None else round(cf / G, 1)} GB (Windows CI runs the ctypes call; Linux reads CommitLimit - Committed_AS)")
+check(cf is None or isinstance(cf, int), f"real probe commit_free: {cf if cf is None else round(cf / G, 1)} GB (Windows CI runs the ctypes call; Linux reads CommitLimit - Committed_AS, advisory when overcommit is on, so it may be negative)")
 if os.name == "nt":
-    check(cf is not None, "Windows: GlobalMemoryStatusEx gave a commit figure")
+    check(cf is not None and cf > 0, "Windows: GlobalMemoryStatusEx gave a positive commit figure")
 
 print("env block test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)

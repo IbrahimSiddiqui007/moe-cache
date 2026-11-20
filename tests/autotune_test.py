@@ -395,6 +395,27 @@ with tempfile.TemporaryDirectory() as lk:
     json.dump({"pid": 1, "t": time.time()}, open(at.lock_path(lk), "w"))
     at.release_lock(lk)
     check(os.path.exists(at.lock_path(lk)), "release_lock leaves a lock that is not ours")
+    open(at.lock_path(lk), "w").close()      # an empty file is a half-created lock (mkstemp+link): held while it is young
+    ok, h = at.acquire_lock(lk)
+    check(not ok and h is None, "tuning lock: a young empty lock file counts as held (no pid to report)")
+    old_t = time.time() - at.LOCK_STALE_S - 5          # the same file, abandoned: stale by its mtime, taken over
+    os.utime(at.lock_path(lk), (old_t, old_t))
+    ok, h = at.acquire_lock(lk)
+    check(ok and h is None and json.load(open(at.lock_path(lk)))["pid"] == os.getpid(), "tuning lock: an empty lock older than LOCK_STALE_S is taken over")
+    at.release_lock(lk)
+    # a filesystem without hard links: os.link raises EPERM, the lock falls back to O_CREAT|O_EXCL
+    real_link = os.link
+    def no_link(*a, **k): raise PermissionError(1, "Operation not permitted")
+    os.link = no_link
+    try:
+        ok, h = at.acquire_lock(lk)
+        check(ok and json.load(open(at.lock_path(lk)))["pid"] == os.getpid(), "tuning lock: no hard links (EPERM): taken with O_CREAT|O_EXCL")
+        ok2, h2 = at.acquire_lock(lk)
+        check(not ok2 and h2 == os.getpid(), "tuning lock: no hard links: a second launcher still sees it held")
+        check(not [x for x in os.listdir(os.path.dirname(at.lock_path(lk))) if x.startswith(".moe_autotune_lock_")], "tuning lock: no temp file left behind")
+    finally:
+        os.link = real_link
+    at.release_lock(lk)
 
 tmp3 = tempfile.mkdtemp(prefix="autotune-c-")
 saved3 = (mc.CACHE_DIR, mc.port_busy)
@@ -605,6 +626,14 @@ try:
     n0 = len(getattr(mc._TL, "notes", ()))
     mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
     check(len(getattr(mc._TL, "notes", ())) == n0, "commit_fits says nothing and leaves the plan's notes alone")
+    # review finding 6: a flag the user gave after `--` locks the commit check's layout choice like one before it (the launcher passes argv + the flags after `--`)
+    r_free = mc.commit_stage(a_w, list(wcmd), [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4]
+    r_lock = mc.commit_stage(a_w, list(wcmd), [], ["m", "-ngl", "30"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4]
+    check(r_free and "not changed" not in r_free and r_lock and "given by you are not changed" in r_lock, "commit_stage: -ngl from the user's own flags locks the weights layout (finding 6)")
+    check("given by you are not changed" in (mc.commit_stage(a_w, list(wcmd), [], ["m"] + mc.split_equals_flags(["--n-gpu-layers=30"]), model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4] or ""),
+          "commit_stage: `--n-gpu-layers=30` after -- (split) locks it too")
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "moe_cache.py"), encoding="utf-8").read()
+    check(src.count("list(argv) + user_extra, model, ctx, ncmoe") >= 1 and "= commit_stage(a, cmd, env, argv, model" not in src, "the launch plan hands commit_stage argv + the user's flags after -- (finding 6 call site)")
     a_w.no_commit_check = True
     ok_nc, _w = mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
     check(ok_nc, "--no-commit-check: everything fits (the user's choice)")

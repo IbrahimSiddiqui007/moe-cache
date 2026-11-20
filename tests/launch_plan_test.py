@@ -155,7 +155,7 @@ def fake_machine(m, tmp):
     mc.win_gpu_process_text = lambda: m.get("gpu_proc", "\\\\pc\\gpu process memory(pid_4_luid_0x0_0x1_phys_0)\\dedicated usage|%d" % (_others_mib() * 1048576))
     mc.win_driver_version = lambda name: m["driver"]
     mc.win_cores = lambda: m["cores"]
-    mc.list_devices = lambda ls: m["listing"]
+    mc.list_devices = lambda ls, ttl=60.0: m["listing"]
     mc.nvidia_reports = lambda: m["nvidia"]
     mc.ls_found_line = lambda ls: None
     mc.ls_looked = lambda: "(fake)"

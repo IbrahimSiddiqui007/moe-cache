@@ -6,7 +6,7 @@ looks for the private project's one-word spelling)."""
 import os, re, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NAMES = re.compile(r"strata(?![a-z])|big[m]oe|ktransformers|project[ -]maya|niko1221|mw00|hypura|moe-infinity|ik_llama|neurall", re.I)
+NAMES = re.compile(r"strata|big[m]oe|ktransformers|project[ -]maya|niko1221|mw00|hypura|moe-infinity|ik_llama|neurall", re.I)
 ALLOWED_LINES = {          # exact, whole-line matches only: (file, line)
     ("README.md", "- Credit for ideas on tiering experts across VRAM, RAM and SSD: [Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221) and "
                   "[Project Maya](https://github.com/mw00/project-maya) (MIT, by mw00)."),

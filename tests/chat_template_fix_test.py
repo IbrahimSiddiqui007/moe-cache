@@ -105,6 +105,13 @@ with tempfile.TemporaryDirectory() as tmp:
     check(path and "\\" not in path and os.path.isfile(path) and open(path, encoding="utf-8").read() == patched, "the fixed template is written to the cache folder, forward slashes in the path")
     check(ctf.fixed_template_file(bad, cache)[0] == path, "the same model gives the same file")
     check(ctf.fixed_template_file(good, cache) == (None, None) and ctf.fixed_template_file(none, cache) == (None, None), "a model whose template is fine gets nothing")
+    tmp2 = os.path.join(tmp, "cache2")
+    path2, _ = ctf.fixed_template_file(bad, tmp2)
+    left = [f for f in os.listdir(os.path.join(tmp2, "templates")) if f.endswith(".tmp")]
+    check(not left and open(path2, encoding="utf-8").read() == patched, "the write goes through a pid-uniquified tmp (os.replace) and leaves no .tmp behind")
+    open(os.path.join(tmp2, "templates", os.path.basename(path2) + ".999999.tmp"), "w").write("junk from a crashed rival")
+    path3, _ = ctf.fixed_template_file(bad, tmp2)
+    check(path3 == path2 and open(path2, encoding="utf-8").read() == patched, "a stale tmp from another pid does not disturb the fixed file")
     p2, _ = ctf.fixed_template_file(bad, os.path.join(tmp, "dry"), write=False)
     check(p2 and not os.path.exists(os.path.join(tmp, "dry")), "a dry run names the file but writes nothing")
     saved = mc.CACHE_DIR

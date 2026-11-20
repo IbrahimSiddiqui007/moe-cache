@@ -491,6 +491,14 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             if (const char * v = getenv("MOE_CACHE_MARGIN_GIB")) {
                 parse_gib("MOE_CACHE_MARGIN_GIB", v, margin);
             }
+            if (const char * v = getenv("MOE_CACHE_AVAIL_KEEP_GIB")) {      // RAM-LIVE: set by the launcher; 0 or unset = the cache does not follow the system's free RAM
+                size_t k = 0;
+                if (parse_gib("MOE_CACHE_AVAIL_KEEP_GIB", v, k) && k > 0) {
+                    live_keep = k;
+                    fprintf(stderr, "moe-cache: live RAM follow on: the cache gives experts back when the system's available RAM falls under %.2f GiB and takes them back slowly "
+                                    "above it (MOE_CACHE_AVAIL_KEEP_GIB); it is checked while graphs run, not while the server is idle\n", k / 1073741824.0);
+                }
+            }
             // llama-server keeps saved prompt states in host RAM (--cache-ram, MiB): that memory is outside this cache's control and arrives in bursts
             // when a new request starts, so it is added to the margin (a 24 GB limit was OOM-killed at 128k context with the 8 GiB default)
             if (!getenv("MOE_CACHE_MARGIN_GIB")) {
@@ -593,6 +601,16 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
+        }
+        if (const char * v = getenv("MOE_CACHE_TEST_SKIP_PCT")) {     // TEST-1170: timing only
+            test_skip_pct = mctestskip::parse_pct(v);
+            if (test_skip_pct >= 0) {
+                exec_force = true;       // the executor must run every step (no step-aside), or nothing would be skipped when the experts are resident
+                fprintf(stderr, "moe-cache: WARNING: MOE_CACHE_TEST_SKIP_PCT=%d is ON: %d %% of the CPU expert picks are NOT computed, output is not valid, timing test only "
+                        "(executor forced)%s\n", test_skip_pct, test_skip_pct, exec_on ? "" : "; MOE_CACHE_EXEC=0: the executor is off, so NOTHING is skipped");
+            } else if (*v) {
+                fprintf(stderr, "moe-cache: MOE_CACHE_TEST_SKIP_PCT='%s' is not a number from 0 to 100: ignored, switch is OFF\n", v);
+            }
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_FUSE")) {
             exec_fuse = mcenv::flag_value(v, true);
