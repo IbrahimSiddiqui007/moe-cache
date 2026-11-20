@@ -104,3 +104,7 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 ## CI-only branch `ci/llama-patched-b12207`: Vulkan shader patches 0101-0104 (PATCH-067)
 
 Branch note, not part of any release: `0101`-`0104` are four small Vulkan shader changes (IQ2/IQ3 grid table packing, iq2_s grid load, iq4_xs MMVQ, iq3_s invocations) made on an older base and re-checked here only for "applies to b12207". They have no runtime switch (shader code), so they are NOT "off by default": this branch exists so CI builds them for a test-backend-ops and speed check against the official b12207 build. They go to `archive/` or into an upstream proposal after that check.
+
+## CI-only branch `ci/llama-b12207-adaptive-mtp`: 0110-adaptive-mtp-draft-depth (owner request 2026-11-20)
+
+Upstream PR ggml-org/llama.cpp#27210 (head c1c2b286f9, author Stew Forster, MIT, still open upstream), rebased onto b12207: new speculative type `--spec-type draft-mtp-adaptive` (MTP draft depth climbs and drops with the acceptance rate; `--spec-draft-n-min-adaptive` = floor, `--spec-draft-n-max` = ceiling; plain `draft-mtp` unchanged, the two cannot be combined). Flag, not a switch by environment: with `--spec-type draft-mtp` (or no MTP) the build behaves as the other patches' kit. The PR's `delta-net-base.cpp` hunk is dropped because b12207 already writes only the reachable conv-state snapshots (`build_conv_state_store`, `Kw = min(n, K)`); the patch header lists every change from the PR diff. Not a release candidate: a test kit for the PC until a paired run says otherwise.
