@@ -113,6 +113,22 @@ with tempfile.TemporaryDirectory() as tmp:
           "dry run, not even q4_0/q4_0 fits: q4_0/q4_0, the context stays, the line says part runs from RAM (layers spill only after the last step)")
     q8ok = run((f16_need + q8_need) / 2)
     check("-ctk q8_0 -ctv q8_0" in cmd(q8ok) and "q4_0" not in cmd(q8ok), "dry run, q8_0/q8_0 fits: it stays the choice (q4_0 only when q8_0 would spill)")
+    # QUALITY-014: each smaller step follows its own TOKEN_MODES row; a row that is off ends the ladder at the step before
+    import moe_cache_approx as ax
+    check(ax.token_mode("kv-k8v4")["gate"] == "kv" and ax.token_mode("kv-q4")["gate"] == "kv" and ax.default_on("kv-k8v4") and ax.default_on("kv-q4"),
+          "the two steps have their own rows, gate level kv, on today (won or kept by the owner's decision)")
+    saved_st = (ax.token_mode("kv-k8v4")["status"], ax.token_mode("kv-q4")["status"])
+    try:
+        ax.token_mode("kv-q4")["status"] = "lost"
+        off4 = run((mx_need + q4_need) / 2)
+        check("q4_0" not in cmd(off4) and "-ctk q8_0 -ctv q8_0" in cmd(off4) and "smaller KV steps are off" in out(off4) and "-c 8192" in cmd(off4),
+              "kv-q4 off: where only q4_0/q4_0 would fit, q8_0/q8_0 stays (spilling, said), the context stays")
+        check("-ctk q8_0 -ctv q4_0" in cmd(run((q8_need + mx_need) / 2)), "...the K q8_0 / V q4_0 step is not affected")
+        ax.token_mode("kv-k8v4")["status"] = "lost"; ax.token_mode("kv-q4")["status"] = saved_st[1]
+        offm = run((q8_need + mx_need) / 2)
+        check("-ctk q4_0 -ctv q4_0" in cmd(offm), "kv-k8v4 off: where the mix would fit, the ladder goes on to q4_0/q4_0 (its own row is on)")
+    finally:
+        ax.token_mode("kv-k8v4")["status"], ax.token_mode("kv-q4")["status"] = saved_st
     ex4 = run((q8_need + mx_need) / 2, ["--exact"])
     check("-ctk" not in cmd(ex4) and "q4_0" not in cmd(ex4), "dry run, --exact keeps f16 even where q8_0 would spill")
     us8 = run((q8_need + mx_need) / 2, extra=["-ctk", "q8_0", "-ctv", "q8_0"])

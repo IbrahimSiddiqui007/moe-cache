@@ -633,7 +633,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="default", agent=False,
         elif mode == "exact":
             R.append("exact (--exact): same output as plain llama.cpp, so no long-prompt mode, no q8_0 KV default and no MTP unless you set it; experts that are not in RAM are read from the SSD")
         else:
-            R.append("default: the launcher's own settings (long-prompt mode from 32k context when the card has room, q8_0 KV cache, MTP where the model has it); answers are not byte-identical to plain llama.cpp; experts that are not in RAM are read from the SSD")
+            R.append("default: the launcher's own settings (long-prompt mode from 32k context when the card has room, a q8_0 KV cache from 128k, for a dense model a smaller KV cache (down to q4_0, approximate) "
+                     "instead of a shorter context when the GPU is short, MTP drafting in agent mode where the model has the head); answers are not byte-identical to plain llama.cpp; experts that are not in RAM are read from the SSD")
     if gpu_layers:
         R.append(f"{gpu_layers} of {layers} layers keep their experts on the GPU ({plan['free_vram_GiB']:.1f} GiB free VRAM)")
     elif out["kind"] != "stock" or plan["free_vram_GiB"] == 0:

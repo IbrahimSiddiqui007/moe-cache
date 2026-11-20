@@ -92,7 +92,19 @@ def plan_from_args(argv):
            "kv_k": val("-ctk", "--cache-type-k"), "kv_v": val("-ctv", "--cache-type-v"), "split_mode": val("-sm", "--split-mode"), "mmproj": val("--mmproj")}
     out["cpu_moe_all"] = "--cpu-moe" in argv or "-cmoe" in argv
     out["flash_attn"] = val("-fa", "--flash-attn")
+    out["kv_approx"] = kv_approx_text(out["kv_k"], out["kv_v"])
     return {k: v for k, v in out.items() if v not in (None, False)}
+
+
+EXACT_KV = ("f16", "bf16", "f32")
+
+
+def kv_approx_text(kv_k, kv_v):
+    """LAUNCHER-1063 / QUALITY-014: a KV cache stored below 16 bit is approximate (answers can differ from an f16 cache). The plain mark, with the types; None for f16 / bf16 / f32."""
+    k, v = (kv_k or "f16").lower(), (kv_v or "f16").lower()
+    if k in EXACT_KV and v in EXACT_KV:
+        return None
+    return "approximate: " + (f"K and V {k}" if k == v else f"K {k} / V {v}") + " (not identical to an f16 KV cache)"
 
 
 def split_command(cmd):

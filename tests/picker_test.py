@@ -73,8 +73,9 @@ check(recs[(pc, "agents")]["engine"].startswith("stock") and recs[(pc, "chat")][
 check(recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["engine"].startswith("moe-cache"), "engine: Qwen3.6 (21.7 GB) needs moe-cache on 16 GB")
 check(recs[(pc, "agents")]["args"] == ["--agent", "--ctx", "131072"] and "--agent" not in recs[(pc, "chat")]["args"], "args: --agent only for agents")
 check(any(a["id"] == "flash-next-iq3_xxs" for a in recs[(pc, "agents")]["alternatives"]), "PC agents: the Flash-Next line (IQ3_XXS) is offered as the alternative")
-check(any(a["id"] == "flash-next-q2_0" and "--fast" in a["why"] for a in recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["alternatives"]),
-      "16/6 chat: Flash-Next offered only as the --fast alternative (measured at 12 GB)")
+_alt = next((a for a in recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["alternatives"] if a["id"] == "flash-next-q2_0"), None)
+check(_alt is not None and "--fast" not in _alt["why"] and "untested" in _alt["why"] and "slow" in _alt["why"],
+      "16/6 chat: Flash-Next offered as an alternative with no --fast speed quoted (--fast is off and --apply does not set it): 'slow', 'untested' (QUALITY-014 text audit)")
 
 # downloads: printed with size and source, never run here
 d = recs[(pc, "agents")]["download"]

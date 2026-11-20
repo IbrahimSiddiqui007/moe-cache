@@ -34,6 +34,10 @@ check(c("slot release: id 0 | task 0 | stop processing", False)[1] == "info", "c
 plan = mm.plan_from_args("llama-server -m x.gguf -c 65536 -ngl 99 --n-cpu-moe 30 -ub 4096 -b 4096 -ctk q8_0 -ctv q8_0 -fa on -t 8 --parallel 1 --device CUDA0".split())
 check(plan["ub"] == "4096" and plan["kv_k"] == "q8_0" and plan["cpu_moe_layers"] == "30" and plan["ngl"] == "99" and plan["device"] == "CUDA0" and plan["ctx"] == "65536", f"plan_from_args ({plan})")
 check(mm.plan_from_args(["x", "--cpu-moe", "--ctx-size=8192"]) == {"cpu_moe_all": True, "ctx": "8192"}, "plan_from_args: --cpu-moe and --opt=value")
+check(plan["kv_approx"].startswith("approximate: K and V q8_0"), f"q8_0 KV: marked approximate with its type ({plan.get('kv_approx')})")
+p4 = mm.plan_from_args("llama-server -m x.gguf -ctk q4_0 -ctv q4_0".split()); p84 = mm.plan_from_args("llama-server -m x.gguf -ctk q8_0 -ctv q4_0".split())
+check("q4_0" in p4["kv_approx"] and "K q8_0 / V q4_0" in p84["kv_approx"], f"q4_0 and the mixed K q8_0 / V q4_0 cache: marked approximate ({p4['kv_approx']}; {p84['kv_approx']})")
+check("kv_approx" not in mm.plan_from_args("llama-server -m x.gguf".split()) and "kv_approx" not in mm.plan_from_args("llama-server -ctk f16 -ctv f16".split()), "f16 KV (given or default): no mark")
 check(mm.split_command('a "b c" d') == ["a", "b c", "d"] or os.name == "nt", "split_command")
 
 # ---- the Monitor: lines ----

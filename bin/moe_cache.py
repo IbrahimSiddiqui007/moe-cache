@@ -4211,8 +4211,9 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
         kv128_default = True
-        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
-            "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; approximate: its quality was "
+            "measured at 4k-60k context, not at 128k or above (4k gate run: KL 0.0079, same top token 96.7 %; Flash-Next IQ3_XXS at 32k / 60k: KL 0.009 / 0.011), "
+            "docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     if (dense and ax.default_on("kv8") and not a.fast and not a.exact and not a.stock and not getattr(a, "approx_kv", False)
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)):
         # LAUNCHER-982 (PC 2026-11-08: Qwen3.8-27B UD-Q3_K_XL at --agent --ctx 65536 ran 18.9 tok/s against 35 at 24k: the f16 KV cache did not fit beside the model, llama.cpp's --fit
@@ -4231,17 +4232,25 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
                 # desktop on the card: decode 18.5 tok/s with q8_0 (spilling) against 27.8 with q4_0
                 mixed, q4 = triple[2], triple[3]
                 over8 = pair[1]["over_gib"]
-                if mixed["fits"]:
+                # QUALITY-014: each smaller step has its own TOKEN_MODES row (kv-k8v4, kv-q4); a row that is off ends the ladder at the step before (q8_0 / q8_0, spilling)
+                k8v4_on, q4_on = ax.default_on("kv-k8v4"), ax.default_on("kv-q4")
+                if not (k8v4_on and mixed["fits"]) and not q4_on:
+                    say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache; it still spills {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}): the smaller KV steps are off "
+                        "(TOKEN_MODES rows kv-k8v4 / kv-q4), so part of the model runs from system RAM; --exact keeps f16")
+                    a.dense_kv_types = None
+                elif k8v4_on and mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
-                    quality = "approximate: same top token in 94.6 % of positions against f16 (q8_0/q8_0: 96.5 %; measured on one laptop run, 27B, no published record yet)"
+                    quality = ("approximate: failed the kv quality gate at 8k-token windows, kept by the owner's decision: same top token in 94.6 % of positions against f16, KL 0.109 "
+                               "(q8_0/q8_0: 96.5 %; measured on one laptop run, 27B, no published record yet)")
                 else:
                     a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
-                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173; measured on one laptop run, 27B, no published record yet (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
-                saves = pair[1]["kv_gib"] - got["kv_gib"]
-                say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
-                    f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else
-                    f"is still {got['over_gib']:.1f} GiB over ({gpu_fit_words(got, step)}), so part of the model runs from system RAM. ") +
-                    quality + "; --exact keeps f16, your own -ctk/-ctv after -- win")
+                    quality = f"approximate: failed the kv quality gate at 8k-token windows, kept by the owner's decision: same top token in 92.9 % of positions against f16, KL 0.173; measured on one laptop run, 27B, no published record yet (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
+                if a.dense_kv_types:
+                    saves = pair[1]["kv_gib"] - got["kv_gib"]
+                    say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
+                        f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else
+                        f"is still {got['over_gib']:.1f} GiB over ({gpu_fit_words(got, step)}), so part of the model runs from system RAM. ") +
+                        quality + "; --exact keeps f16, your own -ctk/-ctv after -- win")
             elif pair[1]["fits"]:
                 say(f"moe-cache: context {ctx // 1024}k: the f16 KV cache does not fit the GPU next to the model ({gpu_fit_words(pair[0], 'f16')}): q8_0 KV cache, which does "
                     "(half the GPU memory for the same context; --exact keeps f16 and lets llama.cpp move work to the CPU)")
@@ -4286,7 +4295,8 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
         return kv_q8, tuned, desk_kw, ub_asked
     if tuned and tuned.get("ub") == 4096:
         say("moe-cache: long-prompt mode" + ("" if loud else " (the default; --no-long-prompt or --exact turns it off)") + ": a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, "
-            "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: same top token in 94-95 % of positions, the meaning stayed the same in our checks; measured on Flash-Next, other models can differ)")
+            "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: Flash-Next IQ3_XXS at 4k-8k against f16, KL 0.014-0.015, same top token in 94.1-94.8 % "
+            "of positions, the meaning stayed the same in our checks at 55k; other models can differ)")
         return kv_q8, tuned, desk_kw, ub_asked
     if getattr(a, "approx_kv", False) or getattr(a, "lp_with_fast", False):         # --approx safe / --fast asked for the 8-bit KV cache itself: it stays, the micro-batch is the usual one
         a.lp_kv = False
@@ -5529,7 +5539,7 @@ def _launch_plan(a, extra, argv, machine):
     gcache = default_gpu_cache_stage(a, extra, ls, machine, dev_listing, dense, method == "none (stock)", gcache, ncmoe_user)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
-    # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock,
+    # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock; not measured at 128k+,
     # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (prompts about 2x). Not with --stock (that compares
     # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
     # -ctk/-ctv after --) keeps llama.cpp's f16 KV

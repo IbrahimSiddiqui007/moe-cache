@@ -65,6 +65,18 @@ TOKEN_MODES = [
      "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: prompts +77.0 %, answers +1.8 % (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
     {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",
      "reason": "Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s; prompt processing 5-8 % slower; GLM-5.3 code text differed slightly"},
+    # LAUNCHER-1063 (owner 2026-11-10) / QUALITY-014 (2026-11-20): the dense KV ladder's smaller steps have their own rows and gate entries (they used to ride on the kv8 row).
+    # status "kept" = the quality gate failed (or is not met) but the owner decided to keep the step on: on by default, said as approximate, never "won".
+    {"id": "kv-k8v4", "what": "K q8_0 / V q4_0 KV cache for a dense model whose q8_0 / q8_0 KV cache would not fit the GPU (instead of a shorter context)", "gate": "kv",
+     "switch": "default for dense models when q8_0 / q8_0 would spill (--exact keeps f16; your own -ctk/-ctv win)", "status": "kept",
+     "reason": "failed gate level kv (KL <= 0.015, same top token >= 95 %) at long windows: 8 windows of 8192 tokens of real long chats, 2nd half scored (laptop, Qwen3.8-27B UD-Q3_K_XL, 2026-11-10, one run, forecast): KL 0.109, top-1 94.6 % (q8_0 / q8_0 there: 0.063, 96.5 %). "
+               "At the short gate tool protocol (3 windows of 512 tokens of README + docs, laptop RTX 4060, Qwen3.8-27B mixed-G, llama.cpp 7fe450e, 2026-11-20, one run, forecast): KL 0.0026, top-1 95.7 %, which passes, but the step runs at 32k+ and short windows do not show KV errors adding up; nothing measured at 64k. "
+               "Kept by owner decision 2026-11-10 (LAUNCHER-1063), approximate"},
+    {"id": "kv-q4", "what": "q4_0 / q4_0 KV cache for a dense model whose K q8_0 / V q4_0 cache would not fit the GPU either (instead of a shorter context)", "gate": "kv",
+     "switch": "default for dense models when K q8_0 / V q4_0 would spill (--exact keeps f16; your own -ctk/-ctv win)", "status": "kept",
+     "reason": "failed gate level kv (KL <= 0.015, same top token >= 95 %) at long windows: 8 windows of 8192 tokens of real long chats, 2nd half scored (laptop, Qwen3.8-27B UD-Q3_K_XL, 2026-11-10, one run, forecast): KL 0.173, top-1 92.9 %. "
+               "At the short gate tool protocol (3 windows of 512 tokens of README + docs, laptop RTX 4060, Qwen3.8-27B mixed-G, llama.cpp 7fe450e, 2026-11-20, one run, forecast): KL 0.0048, top-1 96.6 %, which passes, but the step runs at 32k+ and short windows do not show KV errors adding up; nothing measured at 64k. "
+               "PC, 27B 64k with the desktop on the card: decode 27.8 tok/s against 18.5 with q8_0 spilling (one run). Failed gate, kept by owner decision 2026-11-10 (LAUNCHER-1063), approximate"},
     {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "lost",
      "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: prompt -13.4 %, decode +8.4 % (inside the 26 % decode noise of 128-token runs); quality gate passed (KL 0.0196); a speed-up needs +5 % with the other side not worse than -3 %"},
     {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "lost",
@@ -81,13 +93,16 @@ def token_mode(mode_id):
     return next(m for m in TOKEN_MODES if m["id"] == mode_id)
 
 
+ON_STATUSES = ("won", "kept")      # "kept": failed or did not meet its gate, on by an owner decision (said as approximate)
+
+
 def default_on(mode_id):
-    """True when the default launch enables this mode: its status in TOKEN_MODES is "won"."""
-    return token_mode(mode_id)["status"] == "won"
+    """True when the default launch enables this mode: its status in TOKEN_MODES is "won", or "kept" (an owner decision over a failed gate)."""
+    return token_mode(mode_id)["status"] in ON_STATUSES
 
 
 def default_ids():
-    return [m["id"] for m in TOKEN_MODES if m["status"] == "won" and not m.get("group")]
+    return [m["id"] for m in TOKEN_MODES if m["status"] in ON_STATUSES and not m.get("group")]
 
 
 def default_expert_level():

@@ -195,7 +195,7 @@ def decide(f, L, free, limit, locked=(), allow_q8=True, windows=True):
             return done()
     if "kv" not in locked and allow_q8 and not cur.get("kv_q8") and not cur.get("cpu_only"):
         if estimate(f, dict(cur, kv_q8=True), windows)["total"] < est["total"] - 1:      # under --fit the capped GPU part would not change: no lossy step for nothing
-            if settle(dict(cur, kv_q8=True), "q8_0 KV cache (half the KV memory; approximate, KL 0.0079 at 4k)"):
+            if settle(dict(cur, kv_q8=True), "q8_0 KV cache (half the KV memory; approximate: KL 0.0079 in the 4k gate run, 0.009-0.015 on Flash-Next IQ3_XXS at 4k-60k)"):
                 return done()
     if "weights" not in locked:
         r = _more_weights_to_ram(f, cur, est, free, limit, windows)
