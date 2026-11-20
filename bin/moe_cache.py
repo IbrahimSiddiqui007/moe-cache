@@ -4228,7 +4228,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
             a.fast, a.dense_kv = "kv", True
             if not pair[1]["fits"]:
                 # LAUNCHER-1063 (owner 2026-11-10): f16 -> q8_0/q8_0 -> K q8_0 / V q4_0 -> q4_0/q4_0 -> only then layers to RAM; each step only when the one before would spill; never a
-                # shorter context; --exact and your own -ctk/-ctv are gated above. Laptop, 27B, top-1 against f16: q8/q8 96.5 %, K q8/V q4 94.6 %, q4/q4 92.9 % (KL 0.173); PC, 27B 64k with the
+                # shorter context; --exact and your own -ctk/-ctv are gated above. Laptop, 27B UD-Q3_K_XL, top-1 against f16: q8/q8 96.5 %, K q8/V q4 94.6 %, q4/q4 92.9 % (KL 0.173; no floor arm, see TOKEN_MODES; floor-corrected on Qwen3-30B-A3B q4/q4 +0.022 to +0.040 KL); PC, 27B 64k with the
                 # desktop on the card: decode 18.5 tok/s with q8_0 (spilling) against 27.8 with q4_0
                 mixed, q4 = triple[2], triple[3]
                 over8 = pair[1]["over_gib"]
@@ -4240,11 +4240,10 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
                     a.dense_kv_types = None
                 elif k8v4_on and mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
-                    quality = ("approximate: failed the kv quality gate at 8k-token windows, kept by the owner's decision: same top token in 94.6 % of positions against f16, KL 0.109 "
-                               "(q8_0/q8_0: 96.5 %; measured on one laptop run, 27B, no published record yet)")
+                    quality = ("approximate, kept by the owner's decision: on the 27B UD-Q3_K_XL (8k windows of real chats; measured on one laptop run, 27B, no floor arm) same top token 94.6 % against f16, KL 0.109 (q8_0/q8_0: 96.5 %), partly the model's own noise; with that noise taken off, on Qwen3-30B-A3B (laptop, one run each) K q8_0 / V q4_0 costs +0.003 to +0.006 KL (Qwen3-30B-A3B MoE, a different model; the dense 27B is not measured with a floor))")
                 else:
                     a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
-                    quality = f"approximate: failed the kv quality gate at 8k-token windows, kept by the owner's decision: same top token in 92.9 % of positions against f16, KL 0.173; measured on one laptop run, 27B, no published record yet (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
+                    quality = f"approximate, kept by the owner's decision: on the 27B UD-Q3_K_XL (8k windows of real chats; measured on one laptop run, 27B, no floor arm) same top token 92.9 % against f16, KL 0.173; with the model's own noise taken off, on Qwen3-30B-A3B (laptop, one run each; MoE, a different model, the dense 27B is not measured with a floor) q4_0 / q4_0 still costs +0.022 to +0.040 KL, over the 0.015 limit (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
                 if a.dense_kv_types:
                     saves = pair[1]["kv_gib"] - got["kv_gib"]
                     say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
