@@ -2599,6 +2599,7 @@ MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this py
 
 
 DENSE_FIT_TARGET_MIB = 256     # dense models: GPU memory --fit leaves free (llama.cpp default 1024: 6.3 tok/s vs 8.2 at 256 on a 14B that spills, laptop 8 GB)
+PLUGIN_EXECUTOR_BEST_GAIN = 1.29    # LAUNCHER-1236: the best decode gain of the plugin's expert executor over stock for a model that fits in RAM (v0.3.8 laptop band, +29 %; release-code audit: -4 %)
 LONG_PROMPT_MIN_CTX = 32768     # the long-prompt mode is the default from this context up (--long-prompt: any context)
 STOCK_HEADROOM = 1.5e9     # stock when model + this fits in the memory the server may use
 STOCK_OFFLOAD_MIN_BATCH = 512     # stock runs with CPU expert layers: batches below this stay on the CPU (llama.cpp: 32; T5, RESULTS 68)
@@ -3928,11 +3929,25 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
         t = tune(model, ctx, free=inp["free"], want_cache=False, plugin=False, **inp["kw"],
                  measured=measured_loads(a, ls, model, ctx, False, machine, False, False, None, inp["kw"]["free_source"]))      # as stock runs it: does every expert fit the GPU?
         ncmoe = min(int(t["n_cpu_moe"]), int(lay_n))
+        if ncmoe > 0:
+            # LAUNCHER-1236: the plugin keeps room free for its long-prompt GPU block, which moves expert layers to the CPU. Same inputs, plugin on, f16 KV, usual micro-batch:
+            tp = tune(model, ctx, free=inp["free"], want_cache=False, plugin=True, **inp["kw"],
+                      measured=measured_loads(a, ls, model, ctx, False, machine, True, False, None, inp["kw"]["free_source"]))
+            ncmoe_p = min(int(tp["n_cpu_moe"]), int(lay_n))
     except Exception as e:
         say(f"moe-cache: not using the expert executor: the stock check failed ({type(e).__name__}: {e})", err=True)      # "stock stays" was silent — a tuner bug looked like a normal dense-model answer
         return None                                       # dense, unreadable or no planner answer: stock stays
     if ncmoe <= 0:
         return None                                       # every expert fits the GPU: nothing for the executor to do
+    if ncmoe_p > ncmoe * PLUGIN_EXECUTOR_BEST_GAIN:
+        # LAUNCHER-1236 (PC, RX 9070 XT 16 GB, 35B-A3B IQ3_XXS, 64k 6-turn, b12207, n=1 = forecast): stock --n-cpu-moe 3 / -ub 2048 / f16 decoded 98.2 and read prompts at 2603 tok/s;
+        # the plugin plan (6 layers on the CPU, then the long-prompt mode) 92.5 / 1859. The executor would have to run the CPU layers ncmoe_p / ncmoe times faster than stock to
+        # break even on decode; the best it was ever measured is +29 % (v0.3.8 laptop band, not reproduced on the release code), so a plan that moves more layers than that runs stock
+        say(f"moe-cache: the model nearly fits the GPU: stock llama-server keeps {ncmoe} expert layers on the CPU, the plugin would keep {ncmoe_p} (room for its long-prompt block), "
+            f"more than its expert executor can make up (+{PLUGIN_EXECUTOR_BEST_GAIN - 1:.0%} at best, measured once): plain llama-server runs it (--always-plugin keeps the plugin)")
+        return None
+    return ("moe-cache: the model fits in memory but some layers keep their experts on the CPU: the plugin's expert executor runs those layers (on our test laptop with one model it was faster "
+            "than stock llama-server, but a later re-run on the release code did not reproduce that, so on your machine it can be slower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
     return ("moe-cache: the model fits in memory but some layers keep their experts on the CPU: the plugin's expert executor runs those layers (on our test laptop with one model it was faster "
             "than stock llama-server, but a later re-run on the release code did not reproduce that, so on your machine it can be slower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
 
@@ -4264,7 +4279,8 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     a.lp_explicit = bool(getattr(a, "long_prompt", False)) and not getattr(a, "no_long_prompt", False)
     if a.lp_explicit and (a.exact or a.stock):           # checked before anything else, so --ub / --fast / -ctk cannot hide the conflict
         raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
-    a.long_prompt = a.lp_explicit or (ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
+    a.long_prompt = a.lp_explicit or (ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX
+                                         and not getattr(a, "partial_offload", False))
     # LAUNCHER-985: a token mode given by the user (--fast, --fast=2, --fast=fewer, --fast=kv, --approx) only adds its own settings (plugin environment, the q8_0 KV cache it implies) on top of the
     # normal plan: the long-prompt mode (-ub 4096) still applies. lp_with_fast marks that --fast was there first, so the KV cache is never undone and the mode is not switched off.
     a.lp_with_fast = bool(a.fast) and not kv128_default
@@ -5486,6 +5502,7 @@ def _launch_plan(a, extra, argv, machine):
         why = plugin_for_partial_offload(a, ls, model, ctx, machine, gpu, mm_bytes)
         if why:
             say(why); stock = False
+            a.partial_offload = True          # LAUNCHER-1236: the model fits in RAM; the long-prompt default (measured only on a model bigger than RAM) stays off here
     a.api_stock = None
     if not stock and api_mismatch_stage(a, ls, machine, argv):
         stock = True                  # LAUNCHER-1224: the plugin cannot load into this llama-server: plan the stock path, not a plugin-shaped plan that plain llama.cpp would run
