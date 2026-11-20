@@ -38,7 +38,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check(p["lm"] == "mmap" and p["cache"] == "2000", "a cache flag the user passed after --: mmap stays (the launcher did not choose the cache)")
     p = plan(model, tmp, ["--gpu-cache", "auto", "--max-ram", "9"])
     check(p["lm"] == "mmap", "not enough RAM for file + prompt cache + reserve: mmap stays")
-    p = plan(model, tmp, ["--gpu-cache", "auto"], stock=False)
+    p = plan(model, tmp, ["--gpu-cache", "auto", "--always-plugin"], stock=False)      # LAUNCHER-1236: this model nearly fits the card, so only --always-plugin keeps the plugin
     check(not p["stock"] and p["ub"] == "1024" and p["lm"] == "mmap", "plugin path unchanged: -ub 1024, mmap")
     p = plan(model, tmp, ["--gpu-cache", "auto"], vram=3.4)
     check(p["stock"] and p["ub"] == "1024" and p["cache"] is not None, f"cache under 1.5 GiB at -ub 2048 (little VRAM): -ub 1024 buys the room (cache {p['cache']} MiB)")
@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory() as tmp:
     lp.MACHINES["linux_2cuda"] = dict(lp.MACHINES["linux"], listing=lp.LINUX_LIST + "  CUDA1: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 7600 MiB free)\n")
     d = dplan([], machine="linux_2cuda")
     check(not d["why"] and d["cache"] is None, "default off with two CUDA devices (not measured)")
-    d = dplan([], stock=False)
+    d = dplan(["--always-plugin"], stock=False)          # LAUNCHER-1236: the nearly-fitting model runs stock unless the plugin is asked for
     check(not d["why"], "default off when the plugin engine runs")
     lp.HELP_TEXT = lp.HELP_TEXT.replace("  --moe-cache-mib N\n", "")
     d = dplan([])
