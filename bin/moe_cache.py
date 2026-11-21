@@ -4286,8 +4286,8 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     # The mode is ON by default only for a model bigger than the memory it may use (Flash-Next 64k, item 361: prompt +50.7 %, decode +5.3 %, forecast, one A B B A).
     if (not a.long_prompt and ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not dense and ctx >= LONG_PROMPT_MIN_CTX
             and (stock or getattr(a, "partial_offload", False))):
-        say("moe-cache: long-prompt mode: off by default for a model that fits in RAM (35B at 64k on our test PC: -ub 4096 + q8_0 KV read prompts 42 % slower, one A B B A, LAUNCHER-1236 item 351; "
-            "it stays on for a model bigger than RAM, Flash-Next: prompts +51 %, item 361); --long-prompt asks for it")
+        say("moe-cache: long-prompt mode: off by default for a model that fits in RAM (35B at 64k on our test PC: -ub 4096 + q8_0 KV read prompts 42 % slower, one A B B A, forecast, LAUNCHER-1236 item 351; "
+            "it stays on for a model bigger than RAM, Flash-Next: prompts +51 %, one A B B A, forecast, item 361); --long-prompt asks for it")
     # LAUNCHER-985: a token mode given by the user (--fast, --fast=2, --fast=fewer, --fast=kv, --approx) only adds its own settings (plugin environment, the q8_0 KV cache it implies) on top of the
     # normal plan: the long-prompt mode (-ub 4096) still applies. lp_with_fast marks that --fast was there first, so the KV cache is never undone and the mode is not switched off.
     a.lp_with_fast = bool(a.fast) and not kv128_default
