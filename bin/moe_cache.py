@@ -2526,7 +2526,7 @@ SERVER_HELP = """\
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
-           llama.cpp's (EXACTNESS.md). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
+           llama.cpp's (EXACTNESS.md). It also turns off the model-card sampling defaults and the chat-template fix (LAUNCHER-1244; --no-sampling-defaults / --chat-template-file after -- are the single switches). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
 --retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; one more expert layer on the GPU per load, 2 while far from a known fit limit; not for a model bigger than the memory the server may use; a first load over 60 s stops it), for at most 180 s in
            all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %, and its second run, the confirm run, must win too) and stores
            it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
@@ -4281,6 +4281,13 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
     a.long_prompt = a.lp_explicit or (ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX
                                          and not getattr(a, "partial_offload", False))
+    # LAUNCHER-1244b (R19): say where the OFF pick comes from. A model that fits in RAM (stock path, or the plugin for a partial offload) does not get the long-prompt default:
+    # PC 2026-11-21, Qwen3.6-35B IQ3_XXS 64k, 6-turn, A B B A, one run each = forecast (item 351, LAUNCHER-1236 row): -ub 4096 + q8_0 KV prompt 1523/1534 vs 2650/2645 tok/s (-42 %), decode -4.5 %.
+    # The mode is ON by default only for a model bigger than the memory it may use (Flash-Next 64k, item 361: prompt +50.7 %, decode +5.3 %, forecast, one A B B A).
+    if (not a.long_prompt and ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not dense and ctx >= LONG_PROMPT_MIN_CTX
+            and (stock or getattr(a, "partial_offload", False))):
+        say("moe-cache: long-prompt mode: off by default for a model that fits in RAM (35B at 64k on our test PC: -ub 4096 + q8_0 KV read prompts 42 % slower, one A B B A, forecast, LAUNCHER-1236 item 351; "
+            "it stays on for a model bigger than RAM, Flash-Next: prompts +51 %, one A B B A, forecast, item 361); --long-prompt asks for it")
     # LAUNCHER-985: a token mode given by the user (--fast, --fast=2, --fast=fewer, --fast=kv, --approx) only adds its own settings (plugin environment, the q8_0 KV cache it implies) on top of the
     # normal plan: the long-prompt mode (-ub 4096) still applies. lp_with_fast marks that --fast was there first, so the KV cache is never undone and the mode is not switched off.
     a.lp_with_fast = bool(a.fast) and not kv128_default
@@ -5536,9 +5543,10 @@ def _launch_plan(a, extra, argv, machine):
     api_key, key_env = api_key_stage(a, extra, lan_addr)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias, slotdir = agent_stage(a, extra, model)
-    extra += template_stage(a, extra, model, dry)
+    # LAUNCHER-1244 (R19): --exact turns the chat-template fix and the model-card sampling defaults off too (your own flags after -- still win)
+    extra += [] if a.exact else template_stage(a, extra, model, dry)
     extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact, dense=dense)
-    extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
+    extra += sampling_args(a.no_sampling_defaults or a.exact, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
