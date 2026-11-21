@@ -61,7 +61,7 @@ def api_advice(want):
         return (f"use ggml-moe-cache-api{want}.dll from the kit: set MOE_CACHE_LIB to its full path (setx MOE_CACHE_LIB \"...\\ggml-moe-cache-api{want}.dll\" "
                 "for good)")
     return (f"download moe-cache-vX.Y.Z{'-ggml0.26' if want == 3 else ''}-linux-x86_64.tar.gz (API {want}) from the Releases page, or build from source: "
-            f"{'GGML_API=3 ' if want == 3 else ''}./build.sh")
+            f"{'GGML_API=%d ' % want if want >= 3 else ''}./build.sh")
 
 
 RELEASES_URL = "https://github.com/ggml-org/llama.cpp/releases"
@@ -397,7 +397,7 @@ def load_env(ls, lib, method="auto"):
     raise SystemExit(f"unknown load method: {method} (use auto, preload or path)")
 
 
-GGML_API_OF = {(0, 24): "2", (0, 25): "2", (0, 26): "3", (0, 27): "3"}
+GGML_API_OF = {(0, 24): "2", (0, 25): "2", (0, 26): "3", (0, 27): "3", (1, 0): "4"}   # "4" = plugin build with the ggml 1.0 headers (GGML_API=4; backend API is still 3, but op numbers moved)
 
 
 def ggml_api_of(major, minor):
@@ -406,7 +406,9 @@ def ggml_api_of(major, minor):
     check still refuses a ggml whose ops really changed."""
     if (major, minor) in GGML_API_OF:
         return GGML_API_OF[(major, minor)]
-    return "3" if major == 0 and minor > max(n for _, n in GGML_API_OF) else None
+    if major == 0:
+        return "3" if minor > 27 else None
+    return None            # ggml 1.0 is in the table; later 1.x are added when one is tested (a stray "1.2.3" string in a DLL must not pick a plugin build)
 
 
 def ggml_api_in_dll(data):
@@ -4463,6 +4465,50 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
     return ub, ncmoe, no_vram
 
 
+def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock):
+    """INKLING-SUPPORT-1 (2026-11-21): models of arch inkling2_loop (Inkling 2 Mini/Small) run their middle layers loop.start..loop.end-1 loop.count times with the SAME weights.
+    Three launch choices differ from a normal MoE model (laptop RTX 4060 8 GB, llama.cpp 46eb174 + PR 32704, Inkling-2-Mini Q2_K_XL; forecasts, n=1-7, notes in
+    handover/sessions/inkling-loop_2026-11-21 and inkling-support-1_2026-11-21):
+      1. placement: --n-cpu-moe fills from layer 0, but a loop layer's experts are read loop.count times per token. The CPU side takes the once-used layers first (0..start-1, end..n-1),
+         then loop layers from the front: same GPU bytes, bench decode 27.9 vs 20.0 tok/s (1.40x, 5 valid runs vs 7).
+      2. --no-op-offload: llama.cpp's op-offload staging keeps one GPU copy of every shared loop-layer expert tensor alive (compute buffer 4.1 GB at Q2, 8 GB at IQ4_XS: does not start on an 8 GB card).
+      3. -ub 128: the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor per layer (2.8 GB at 32k and -ub 512).
+    Not touched: --exact, a placement or batch you chose yourself (--n-cpu-moe, -ot, --ub, -ub, --no-op-offload after --), a plan with nothing on the CPU. Returns (ub, ncmoe)."""
+    if a.exact or a.cpu_only or not (ncmoe or "").isdigit() or ncmoe in ("0", "999"):
+        return ub, ncmoe
+    try:
+        from gguf_plan import read_meta
+        m = read_meta(model_parts(model)[0])
+        arch = m.get("general.architecture") or ""
+        if arch != "inkling2_loop":
+            return ub, ncmoe
+        n_l, ls_, le_, cnt = int(m[arch + ".block_count"]), int(m[arch + ".loop.start"]), int(m[arch + ".loop.end"]), int(m[arch + ".loop.count"])
+    except Exception:
+        return ub, ncmoe
+    say("moe-cache: note: llama.cpp 46eb174 and later load this model only with PR 32704 (without it the output is '!!!!'); use a llama-server built with it (LLAMA_SERVER=...)")
+    user_ncmoe = ncmoe_user is not None or a.n_cpu_moe is not None or any(x in ("--n-cpu-moe", "-ncmoe", "--cpu-moe", "-cmoe", "-ot", "--override-tensor") for x in extra)
+    n = int(ncmoe)
+    say(f"moe-cache: arch inkling2_loop: layers {ls_}-{le_ - 1} of {n_l} run {cnt} times with the same weights (read from the GGUF: loop.start/end/count)")
+    if not user_ncmoe and 0 < n <= n_l:
+        order = [i for i in range(n_l) if not ls_ <= i < le_] + list(range(ls_, le_))
+        cpu = sorted(order[:n])
+        rx = "blk\\.(" + "|".join(str(i) for i in cpu) + ")\\.ffn_(gate_up|gate|up|down)_exps\\.weight=CPU"
+        extra += ["-ot", rx]
+        say(f"moe-cache: expert placement by use count (source: the planner's {n} CPU layers, re-ordered): experts of layers {','.join(str(i) for i in cpu)} on the CPU, "
+            f"the loop layers' experts stay on the GPU as long as they fit (a loop layer is read {cnt}x per token; --n-cpu-moe N or -ot after -- overrides)")
+        ncmoe = "0"
+    if not any(x in ("--no-op-offload", "-nopo") for x in extra) and not os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD"):
+        extra.append("--no-op-offload")
+        say("moe-cache: --no-op-offload (source: inkling2_loop rule: the staging copy of the shared loop-layer experts is 4 GB at Q2 and does not fit an 8 GB card at IQ4_XS)")
+    if a.ub == "auto" and ub and str(ub).isdigit() and int(ub) > 128:
+        for i, x in enumerate(extra):
+            if x == "-ub" and i + 1 < len(extra):
+                extra[i + 1] = "128"
+        ub = "128"
+        say("moe-cache: micro-batch -ub 128 (source: inkling2_loop rule: the relative-position bias is n_kv x n_tokens x n_head F32 per layer; --ub N to change)")
+    return ub, ncmoe
+
+
 def cuda_only_listing(listing):
     """True when the server's own device list (`llama-server --list-devices`) shows one CUDA device and nothing else: the only setup the GPU expert cache default was measured on
     (CACHE-1187, one NVIDIA laptop, Linux). Read from the listing, never guessed from the machine."""
@@ -4807,7 +4853,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
     if method == "none (stock)":
         pass
     elif ncmoe == "0":
-        say(f"moe-cache: all experts fit in your GPU memory; the cache has nothing to manage for this model/context (profile {profile}; plugin loaded by {method})")
+        say(f"moe-cache: {'the experts you placed on the CPU side are managed by the cache; the rest' if any(x in ('-ot', '--override-tensor') for x in extra) else 'all experts'} fit in your GPU memory; the cache has nothing to manage for this model/context (profile {profile}; plugin loaded by {method})")
     else:
         say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")
     return cmd, extra
@@ -5581,6 +5627,7 @@ def _launch_plan(a, extra, argv, machine):
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     kv_q8, tuned, desk_kw, ub_asked = long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked)
     ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
+    ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock)
     ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
     # DELIBERATE (owner decision 2026-11-08): the long-prompt default sets a.fast = "kv", so this 64-token threshold applies to every default launch of a big model at 32k+ context,

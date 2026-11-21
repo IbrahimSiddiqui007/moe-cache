@@ -105,7 +105,9 @@ static FILE * fopen_private(const char * path) {
 // (0.26.0), Windows CI + the Windows test PC at release b11669 (0.27.0, any build of it) and identity + Windows CI at release b11966 (0.28.0, named by
 // commit because later 0.28.0 builds changed a struct layout without a version bump) release b12064 (0.28.0@51fe42c5d, the pin from 2026-11-03 to 2026-11-09) and release b12207 (0.29.0@998200491, the pin since 2026-11-09)
 #ifndef MOE_CACHE_TESTED_GGML
-#if GGML_BACKEND_API_VERSION >= 3
+#if defined(MC_API_TAG) && MC_API_TAG == 4
+#define MOE_CACHE_TESTED_GGML "1.0.0"     // GGML_API=4 build: laptop smoke only (llama.cpp 46eb1742d + PR 32704, Inkling-2-Mini Q2_K_XL / IQ4_XS, one 35B: correct text), no CI yet
+#elif GGML_BACKEND_API_VERSION >= 3
 #define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0, 0.28.0@ff0d396e3, 0.28.0@51fe42c5d, 0.29.0@998200491"
 #else
 #define MOE_CACHE_TESTED_GGML "0.25.1"
@@ -120,7 +122,10 @@ static bool moe_cache_tested_ggml(const char * v) {
 // readable without loading the library (grep -a): lets the launcher pick the build that matches a llama-server's ggml
 #define MC_STR_(x) #x
 #define MC_STR(x) MC_STR_(x)
-extern "C" __attribute__((used)) const char moe_cache_api_tag[] = "moe-cache-api=" MC_STR(GGML_BACKEND_API_VERSION) ";";
+#ifndef MC_API_TAG      // the launcher key: the backend API, except GGML_API=4 builds (ggml 1.0 headers, same backend API 3 but other op numbers)
+#define MC_API_TAG GGML_BACKEND_API_VERSION
+#endif
+extern "C" __attribute__((used)) const char moe_cache_api_tag[] = "moe-cache-api=" MC_STR(MC_API_TAG) ";";
 
 // The backend API of the ggml this server runs, by version number (-1: unknown version). A plugin built for another API has a different
 // struct layout and would crash, so setup refuses it (the model then loads the normal way).
@@ -131,6 +136,7 @@ static int moe_cache_api_of_ggml(const char * v) {
     // 0.26 and newer 0.x: API 3, as the launcher says (bin/moe_cache.py ggml_api_of; ggml 0.28 did not bump it). A future API 4 is not guessed here: ggml's
     // loader compares reg.api_version for GGML_BACKEND_PATH, and ggml_struct_layout_mismatch() (start-up, also LD_PRELOAD) refuses a changed struct layout.
     if (maj == 0 && min >= 26) return 3;
+    if (maj == 1 && min == 0) return 3;     // ggml 1.0 (llama.cpp 46eb1742d, 2026-11-21): backend API still 3; built with GGML_API=4 headers (ops renumbered)
     return -1;
 }
 

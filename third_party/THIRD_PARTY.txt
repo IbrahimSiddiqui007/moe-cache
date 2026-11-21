@@ -1,3 +1,4 @@
 Third-party code in this repository (name, version, source, sha256 of the release archive, licence)
 
 ggml          0.25.1 (backend API 2) headers only   llama.cpp commit 7fe450e19                                                MIT   third_party/ggml/LICENSE
+ggml-v4       1.0.0 (backend API 3, op numbers moved) headers only   llama.cpp commit 46eb1742d                                MIT   third_party/ggml-v4/LICENSE

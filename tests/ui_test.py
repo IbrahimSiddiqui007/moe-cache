@@ -1632,7 +1632,7 @@ check(mc.vram_for_commit(15.5, 40 * GiB) == 15.5 and mc.vram_for_commit(15.5, No
 check(abs(mc.vram_for_commit(15.5, 12 * GiB) - 8.0) < 1e-9 and mc.vram_for_commit(15.5, 3 * GiB) == 0.0, "GPU plan: capped to free commit minus 4 GiB (8 GiB), never below 0")
 
 # ggml versions newer than the table keep API 3 (task Q: llama.cpp b11966 = ggml 0.28 got no plugin and `check` said the DLL was missing)
-check([mc.ggml_api_of(0, n) for n in (24, 25, 26, 27, 28, 31)] == ["2", "2", "3", "3", "3", "3"] and mc.ggml_api_of(0, 20) is None and mc.ggml_api_of(1, 0) is None,
+check([mc.ggml_api_of(0, n) for n in (24, 25, 26, 27, 28, 31)] == ["2", "2", "3", "3", "3", "3"] and mc.ggml_api_of(0, 20) is None and mc.ggml_api_of(1, 0) == "4" and mc.ggml_api_of(1, 3) is None and mc.ggml_api_of(2, 0) is None,
       "ggml version -> backend API: 0.24-0.25 -> 2, 0.26 and newer 0.x -> 3, older or 1.x unknown")
 d28 = os.path.join(TMP, "ggml028"); os.makedirs(d28); open(os.path.join(d28, "ggml-base.dll"), "wb").write(b"MZ\x00junk\x000.8.0\x00more\x000.28.0\x00tail")
 saved_win = mc.WINDOWS; mc.WINDOWS = True

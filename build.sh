@@ -6,12 +6,13 @@
 #                  Output: build/win/ or BUILD_DIR (e.g. BUILD_DIR=build/win-api3 GGML_API=3 keeps an API 2 and an API 3 DLL side by side). Tested on Windows 11 + AMD (llama.cpp b11669, API 3) and on the MSI Claw.
 # The ggml headers are included in third_party/, so no llama.cpp source is needed. They match ggml 0.25.1 (llama.cpp commit 7fe450e19).
 #   GGML_API=3     build against the ggml 0.26 headers (backend API 3, llama.cpp commit 23b0202a1) instead of 0.25.1 (API 2)
+#   GGML_API=4     build against the ggml 1.0 headers (llama.cpp commit 46eb1742d, backend API still 3, but the op numbers moved: separate build, tagged moe-cache-api=4; needed for Inkling 2 and other new architectures)
 #   BUILD_DIR      output directory (default build; use another one to keep an API 2 and an API 3 build side by side)
 set -e
 cd "$(dirname "$0")"
 HDR=third_party/ggml; OUT="${BUILD_DIR:-build}"
-# GGML_API must be 2 or 3 (or unset = 2): any other value (GGML_API=4, a typo) used to build silently against the API 2 headers
-case "${GGML_API:-2}" in 2) ;; 3) HDR=third_party/ggml-v3 ;; *) echo "build.sh: GGML_API must be 2 or 3 (got '$GGML_API'); unset means 2" >&2; exit 1 ;; esac
+# GGML_API must be 2, 3 or 4 (or unset = 2): any other value (GGML_API=4, a typo) used to build silently against the API 2 headers
+case "${GGML_API:-2}" in 2) ;; 3) HDR=third_party/ggml-v3 ;; 4) HDR=third_party/ggml-v4; MOE_CACHE_CXXFLAGS="-DMC_API_TAG=4 ${MOE_CACHE_CXXFLAGS:-}" ;; *) echo "build.sh: GGML_API must be 2, 3 or 4 (got '$GGML_API'); unset means 2" >&2; exit 1 ;; esac
 if [ "$1" = "--windows" ]; then
   # MINGW_CXX: the compiler (default x86_64-w64-mingw32-g++; a UCRT one such as x86_64-w64-mingw32ucrt-g++ matches official llama.cpp's C runtime)
   W="${BUILD_DIR:-build/win}"; M=x86_64-w64-mingw32; CXX="${MINGW_CXX:-$M-g++}"; mkdir -p "$W"
