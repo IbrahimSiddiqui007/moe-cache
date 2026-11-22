@@ -4886,15 +4886,16 @@ def template_stage(a, extra, model, dry=False):
 # ---- LAUNCHER-994: measured auto-tune (logic and cache file: bin/moe_cache_autotune.py) ------------------------------------------------------------------------
 def autotune_machine_sig(machine, ls):
     """What makes a tuned pick valid on this computer and no other: CPU, cores, RAM (rounded to GiB), the GPUs and their total memory (free memory is left out:
-    it changes every minute), the OS and the llama-server build (size + mtime)."""
+    it changes every minute), the OS and the llama-server build (size + content, LAUNCHER-1251)."""
     try:
         devs = re.sub(r"\(\s*(\d+) MiB,\s*\d+ MiB free\s*\)", lambda m: f"({int(m.group(1)) // 1024} GiB)", machine.list_devices(ls) or "")
     except Exception:
         devs = ""
-    try:
-        st = os.stat(ls)
-        build = f"{st.st_size}:{int(st.st_mtime)}"
-    except OSError:
+    try:                 # LAUNCHER-1251: the program's content, not its modification time (a kit unpacked again kept nothing of its stored picks)
+        planner_path()
+        from load_record import content_id
+        build = f"{os.path.getsize(ls)}:{content_id(ls)}"
+    except Exception:
         build = ""
     try:
         mem = round(machine.mem_total() / 2**30)
@@ -4905,10 +4906,12 @@ def autotune_machine_sig(machine, ls):
 
 
 def autotune_model_id(model):
+    """Name, size and a content sample (LAUNCHER-1251: a model copied again, e.g. to another drive or over the network, keeps its stored pick)."""
     try:
-        st = os.stat(model)
-        return f"{os.path.basename(model)}:{st.st_size}:{int(st.st_mtime)}"
-    except OSError:
+        planner_path()
+        from load_record import content_id
+        return f"{os.path.basename(model)}:{os.path.getsize(model)}:{content_id(model)}"
+    except Exception:
         return os.path.basename(model)
 
 
