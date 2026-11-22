@@ -224,9 +224,9 @@ with tempfile.TemporaryDirectory() as tmp:
         finally:
             os.environ.pop("MOE_CACHE_DENSE_SPILL_RULE", None)
     mc.dense_spill_stage = with_switch
-    def sp(ctx, vram, env=None, opts=(), extra=()):
+    def sp(ctx, vram, env=None, opts=(), extra=(), mach="win"):
         box["env"] = env
-        return lp.run_case("linux", ["--ram", "12", "--vram", f"{vram:.3f}", "--ctx", str(ctx)] + list(opts), list(extra), model, tmp)
+        return lp.run_case(mach, ["--ram", "12", "--vram", f"{vram:.3f}", "--ctx", str(ctx)] + list(opts), list(extra), model, tmp)
     spilled = lambda r: "-np 1" in cmd(r) and "-ub 256" in cmd(r) and cmd(r).count("-ub ") == 1
     try:
         d128 = sp(c128, q4_128 / 2)
@@ -248,6 +248,10 @@ with tempfile.TemporaryDirectory() as tmp:
         check(not spilled(ex1), "--exact beats MOE_CACHE_DENSE_SPILL_RULE=1")
         mine = sp(c128, q4_128 / 2, extra=["-np", "2"])
         check("-np 1" not in cmd(mine) and "-ub 256" not in cmd(mine) and "your own -np / -ub win" in out(mine), "default at 128k, your own -np 2: not applied, said")
+        lin = sp(c128, q4_128 / 2, mach="linux")
+        check(not spilled(lin) and "measured only on Windows" in out(lin), "default at 128k on Linux: off (measured only on Windows, R19), said")
+        lin1 = sp(c128, q4_128 / 2, env="1", mach="linux")
+        check(spilled(lin1) and "forced on" in out(lin1), "MOE_CACHE_DENSE_SPILL_RULE=1 on Linux at 128k: on (forced)")
         # golden plan lines: the dry-run command at 128k with the rule (default) and with the rule off differ in exactly -np 1 / -ub 256
         check(spilled(d128) and not spilled(off128) and "-ub" in cmd(off128), "golden 64k/128k: 128k default = rule off + (-np 1, -ub 256); 64k default = rule off")
     finally:

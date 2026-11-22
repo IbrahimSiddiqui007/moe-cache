@@ -5288,7 +5288,7 @@ DENSE_SPILL_UB = 256
 
 
 def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
-    """LAUNCHER-1067 / TEST-1205 arm D, default since LAUNCHER-1225 (items 607 + 614): a dense model that still spills out of GPU memory at 128k+ (after the KV ladder) gets
+    """LAUNCHER-1067 / TEST-1205 arm D, default since LAUNCHER-1225 (items 607 + 614): a dense model that still spills out of GPU memory at 128k+ (after the KV ladder) on Windows gets
     -np 1 (one slot: llama.cpp's per-slot buffers go; 449 MiB freed on the 27B) and -ub 256 (half the compute buffer). Measured (R19 scope): PC RX 9070 XT, 27B UD-IQ4_XS, 128k,
     6-turn, one A and one B on a quiet PC (forecast): A 270.1 prompt / 8.57 decode, B 382.7 / 10.58 = +41.7 % / +23.5 %; quality gate item 357 passed (KLD ~0, top-1 100 %).
     Below 128k it is OFF by default: at 64k the 27B lost 49 % prompt (item 606_r, +9.4 % decode). The env switch overrides both ways: MOE_CACHE_DENSE_SPILL_RULE=1 forces it on
@@ -5301,6 +5301,10 @@ def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
     forced = sw == "1"
     floor = DENSE_SPILL_MIN_CTX if forced else DENSE_SPILL_DEFAULT_CTX
     if int(ctx or 0) < floor:
+        return cmd, ub
+    if not forced and not machine.windows:
+        # R19 (critic of 347bbf3): measured only on Windows (AMD Vulkan, where a plan that does not fit spills into shared memory); elsewhere off until measured
+        say(f"moe-cache: dense spill rule: off on this machine (measured only on Windows; MOE_CACHE_DENSE_SPILL_RULE=1 turns it on)", err=True)
         return cmd, ub
     why = "MOE_CACHE_DENSE_SPILL_RULE=1, forced on" if forced else f"default at {DENSE_SPILL_DEFAULT_CTX // 1024}k+, LAUNCHER-1225; MOE_CACHE_DENSE_SPILL_RULE=0 turns it off"
     if a.ub != "auto" or any(x in ("-np", "--parallel", "-ub", "--ubatch-size") or x.startswith(("--parallel=", "--ubatch-size=")) for x in user_argv):
