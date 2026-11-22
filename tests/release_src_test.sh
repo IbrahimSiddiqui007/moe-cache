@@ -32,7 +32,7 @@ chk "the helper is not shipped inside the tarball's tools/" 'grep -q "dist/\$N/t
 #   (src/top: experimental native top; docs/internal: design notes; the release scripts themselves)
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
   mkdir -p "$T/tree"; git ls-files -z | while IFS= read -r -d '' f; do [ -e "$f" ] && mkdir -p "$T/tree/$(dirname "$f")" && cp -p "$f" "$T/tree/$f"; done
-  printf '#!/bin/bash\nmkdir -p build && echo stub > build/libggml-moe-cache.so\n' > "$T/tree/build.sh"; chmod +x "$T/tree/build.sh"
+  printf '#!/bin/bash\no=${BUILD_DIR:-build}; mkdir -p $o && echo stub > $o/libggml-moe-cache.so\n' > "$T/tree/build.sh"; chmod +x "$T/tree/build.sh"
   ( cd "$T/tree" && MOE_CACHE_RELEASE_EXPORT=1 MOE_CACHE_RELEASE_NO_LLAMA=1 bash tools/make_release.sh 0.0.1 >"$T/rel.out" 2>&1 ); rc=$?
   chk "make_release.sh runs to the end on this tree (stubbed compile) ($(tail -c 150 "$T/rel.out" | tr '\n' ' '))" '[ $rc = 0 ]'
   n_tar=$(ls "$T"/tree/dist/*.tar.gz 2>/dev/null | wc -l)
