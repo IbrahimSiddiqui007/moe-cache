@@ -234,6 +234,7 @@ These appear in the code but setting them in the environment does nothing (build
 | `MOE_CACHE_TEST_MUTANT_PACK_OFFSET` | Not a runtime variable: a compile-time flag (`-D`) used only by CI. It copies expert slices from a wrong offset so the pack identity test is proven able to fail. Never set it. |
 | `MOE_CACHE_TEST_NO_POPULATE` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI to test the guarded page-touch that a kernel without `MADV_POPULATE_READ` takes. Never set it. |
 | `MOE_CACHE_TEST_INPAGE_ERROR` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI (`windows.yml`). It makes the Windows file-view page touch raise the in-page read error a dropped disk would, on the second page of a range, to test that `file_view_load` returns false instead of crashing. |
+| `MOE_CACHE_INKLING_OP_OFFLOAD` | Any value: on an Inkling 2 (`inkling2_loop`) model the launcher does not add `--no-op-offload`. By default it adds it, because the staging copy of the shared loop-layer experts is 4 GB at Q2 and does not fit an 8 GB card at IQ4_XS. A `--no-op-offload` / `-nopo` you pass yourself is left as it is. |
 
 ## Measured auto-tune
 
