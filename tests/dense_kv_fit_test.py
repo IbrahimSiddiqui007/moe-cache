@@ -209,35 +209,51 @@ with tempfile.TemporaryDirectory() as tmp:
     mc.EXPECT_CPU_WORK[0] = True
     check(mc.EXPECT_CPU_WORK[0] is True, "log scan flag exists (the pump skips the note while the plan itself puts work on the CPU)")
     mc.EXPECT_CPU_WORK[0] = False
-    # --- LAUNCHER-1067 / TEST-1205 D: the dense spill rule (test switch MOE_CACHE_DENSE_SPILL_RULE=1, off by default) ---
-    c64 = 65536
+    # --- LAUNCHER-1067 / TEST-1205 D, default since LAUNCHER-1225 (items 607 + 614): the dense spill rule is ON by default for a dense plan that spills at 128k+, OFF below;
+    #     MOE_CACHE_DENSE_SPILL_RULE=1 forces it from 64k, =0 forces it off; --exact and the user's own -np / -ub win ---
+    c64, c128 = 65536, 131072
     q4_64 = gp.dense_gpu_fit(model, c64, 64 * GIB, "q4_0", 0.0, 0.0, 0.20)["need_gib"]
-    sp = lambda vram, env=None, opts=(), extra=(): (os.environ.__setitem__("MOE_CACHE_DENSE_SPILL_RULE", env) if env else os.environ.pop("MOE_CACHE_DENSE_SPILL_RULE", None),
-                                                    lp.run_case("linux", ["--ram", "12", "--vram", f"{vram:.3f}", "--ctx", str(c64)] + list(opts), list(extra), model, tmp),
-                                                    os.environ.pop("MOE_CACHE_DENSE_SPILL_RULE", None))[1]
-    off = sp(q4_64 / 2)
-    check("-np 1" not in cmd(off) and "-ub 256" not in cmd(off) and "dense spill rule" not in out(off), "spill rule: switch off (the default): the plan is unchanged")
-    # lp.run_case clears MOE_CACHE_* from the environment, so the switch goes in through a wrapper of the stage
+    q4_128 = gp.dense_gpu_fit(model, c128, 64 * GIB, "q4_0", 0.0, 0.0, 0.20)["need_gib"]
     real_stage = mc.dense_spill_stage
-    def with_switch(*a_, **k_):
-        os.environ["MOE_CACHE_DENSE_SPILL_RULE"] = "1"
+    box = {"env": None}
+    def with_switch(*a_, **k_):          # lp.run_case clears MOE_CACHE_* from the environment, so the switch goes in through a wrapper of the stage
+        if box["env"] is not None:
+            os.environ["MOE_CACHE_DENSE_SPILL_RULE"] = box["env"]
         try:
             return real_stage(*a_, **k_)
         finally:
             os.environ.pop("MOE_CACHE_DENSE_SPILL_RULE", None)
     mc.dense_spill_stage = with_switch
+    def sp(ctx, vram, env=None, opts=(), extra=(), mach="win"):
+        box["env"] = env
+        return lp.run_case(mach, ["--ram", "12", "--vram", f"{vram:.3f}", "--ctx", str(ctx)] + list(opts), list(extra), model, tmp)
+    spilled = lambda r: "-np 1" in cmd(r) and "-ub 256" in cmd(r) and cmd(r).count("-ub ") == 1
     try:
-        on = sp(q4_64 / 2)
-        check("-np 1" in cmd(on) and "-ub 256" in cmd(on) and cmd(on).count("-ub ") == 1 and "dense spill rule" in out(on) and "spills" in out(on),
-              f"spill rule on, a dense 64k plan that spills: -np 1 and -ub 256 (one -ub), the line says the spill")
-        fits = sp(q4_64 * 3)
-        check("-np 1" not in cmd(fits) and "does not spill: not applied" in out(fits), "spill rule on, a plan that fits: not applied, said")
-        ex = sp(q4_64 / 2, opts=["--exact"])
-        check("-np 1" not in cmd(ex) and "-ub 256" not in cmd(ex), "spill rule on, --exact: not applied")
-        mine = sp(q4_64 / 2, extra=["-np", "2"])
-        check("-np 1" not in cmd(mine) and "-ub 256" not in cmd(mine) and "your own -np / -ub win" in out(mine), "spill rule on, your own -np 2: not applied, said")
-        short = lp.run_case("linux", ["--ram", "12", "--vram", f"{q4_need / 2:.3f}", "--ctx", "8192"], [], model, tmp)
-        check("-np 1" not in cmd(short), "spill rule on, 8k context: below 64k, not applied")
+        d128 = sp(c128, q4_128 / 2)
+        check(spilled(d128) and "default at 128k+" in out(d128) and "spills" in out(d128) and "LAUNCHER-1225" in out(d128) and "+41.7 % prompt" in out(d128),
+              "spill rule default, dense 128k plan that spills: -np 1 and -ub 256 (one -ub), the source line names the default, the ledger row and the measured figures")
+        d64 = sp(c64, q4_64 / 2)
+        check(not spilled(d64) and "dense spill rule" not in out(d64), "spill rule default, dense 64k plan that spills: plan unchanged, no line (64k lost 49 % prompt, item 606_r)")
+        f128 = sp(c128, q4_128 * 3)
+        check("-np 1" not in cmd(f128) and "does not spill: not applied" in out(f128), "spill rule default, 128k plan that fits: not applied, said")
+        off128 = sp(c128, q4_128 / 2, env="0")
+        check(not spilled(off128) and "dense spill rule" not in out(off128), "MOE_CACHE_DENSE_SPILL_RULE=0 at 128k: off")
+        on64 = sp(c64, q4_64 / 2, env="1")
+        check(spilled(on64) and "forced on" in out(on64), "MOE_CACHE_DENSE_SPILL_RULE=1 at 64k: on (forced), said")
+        short = sp(8192, q4_64 / 4, env="1")
+        check("-np 1" not in cmd(short), "MOE_CACHE_DENSE_SPILL_RULE=1, 8k context: below the 64k floor, not applied")
+        ex = sp(c128, q4_128 / 2, opts=["--exact"])
+        check(not spilled(ex) and "dense spill rule" not in out(ex), "--exact at 128k: not applied")
+        ex1 = sp(c128, q4_128 / 2, env="1", opts=["--exact"])
+        check(not spilled(ex1), "--exact beats MOE_CACHE_DENSE_SPILL_RULE=1")
+        mine = sp(c128, q4_128 / 2, extra=["-np", "2"])
+        check("-np 1" not in cmd(mine) and "-ub 256" not in cmd(mine) and "your own -np / -ub win" in out(mine), "default at 128k, your own -np 2: not applied, said")
+        lin = sp(c128, q4_128 / 2, mach="linux")
+        check(not spilled(lin) and "measured only on Windows" in out(lin), "default at 128k on Linux: off (measured only on Windows, R19), said")
+        lin1 = sp(c128, q4_128 / 2, env="1", mach="linux")
+        check(spilled(lin1) and "forced on" in out(lin1), "MOE_CACHE_DENSE_SPILL_RULE=1 on Linux at 128k: on (forced)")
+        # golden plan lines: the dry-run command at 128k with the rule (default) and with the rule off differ in exactly -np 1 / -ub 256
+        check(spilled(d128) and not spilled(off128) and "-ub" in cmd(off128), "golden 64k/128k: 128k default = rule off + (-np 1, -ub 256); 64k default = rule off")
     finally:
         mc.dense_spill_stage = real_stage
 if fails:

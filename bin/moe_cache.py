@@ -5069,14 +5069,16 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         return cmd, env, {"state": "off", "lines": [line], "why": f"off ({off})"}
     locked = at.locked_dims(a, argv, os.environ, windows=machine.windows, agent=bool(a.agent), project=bool(a.project), engine=engine)
     if getattr(a, "spill_locked", False):           # critic of 59abd70: the dense spill rule set -ub and -np; the tuner leaves them as the rule set them
-        locked.setdefault("ub", "set by the dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1)")
-        locked.setdefault("np", "set by the dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1)")
+        locked.setdefault("ub", "set by the dense spill rule")
+        locked.setdefault("np", "set by the dense spill rule")
     # what else shapes the plan a pick was measured on (LAUNCHER-1041): the user's memory caps, the modes (--fast, --mtp, --approx, long-prompt, --hybrid) and the settings the
     # tuner does not touch but the speed depends on (the prompt cache size the USER asked for - the planner's own value is not keyed: on Windows it follows the free commit of the moment -,
     # the KV type of the plan, flash attention)
     limits = {k: str(getattr(a, k)) for k in ('ram', 'vram', 'max_ram', 'gpu_margin', 'leave_room', 'fast', 'mtp', 'approx', 'long_prompt', 'no_long_prompt', 'hybrid', 'always_plugin') if getattr(a, k, None)}
     # the opt-in candidates and the dense spill rule change what was measured: a result tuned with them is kept apart from one without (LAUNCHER-1225 step 2)
-    limits.update({k.lower(): "1" for k in ("MOE_CACHE_TUNE_MTP", "MOE_CACHE_TUNE_THREADS", "MOE_CACHE_DENSE_SPILL_RULE") if os.environ.get(k) == "1"})
+    limits.update({k.lower(): "1" for k in ("MOE_CACHE_TUNE_MTP", "MOE_CACHE_TUNE_THREADS") if os.environ.get(k) == "1"})
+    if getattr(a, "spill_locked", False):
+        limits["moe_cache_dense_spill_rule"] = "1"
     limits.update({k: str(v) for k, v in (("cache_ram", arg_after(argv, "--cache-ram", "-cram")), ("ctk", arg_after(cmd, "-ctk", "--cache-type-k")), ("fa", arg_after(cmd, "-fa", "--flash-attn"))) if v is not None})
     if vram_user is not _VRAM_AS_GIVEN:
         # gpu_stage / multi_gpu_start overwrite a.vram with the free memory of the moment (Windows AMD / Intel: "14.65"); keyed on that, a stored pick was found again only when free
@@ -5280,20 +5282,33 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
     return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
 
 
-DENSE_SPILL_MIN_CTX = 65536
+DENSE_SPILL_MIN_CTX = 65536          # the floor of the env override MOE_CACHE_DENSE_SPILL_RULE=1
+DENSE_SPILL_DEFAULT_CTX = 131072     # the default turns on from here (LAUNCHER-1225 items 607 + 614); below it the rule lost 49 % prompt at 64k (item 606_r)
 DENSE_SPILL_UB = 256
 
 
 def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
-    """LAUNCHER-1067 / TEST-1205 arm D: a dense model that still spills out of GPU memory at 64k+ (after the KV ladder) gets -np 1 (one slot: llama.cpp's per-slot buffers go;
-    449 MiB freed on the 27B, LAUNCHER-1067) and -ub 256 (half the compute buffer: 280 -> 140 MiB on the 27B at 128k). Measured: PC, 27B IQ4_XS 64k, one run per arm, decode 12.22
-    -> 13.11 tok/s (+7.3 %), prompt -1.5 %, spill 3.17 -> 2.59 GiB (TEST-1205, forecast); 27B Q3_K_XL 128k 15.7 -> 20.5 tok/s (A B B A). OFF until the PC's 6-turn A B B A:
-    MOE_CACHE_DENSE_SPILL_RULE=1 switches it on (the chain's test switch). Never with --exact, the user's own -np / --parallel / -ub / --ub, or a plan that does not spill.
-    Returns (cmd, ub)."""
-    if os.environ.get("MOE_CACHE_DENSE_SPILL_RULE") != "1" or not dense or a.exact or int(ctx or 0) < DENSE_SPILL_MIN_CTX:
+    """LAUNCHER-1067 / TEST-1205 arm D, default since LAUNCHER-1225 (items 607 + 614): a dense model that still spills out of GPU memory at 128k+ (after the KV ladder) on Windows gets
+    -np 1 (one slot: llama.cpp's per-slot buffers go; 449 MiB freed on the 27B) and -ub 256 (half the compute buffer). Measured (R19 scope): PC RX 9070 XT, 27B UD-IQ4_XS, 128k,
+    6-turn, one A and one B on a quiet PC (forecast): A 270.1 prompt / 8.57 decode, B 382.7 / 10.58 = +41.7 % / +23.5 %; quality gate item 357 passed (KLD ~0, top-1 100 %).
+    Below 128k it is OFF by default: at 64k the 27B lost 49 % prompt (item 606_r, +9.4 % decode). The env switch overrides both ways: MOE_CACHE_DENSE_SPILL_RULE=1 forces it on
+    from 64k up (the old test switch), =0 forces it off. Never with --exact, the user's own -np / --parallel / -ub / --ub, or a plan that does not spill. Returns (cmd, ub)."""
+    sw = os.environ.get("MOE_CACHE_DENSE_SPILL_RULE", "")
+    if sw == "0":
         return cmd, ub
+    if a.exact or not dense:
+        return cmd, ub
+    forced = sw == "1"
+    floor = DENSE_SPILL_MIN_CTX if forced else DENSE_SPILL_DEFAULT_CTX
+    if int(ctx or 0) < floor:
+        return cmd, ub
+    if not forced and not machine.windows:
+        # R19 (critic of 347bbf3): measured only on Windows (AMD Vulkan, where a plan that does not fit spills into shared memory); elsewhere off until measured
+        say(f"moe-cache: dense spill rule: off on this machine (measured only on Windows; MOE_CACHE_DENSE_SPILL_RULE=1 turns it on)", err=True)
+        return cmd, ub
+    why = "MOE_CACHE_DENSE_SPILL_RULE=1, forced on" if forced else f"default at {DENSE_SPILL_DEFAULT_CTX // 1024}k+, LAUNCHER-1225; MOE_CACHE_DENSE_SPILL_RULE=0 turns it off"
     if a.ub != "auto" or any(x in ("-np", "--parallel", "-ub", "--ubatch-size") or x.startswith(("--parallel=", "--ubatch-size=")) for x in user_argv):
-        say("moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1): your own -np / -ub win: not applied", err=True)
+        say(f"moe-cache: dense spill rule ({why}): your own -np / -ub win: not applied", err=True)
         return cmd, ub
     try:
         triple = dense_gpu_fit_pair(a, a.model, ctx, machine, with_q4=True, skip_mtp=mtp_layer_skipped(ls, cmd, machine))
@@ -5301,14 +5316,14 @@ def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
     except Exception:
         fit = None
     if not fit or fit.get("fits"):
-        say("moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1): " + ("the plan does not spill: not applied" if fit else "no GPU memory estimate: not applied"), err=True)
+        say(f"moe-cache: dense spill rule ({why}): " + ("the plan does not spill: not applied" if fit else "no GPU memory estimate: not applied"), err=True)
         return cmd, ub
     new = [x for x in cmd]
     new = set_cmd_flag(new, "-ub", str(DENSE_SPILL_UB), ("--ubatch-size",))
     new = set_cmd_flag(new, "-np", "1", ("--parallel",))
     a.spill_locked = True             # the auto-tune leaves -ub / -np alone (autotune_stage)
-    say(f"moe-cache: dense spill rule (MOE_CACHE_DENSE_SPILL_RULE=1, test switch, off by default): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k: -np 1 (one request at a "
-        f"time; frees llama.cpp's per-slot buffers) and -ub {DENSE_SPILL_UB} (half the compute buffer); one PC run: 27B 64k +7.3 % decode, prompt -1.5 % (forecast, TEST-1205)")
+    say(f"moe-cache: dense spill rule ({why}): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k: -np 1 (one request at a time; frees llama.cpp's per-slot buffers) and "
+        f"-ub {DENSE_SPILL_UB} (half the compute buffer); measured on our test PC, 27B UD-IQ4_XS 128k: +41.7 % prompt, +23.5 % decode (forecast, items 607 + 614)")
     return new, str(DENSE_SPILL_UB)
 
 
