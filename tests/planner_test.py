@@ -104,6 +104,7 @@ del os.environ["GGML_OP_OFFLOAD_MIN_BATCH"]
 check(rc == 0 and "GGML_OP_OFFLOAD_MIN_BATCH=512" not in out, "launcher stock: the user's GGML_OP_OFFLOAD_MIN_BATCH is kept")
 check("GGML_OP_OFFLOAD_MIN_BATCH" not in dry("--vram", "0.3"), "launcher plugin run: no GGML_OP_OFFLOAD_MIN_BATCH")
 # DECODE-1168: the threshold was measured for MoE stock runs with CPU expert layers only; a dense layer split (Qwen3.8-27B, laptop, 8.9k-token prompt: 173 tok/s with 512, 300 unset) never gets it
+sys.path.insert(0, os.path.join(HERE, "bin"))   # identity.yml runs this file alone (python3 tests/planner_test.py MODEL): bin/ must be on the path before this import (c78f61c imported first)
 import types, moe_cache as _mc
 _a = types.SimpleNamespace(stock=True, api_stock=None)
 _env, _ = _mc.stock_env_stage(_a, [], True, "28", 10e9, 30e9, "plugin", dense=False)
