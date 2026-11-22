@@ -83,7 +83,8 @@ jobs:
           Pop-Location
           $t = Get-Content $env:RUNNER_TEMP\kit_check.txt -Raw
           if ($t -notmatch [regex]::Escape("llama\llama-server.exe")) { throw "kit: check did not use the bundled llama\llama-server.exe" }
-          if ($t -notmatch "ggml 1\.0") { throw "kit: the bundled llama-server does not report ggml 1.0 (it is the old build?)" }
+          if ($t -notmatch "llama-server\s+commit 5bacb7c86") { throw "kit: the bundled llama-server is not commit 5bacb7c86 (the old official build?)" }
+          if ($t -notmatch "moe-cache\s+\S+, plugin ggml-moe-cache-api4\.dll") { throw "kit: the launcher did not pick the API 4 plugin" }
           if ($t -notmatch "ggml-moe-cache-api4.dll") { throw "kit: check did not pick the API 4 DLL" }
           if ($t -match "ggml-moe-cache-api3.dll") { throw "kit: check names the API 3 DLL" }
           if ($t -notmatch "plugin loads .*yes") { throw "kit: the plugin does not load" }
