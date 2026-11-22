@@ -52,6 +52,12 @@ jobs:
           $MINGW_CXX --version | head -1
           $MINGW_CXX -std=c++17 -Wall -Werror -Wno-unused-function -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src -fsyntax-only src/moe_cache_plugin.cpp
           GGML_API=3 MOE_CACHE_CXXFLAGS="-g" ./build.sh --windows
+          # API 4 (ggml 1.0 headers, the Inkling 2 pin 5bacb7c): same code, warnings are errors, only system / ggml DLLs imported, as the kit ships it
+          $MINGW_CXX -std=c++17 -Wall -Werror -Wno-unused-function -DMC_API_TAG=4 -Ithird_party/ggml-v4/include -Ithird_party/ggml-v4/src -fsyntax-only src/moe_cache_plugin.cpp
+          GGML_API=4 BUILD_DIR=build/win-api4 ./build.sh --windows
+          x86_64-w64-mingw32-objdump -p build/win-api4/ggml-moe-cache.dll | grep "DLL Name" | tee build/win-api4/imports_dlls.txt
+          if grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32" build/win-api4/imports_dlls.txt; then
+            echo "FAIL: the API 4 DLL imports a DLL that is not a system or ggml DLL"; exit 1; fi
           x86_64-w64-mingw32-objdump -p build/win/ggml-moe-cache.dll | grep "DLL Name" | tee build/win/imports_dlls.txt
           # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
           grep -q -i "KERNEL32" build/win/imports_dlls.txt || { echo "FAIL: no import list (objdump?)"; exit 1; }
@@ -228,6 +234,7 @@ jobs:
           python bin\moe_cache.py check "$env:GITHUB_WORKSPACE\granite.gguf" --llama-server "$env:LLAMA_DIR\llama-server.exe" --run | Tee-Object $env:RUNNER_TEMP\kit_check.txt
           Pop-Location
           if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "ggml-moe-cache-api3.dll" -SimpleMatch -Quiet)) { throw "kit: check did not pick the kit's API 3 DLL" }
+          if (-not (Test-Path "$k\ggml-moe-cache-api4.dll")) { throw "kit: no ggml-moe-cache-api4.dll (Inkling 2 pin, ggml 1.0)" }
           # the kit ships the official llama.cpp in llama\ (v0.3.3): without --llama-server and LLAMA_SERVER, check must find that one
           if (-not (Test-Path "$k\llama\llama-server.exe")) { throw "kit: no bundled llama\llama-server.exe" }
           Push-Location $k

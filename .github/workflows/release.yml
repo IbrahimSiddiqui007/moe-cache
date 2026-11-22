@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       llama_build:
-        description: "llama.cpp in the kits: patched (our b12207 build, every patch built in and off; what a tag always uses) or official (the unmodified release build)"
+        description: "llama.cpp in the kits: patched (our b12207 build, every patch built in and off; what a tag always uses) or official (the older unmodified b12207 release build, API 3 only: it cannot run Inkling 2)"
         type: choice
         options: [patched, official]
         default: patched
@@ -108,7 +108,7 @@ jobs:
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ runner.temp }}/llama-tgz
-          key: dl-tgz-llama-b12207-ubuntu-vulkan-178a5d6a
+          key: dl-tgz-llama-b12207-ubuntu-vulkan-178a5d6a   # keys the OFFICIAL b12207 zip of the manual `official` fallback (still that file); a tag uses our patched build, no cache
 
       - name: The patched llama.cpp build for the Linux tarball (llama_patched.yml of this run; skipped for a manual run with llama_build = official)
         if: ${{ needs.llama-patched.result == 'success' }}
