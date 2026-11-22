@@ -483,7 +483,7 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             row["short_probe"] = bool((r.get("decode_n") or n) < DECODE_TOKENS)
             row["score_s"] = round(score(row, agent), 2)
             if c.id == "C0":
-                base_cost = took
+                base_cost = max(took, 1e-3)      # a coarse clock (Windows, ~16 ms) reads 0.0 for an instant fake probe: 0 is falsy and skipped the second baseline run and the confirm run
         else:
             row["status"] = "failed"
         rows.append(row)
