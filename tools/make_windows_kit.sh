@@ -50,7 +50,7 @@ LLAMA_LICENSE_SHA=94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d01
 # LLAMA_PATCHED_WIN_DIR=DIR (the release workflow sets it: the unpacked llama_patched.yml server + ggml-vulkan.dll) bundles OUR patched build of the same pin
 # instead, every patch built in and off (tools/bundle_llama_patched.sh). Unset = the official build as below.
 if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_WIN_DIR:-}" ]; then
-  tools/bundle_llama_patched.sh "$K" "$LLAMA_PATCHED_WIN_DIR" win "$LLAMA_TAG"
+  tools/bundle_llama_patched.sh "$K" "$LLAMA_PATCHED_WIN_DIR" win 5bacb7c   # the label of our build of the pinned commit (LLAMA_TAG above is the official b12207 FALLBACK only)
 elif [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ]; then
   Z="${LLAMA_ZIP_CACHE:-$X}/$LLAMA_ZIP"
   # retried with backoff, and skipped when the zip is already in the cache folder with the right sha256 (CI restores LLAMA_ZIP_CACHE with actions/cache)
