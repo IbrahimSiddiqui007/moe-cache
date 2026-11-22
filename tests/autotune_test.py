@@ -283,7 +283,7 @@ try:
         os.unlink(os.path.join(_dir, f))
     calls.clear()
     cmd, env, info, out = stage(machine=M(tmp, free_mib=7600))
-    check(info["state"] == "tuned" and at.flag_value(cmd, "--n-cpu-moe") == "18", "room test setup: tuned with 7600 MiB free, pick ncmoe-2")
+    check(info["state"] == "tuned" and at.flag_value(cmd, "--n-cpu-moe") == "18", f"room test setup: tuned with 7600 MiB free, pick ncmoe-2 (state {info['state']}, total {info.get('total_s')} s of {info.get('budget_s')}, rows {[(r['id'], r['status'], r.get('took_s'), str(r.get('error') or '')[:50]) for r in info.get('rows', [])]})")
     _f = os.path.join(_dir, [f for f in os.listdir(_dir) if f.endswith(".json")][0])
     _rec = _json.load(open(_f))
     check(_rec.get("free_vram_mib") == 7600, f"the stored result records the free GPU memory it was measured with ({_rec.get('free_vram_mib')} MiB)")
