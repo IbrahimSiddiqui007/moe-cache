@@ -43,6 +43,8 @@ jobs:
           - { name: "ggml-0.28-b12064-api3", sha: "51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c", api: "3", tested: "yes" }
           # release b12207 = ggml 0.29.0, the current pin since 2026-11-09 (the build the Windows kit and the Linux tarball bundle; upstream's own moe-cache cache, PRs 30966 / 31233 / 31888, is in it)
           - { name: "ggml-0.29-b12207-api3", sha: "998200491327347eed85f007e4de7a1a7c871453", api: "3", tested: "yes" }
+          # DRAFT: master after #32807 (ggml 1.0.0, API 4), the Inkling 2 pin; tested only after the API-4 plugin passes this workflow
+          - { name: "ggml-1.0-5bacb7c-api4", sha: "5bacb7c868a2bc98682de15f447fc1ce17c9c49c", api: "4", tested: "no" }
           - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -70,7 +72,7 @@ jobs:
 
       - name: Plugin for this pin (warnings are errors)
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; else H=third_party/ggml; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; H=third_party/ggml-v4; else H=third_party/ggml; fi
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp
           # ggml_backend_buffer's layout changes without an API bump (master 418f905a4 moved buft/context: SIGSEGV in the fit pass): no direct field reads
           if grep -nE '\w*(buffer|buf)->(buft|context|size|usage|iface)\b|->buffer->' src/*.inl src/*.cpp; then echo "FAIL: read ggml buffer fields through the public API (ggml_backend_buffer_get_type, buf_ctx)"; exit 1; fi
@@ -229,7 +231,7 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_STATS: "1"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_PACK_OFFSET BUILD_DIR=build-mut-pack ./build.sh --portable
           if MOE_CACHE_LIB=$PWD/build-mut-pack/libggml-moe-cache.so IDENT_EXTRA="--no-repack" IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=$PWD/granite.moepack" \
              tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_mut_pack.txt; then

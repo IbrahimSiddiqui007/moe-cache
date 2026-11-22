@@ -7165,9 +7165,9 @@ def check(argv):
             warn("plugin", "not checked: which build fits depends on llama-server, which was not found (see above)")
         elif WINDOWS and shipped_apis() and not ls_api(lsp):
             fail("plugin", f"could not tell which ggml backend API {lsp} uses (no known version in its ggml-base.dll), so no plugin DLL was picked: "
-                 f"set MOE_CACHE_LIB to the kit's ggml-moe-cache-api3.dll (API {'/'.join(sorted(shipped_apis()))} ship here)")
+                 f"set MOE_CACHE_LIB to the kit's ggml-moe-cache-api3.dll or -api4.dll (API {'/'.join(sorted(shipped_apis()))} ship here)")
         elif WINDOWS:
-            fail("plugin", "ggml-moe-cache-api3.dll (or -api2.dll) not found next to the launcher: unzip the whole kit and run from its folder")
+            fail("plugin", "ggml-moe-cache-api3.dll (or -api4.dll, -api2.dll) not found next to the launcher: unzip the whole kit and run from its folder")
         elif shutil.which("g++"):
             warn("plugin", "not built yet: run ./build.sh (g++ found)")
         else:

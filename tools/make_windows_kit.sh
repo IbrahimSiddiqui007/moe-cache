@@ -7,7 +7,7 @@
 #   moe-cache.ico                 the app icon (concept D, the curled dragon); also the icon of moe-cache.exe and of the Start menu shortcut
 #   moe-cache.exe                 the same as a program (for winget/scoop; it runs moe-cache.bat from its own folder, also through a symlink)
 #   README_WINDOWS.txt            what to install and the first commands
-#   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 / 0.27 (b11669 and newer); -api2.dll for ggml 0.25
+#   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 - 0.29 (b11669 to b12207); -api4.dll for ggml 1.0 (Inkling 2 pin); -api2.dll for ggml 0.25
 #   bin\ planner\ ui\ tools\ profiles\ docs\ LICENSE   the launcher, the page and what they read (Python 3.8+, standard library only)
 #   llama\                        the llama.cpp Vulkan build (b12207, MIT) so a friend downloads one zip: our patched build (patches built in, all off) when LLAMA_PATCHED_WIN_DIR is set, else the official one
 set -e
@@ -19,9 +19,10 @@ git rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git checkout: cannot bu
 X="$(mktemp -d)"; trap 'rm -rf "$X"' EXIT
 git archive HEAD | tar -x -C "$X"
 N=moe-cache-v$V-windows-x64; K="$X/kit/$N"; mkdir -p "$K"
-( cd "$X" && BUILD_DIR=build/win-api2 ./build.sh --windows && GGML_API=3 BUILD_DIR=build/win-api3 ./build.sh --windows )
+( cd "$X" && BUILD_DIR=build/win-api2 ./build.sh --windows && GGML_API=3 BUILD_DIR=build/win-api3 ./build.sh --windows && GGML_API=4 BUILD_DIR=build/win-api4 ./build.sh --windows )
 cp "$X/build/win-api2/ggml-moe-cache.dll" "$K/ggml-moe-cache-api2.dll"
 cp "$X/build/win-api3/ggml-moe-cache.dll" "$K/ggml-moe-cache-api3.dll"
+cp "$X/build/win-api4/ggml-moe-cache.dll" "$K/ggml-moe-cache-api4.dll"
 # moe-cache.exe: runs moe-cache.bat from its own real folder (winget's portable installs need an .exe and start it through a symlink)
 # the app icon (concept D, packaging/moe-cache.ico) is the exe's icon (windres resource) and sits beside it as moe-cache.ico for the Start menu shortcut (moe-cache.bat --shortcut)
 cp "$X/packaging/moe-cache.ico" "$K/moe-cache.ico"
