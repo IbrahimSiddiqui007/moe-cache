@@ -188,8 +188,9 @@ def parse_log(lines):
 
 
 def build_id(llama_server):
-    """Which llama.cpp build: the llama-server program and the llama / ggml libraries next to it (names, sizes, modification times), hashed; "" when the
-    program cannot be found. A rebuilt or updated llama.cpp gets a new id, so its loads are measured anew."""
+    """Which llama.cpp build: the llama-server program and the llama / ggml libraries next to it (names and contents, content_id), hashed; "" when the
+    program cannot be found. A rebuilt or updated llama.cpp gets a new id, so its loads are measured anew; the same files copied again (a kit unpacked anew, an
+    update that reinstalls the same build) keep the id (LAUNCHER-1251: the id was built from modification times, so every copy measured and tuned again)."""
     import shutil
     try:
         p = llama_server if os.path.isfile(llama_server or "") else shutil.which(llama_server or "")
@@ -197,24 +198,51 @@ def build_id(llama_server):
             return ""
         p = os.path.realpath(p)
         d = os.path.dirname(p)
-        parts = [os.path.basename(p), os.path.getsize(p), os.stat(p).st_mtime_ns]
+        parts = [os.path.basename(p), content_id(p)]
         for n in sorted(os.listdir(d)):
             low = n.lower()
             if (low.startswith(("libllama", "libggml", "llama", "ggml")) and (".so" in low or low.endswith((".dll", ".dylib")))):
-                st = os.stat(os.path.join(d, n))
-                parts += [n, st.st_size, st.st_mtime_ns]
+                parts += [n, content_id(os.path.join(d, n))]
         return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
     except OSError:
         return ""
 
 
 def model_id(path):
-    """The model file (name, size, modification time); "" when unreadable."""
+    """The model file (name, size and a content sample, content_id); "" when unreadable. A copied model keeps its id (LAUNCHER-1251)."""
     try:
-        st = os.stat(path)
-        return f"{os.path.basename(path)}:{st.st_size}:{st.st_mtime_ns}"
+        return f"{os.path.basename(path)}:{os.path.getsize(path)}:{content_id(path)}"
     except (OSError, TypeError):
         return ""
+
+
+FULL_HASH_MAX = 256 * 2**20     # files up to this size are hashed whole (llama-server, most ggml libraries: well under 0.2 s); bigger ones (models, a CUDA library) are sampled
+SAMPLE = 4 * 2**20              # sampled: the first and last 4 MiB and 1 MiB from each eighth (a GGUF's first MiBs hold all its metadata and the tensor table)
+_CONTENT_MEMO = {}
+
+
+def content_id(path):
+    """A content fingerprint of a file: sha256 (16 hex) of the whole file up to FULL_HASH_MAX, else of its size and samples. Unlike the modification time it survives
+    a copy, an unzip or a reinstall of the same bytes. Memoised in the process by (path, size, mtime) so one launch hashes each file once."""
+    st = os.stat(path)
+    memo_key = (os.path.realpath(path), st.st_size, st.st_mtime_ns)
+    got = _CONTENT_MEMO.get(memo_key)
+    if got:
+        return got
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        if st.st_size <= FULL_HASH_MAX:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        else:
+            h.update(str(st.st_size).encode())
+            offs = [0] + [st.st_size * i // 8 for i in range(1, 8)] + [max(0, st.st_size - SAMPLE)]
+            for i, off in enumerate(offs):
+                f.seek(off)
+                h.update(f.read(SAMPLE if i in (0, len(offs) - 1) else 1 << 20))
+    got = h.hexdigest()[:16]
+    _CONTENT_MEMO[memo_key] = got
+    return got
 
 
 def store_path(cache_dir):
