@@ -10,4 +10,14 @@ inline bool refresh_recency_of_resident(bool scan) {
     return !scan;
 }
 
+// INKLING-SUPPORT-2: does a decode graph at layer `dl`, right after layer `last`, start the next token? Layers ascend within a token, so a lower layer normally does.
+// A loop model (arch inkling2_loop: layers loop_start..loop_end-1 run several times per token with shared weights) re-enters the range at loop_start from inside it:
+// that is another pass of the same token, not a new one. loop_start < 0 = not a loop model.
+inline bool starts_new_decode_token(int dl, int last, int loop_start, int loop_end) {
+    if (dl >= last) {
+        return false;
+    }
+    return !(loop_start >= 0 && dl >= loop_start && last < loop_end);
+}
+
 }  // namespace mclru

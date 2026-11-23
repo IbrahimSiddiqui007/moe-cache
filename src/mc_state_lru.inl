@@ -199,7 +199,7 @@
         if (track_crf && cur_decode) {
             const int dl = tensors[tidx[0]]->layer;        // layers ascend within a decode token: a lower layer than the last one starts the next token
             if (dl >= 0) {
-                if (dl < last_dec_layer) { tok++; }
+                if (mclru::starts_new_decode_token(dl, last_dec_layer, loop_start, loop_end)) { tok++; }     // a loop pass is not a new token (INKLING-SUPPORT-2)
                 last_dec_layer = dl;
             }
         }

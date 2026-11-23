@@ -234,6 +234,33 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
                 file_tensors[nm] = { data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i) };
                 file_shard[nm] = (int) si;
             }
+            // INKLING-SUPPORT-2: the loop layout (<arch>.loop.start / .end / .count) for prepare_group's decode-token counting: without it every loop pass looked like a new token
+            // and the recency decay ran 3-4 times too fast. Only which experts stay resident is affected, never the output.
+            {
+                const int64_t ka = gguf_find_key(g, "general.architecture");
+                if (ka >= 0 && gguf_get_kv_type(g, ka) == GGUF_TYPE_STRING) {
+                    const std::string arch = gguf_get_val_str(g, ka);
+                    auto ival = [&](const char * k) -> int {
+                        const int64_t id = gguf_find_key(g, k);
+                        if (id < 0) { return -1; }
+                        switch (gguf_get_kv_type(g, id)) {
+                            case GGUF_TYPE_INT32:  return (int) gguf_get_val_i32(g, id);
+                            case GGUF_TYPE_UINT32: return (int) gguf_get_val_u32(g, id);
+                            case GGUF_TYPE_INT64:  return (int) gguf_get_val_i64(g, id);
+                            case GGUF_TYPE_UINT64: return (int) gguf_get_val_u64(g, id);
+                            default:               return -1;
+                        }
+                    };
+                    const int ls = ival(arch + ".loop.start"), le = ival(arch + ".loop.end"), lc = ival(arch + ".loop.count");
+                    if (ls >= 0 && le > ls && lc > 1) {
+                        loop_start = ls;
+                        loop_end = le;
+                        if (si == 0) {
+                            fprintf(stderr, "moe-cache: layers %d-%d run %d times per token (loop model): decode-token counting skips the re-entries\n", ls, le - 1, lc);
+                        }
+                    }
+                }
+            }
             gguf_free(g);
             plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
 #ifndef _WIN32
