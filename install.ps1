@@ -254,7 +254,7 @@ function Install-MoeCache {
     [void](New-Item -ItemType Directory -Force -Path $bin)
     # LAUNCHER-1222 item 5: an install in its own -Root keeps its own launcher cache (probe cache, auto-tune picks, server pid files) instead of sharing ~/.cache/moe-cache with other kits; the default root is unchanged. A cache folder the user set (XDG_CACHE_HOME) still wins.
     $isolate = ($env:LOCALAPPDATA -and ($Root.TrimEnd('\') -ine ([IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'moe-cache'))).TrimEnd('\')))
-    $cacheLine = @(); if ($isolate) { $cacheLine = @('if not defined XDG_CACHE_HOME set "XDG_CACHE_HOME=%~dp0..\cache"') }
+    $cacheLine = 'rem default cache folder'; if ($isolate) { $cacheLine = 'if not defined XDG_CACHE_HOME set "XDG_CACHE_HOME=%~dp0..\cache"' }
     $cmd = @(
         '@echo off',
         ($Marker + ' (remove: install.ps1 -Uninstall)'),
