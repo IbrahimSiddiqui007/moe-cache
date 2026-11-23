@@ -234,8 +234,8 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
                 file_tensors[nm] = { data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i) };
                 file_shard[nm] = (int) si;
             }
-            // INKLING-SUPPORT-2: the loop layout (<arch>.loop.start / .end / .count) for prepare_group's decode-token counting: without it every loop pass looked like a new token
-            // and the recency decay ran 3-4 times too fast. Only which experts stay resident is affected, never the output.
+            // INKLING-1250 fix 2: the loop layout (<arch>.loop.start / .end / .count) for prepare_group's decode-token counting: without it every loop pass looked like a new token
+            // and the recency decay ran loop.count (3 for Inkling 2 Mini) times too fast for every expert (one global clock), when loop layers are cache-managed. Only which experts stay resident is affected, never the output.
             {
                 const int64_t ka = gguf_find_key(g, "general.architecture");
                 if (ka >= 0 && gguf_get_kv_type(g, ka) == GGUF_TYPE_STRING) {
@@ -255,6 +255,7 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
                     if (ls >= 0 && le > ls && lc > 1) {
                         loop_start = ls;
                         loop_end = le;
+                        loop_count = lc;
                         if (si == 0) {
                             fprintf(stderr, "moe-cache: layers %d-%d run %d times per token (loop model): decode-token counting skips the re-entries\n", ls, le - 1, lc);
                         }
