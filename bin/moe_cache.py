@@ -1211,6 +1211,11 @@ def bind_host(extra):
     return arg_after(extra, "--host") or os.environ.get("LLAMA_ARG_HOST", "").strip()
 
 
+def bind_host_source(extra):
+    """Where bind_host() took its value from, for the messages (R19: say the source)."""
+    return "--host" if arg_after(extra, "--host") else "LLAMA_ARG_HOST"
+
+
 def adopt_user_flags(extra):
     """Flags the launcher also sets, when the user gives them after `--`: llama-server takes the user's (the last one wins), so the plan, the health
     checks and the VRAM maths must use the same value. -> ({"port": int, "ctx": int, "ncmoe": str} for the ones found as plain numbers, extra without
@@ -3562,7 +3567,7 @@ def lan_stage(a, extra):
             extra += ["--host", "0.0.0.0"]
         err = lan.check_bind(bind_host(extra), addrs, a.allow_public) if bind_host(extra) else None
         if err:
-            raise SystemExit("--host: " + err if not a.lan else "--lan: " + err)
+            raise SystemExit(bind_host_source(extra) + ": " + err if not a.lan else "--lan: " + err)
     return lan_addr
 
 
@@ -3573,7 +3578,7 @@ def api_key_stage(a, extra, lan_addr=None):
     host_open = bool(bind_host(extra)) and not lan.is_loopback_host(bind_host(extra))        # ANY non-loopback bind gets a key, --lan or not
     if not api_key and (a.agent or a.project or a.lan or host_open):
         api_key = stored_key(create=True)
-        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else '--host ' + bind_host(extra) + ': other computers can reach it' if host_open else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
+        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else bind_host_source(extra) + ' ' + bind_host(extra) + ': other computers can reach it' if host_open else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
             "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
     if a.lan:
         for line in lan.risk_lines(f"http://{lan_addr}:{a.port}", KEY_FILE if api_key == stored_key() else None):
@@ -5715,7 +5720,7 @@ def _launch_plan(a, extra, argv, machine):
     extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact, dense=dense)
     extra += sampling_args(a.no_sampling_defaults or a.exact, a.agent, model, extra)
     host = bind_host(extra)
-    if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
+    if not (host == "" or __import__("moe_cache_lan").is_loopback_host(host)) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
             "Add --api-key KEY after the -- or bind to 127.0.0.1.", err=True)
     pname = a.profile or ""
