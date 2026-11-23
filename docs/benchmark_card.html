@@ -140,7 +140,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       </table>
     </div>
     <ul>
-      <li>With the long-prompt mode the q8_0 KV cache changes the numbers a little, so answers are not byte-identical to stock: KL divergence 0.014–0.015 against f16, the same top token in 94–95 % of positions, and the meaning was kept in 10 of 10 checks at 55k (2026-11-07). <code>--exact</code> or <code>--no-long-prompt</code> go back to f16.</li>
+      <li>With the long-prompt mode the q8_0 KV cache changes the numbers a little, so answers are not byte-identical to stock: KL divergence 0.014–0.015 against f16, the same top token in 94–95 % of positions, and the meaning was kept in 10 of 10 checks at 55k (2026-11-07; a forecast, no claim id: on our test PC (RX 9070 XT) with IQ3_XXS and llama.cpp b12064, the KL and top-token figures were measured on 4k and 8k contexts, not at 55k). <code>--exact</code> or <code>--no-long-prompt</code> go back to f16.</li>
       <li>The first answer after a big paste is the visible gap: at 16k–32k depth the median first-token time is 10.27 s with moe-cache against 39.38 s stock on IQ3_XXS, and 3.94 s against 8.81 s on Q2_0. <!-- claim:v038-conv-iq3xxs --><!-- claim:v038-conv-q2_0 --></li>
     </ul>
   </section>
@@ -181,7 +181,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section>
     <h2>Output quality</h2>
-    <p>The plugin does not change the math: with the same settings its answers are the same as stock's (the identity tests of the older card page). The default long-prompt mode is the exception: its q8_0 KV cache means answers are close but not byte-identical to stock (KL 0.014–0.015, same top token in 94–95 % of positions, meaning kept in 10 of 10 checks at 55k); <code>--exact</code> gives stock-identical answers. Earlier checks on other models and kits are on the <a href="results-archive/benchmark_card_older.html">older card page</a>. A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token while the meaning stays; <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/EXACTNESS.md">docs/EXACTNESS.md</a> lists exactly what is checked.</p>
+    <p>The plugin does not change the math: with the same settings its answers are the same as stock's (the identity tests of the older card page). The default long-prompt mode is the exception: its q8_0 KV cache means answers are close but not byte-identical to stock (KL 0.014–0.015, same top token in 94–95 % of positions, meaning kept in 10 of 10 checks at 55k; a forecast, no claim id: KL and top-token figures from 4k and 8k contexts on our test PC, IQ3_XXS, b12064); <code>--exact</code> gives stock-identical answers. Earlier checks on other models and kits are on the <a href="results-archive/benchmark_card_older.html">older card page</a>. A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token while the meaning stays; <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/EXACTNESS.md">docs/EXACTNESS.md</a> lists exactly what is checked.</p>
   </section>
 
   <section>
