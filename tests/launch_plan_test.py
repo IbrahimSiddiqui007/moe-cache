@@ -16,6 +16,7 @@ GOLDEN = os.path.join(HERE, "tests", "launch_plan_golden.json")
 GIB = 2**30
 
 import moe_cache as mc            # noqa: E402
+mc.cgroup_mem_limit = lambda *a, **k: None   # the plans must not depend on the cgroup this test runs in (cool_run's MemoryMax changed one plan: release-prep-3, LAUNCHER-1267 follow-up)
 import gguf_plan                  # noqa: E402
 
 LINUX_LIST = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 7600 MiB free)\n"
@@ -240,6 +241,7 @@ class FakeMachine(mc.Machine):
     def ls_looked(self): return "(fake)"
     def ls_api(self, ls): return "3"
     def lib_api(self, lib): return "3"
+    def cgroup_limit(self): return None                    # the real one reads this process's cgroup: under cool_run's MemoryMax the plans changed (release-prep-3)
     def llama_candidates(self): return []                 # no other installed llama-server (the real search would read this computer's folders)
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], "preload"
     def vk_cache_cap(self, ls, model, listing=None): return None, None
