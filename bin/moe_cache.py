@@ -4682,7 +4682,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     if not fit_on and (dense or not (ncmoe or "").isdigit() or ncmoe == "0"):
         return ub, ncmoe                          # owner 2026-11-23 (main24): with no env set the plan is exactly 9114606's; nothing on the CPU / dense is decided only with MOE_CACHE_LOOP_FIT=1 (the PC window decides it)
     arch, n_l, ls_, le_, cnt, n_head = lm
-    a.loop_locked = True
+    a.loop_locked = fit_on                        # autotune lock only with MOE_CACHE_LOOP_FIT=1: with no env set the start is exactly 9114606's (critic 3)
     assumed = "" if arch in LOOP_KNOWN_ARCHS else f" (assumed from Inkling 2: {arch} was never run here)"
     say("moe-cache: note: this model needs a llama.cpp that contains PR 32704 (commit 690b87d; the bundled build b12651 has it); a llama-server from before it answers '!!!!', then use one built with it (LLAMA_SERVER=...)" + assumed)
     own_ot = any(x in ("-ot", "--override-tensor", "--cpu-moe", "-cmoe") or x.startswith("--override-tensor=") for x in extra)
@@ -4760,11 +4760,11 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
         for i, x in enumerate(extra):
             if x == "-ub" and i + 1 < len(extra):
                 extra[i + 1] = str(pick)
-        if fits(pick, st):
+        if not fit_on:
+            src = "looped-model rule: the relative-position bias is n_kv x n_tokens x n_head F32; MOE_CACHE_LOOP_FIT=1 sizes it to the planner's budget (PC test pending)"
+        elif fits(pick, st):
             src = (f"our estimate {loop_compute_mib(ctx_n, pick, n_head, st):.0f} MiB (dense relative-position bias n_kv x n_tokens x {n_head} heads F32 x2"
                    f"{f' + {st / 2**20:.0f} MiB op-offload staging' if st else ''}) fits the {budget} MiB compute buffer the planner kept for -ub {ub}")
-        elif not fit_on:
-            src = "looped-model rule: the relative-position bias is n_kv x n_tokens x n_head F32; MOE_CACHE_LOOP_FIT=1 sizes it to the planner's budget (PC test pending)"
         elif not budget or not ctx_n or n_head <= 0:
             src = "the floor: no planner budget or head count to size it from"
         elif not loop_tensor_ok(ctx_n, pick, n_head) and fits(pick, st, cap=False):
