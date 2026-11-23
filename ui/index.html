@@ -692,6 +692,7 @@ const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM and al
 async function loadSystem() {
   S.sys = await api("/api/system");
   const s = S.sys, last = s.last || {};
+  if (s.version) $("sys").textContent = "moe-cache " + s.version;
   $("sys").title = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "") +
     "\nllama-server: " + s.llama_server + "\nplugin: " + s.plugin;
   $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
