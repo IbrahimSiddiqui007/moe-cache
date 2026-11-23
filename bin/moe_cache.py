@@ -4561,31 +4561,65 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
     return ub, ncmoe, no_vram
 
 
-def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock):
-    """INKLING-SUPPORT-1 (2026-11-21): models of arch inkling2_loop (Inkling 2 Mini/Small) run their middle layers loop.start..loop.end-1 loop.count times with the SAME weights.
-    Three launch choices differ from a normal MoE model (laptop RTX 4060 8 GB, llama.cpp 46eb174 + PR 32704, Inkling-2-Mini Q2_K_XL; forecasts, n=1-7, notes in
-    handover/sessions/inkling-loop_2026-11-21 and inkling-support-1_2026-11-21):
-      1. placement: --n-cpu-moe fills from layer 0, but a loop layer's experts are read loop.count times per token. The CPU side takes the once-used layers first (0..start-1, end..n-1),
-         then loop layers from the front: same GPU bytes, bench decode 27.9 vs 20.0 tok/s (1.40x, 5 valid runs vs 7).
-      2. --no-op-offload: llama.cpp's op-offload staging keeps one GPU copy of every shared loop-layer expert tensor alive (compute buffer 4.1 GB at Q2, 8 GB at IQ4_XS: does not start on an 8 GB card).
-      3. -ub 128: the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor per layer (2.8 GB at 32k and -ub 512).
-    Not touched: --exact, a placement or batch you chose yourself (--n-cpu-moe, -ot, --ub, -ub, --no-op-offload after --), a plan with nothing on the CPU. Returns (ub, ncmoe)."""
-    if a.exact or a.cpu_only or not (ncmoe or "").isdigit() or ncmoe in ("0", "999"):
-        return ub, ncmoe
+LOOP_OP_OFFLOAD_BUILD = 12642     # first llama.cpp release with PR 32807 (commit 5bacb7c = b12642, checked with the GitHub compare API 2026-11-23): before it, op-offload on a
+                                  # looped model gives NaN / '!!!!' (INKLING-1250, upstream 32807 thread)
+LOOP_UBS = (512, 256, 128)        # micro-batches tried for a looped model, largest first; 128 is the floor (the old fixed rule)
+
+
+def loop_meta(model):
+    """(arch, n_layers, loop_start, loop_end, loop_count, n_head) of a looped model: any architecture whose GGUF header carries <arch>.loop.start / .loop.end / .loop.count
+    with count > 1 and a range inside the layers (Inkling 2 Mini today: inkling2_loop, 6..18 x 3). None for every other model or an unreadable header. Nothing is keyed
+    on a model or architecture name (owner 2026-11-23: more looped models are coming)."""
     try:
         from gguf_plan import read_meta
         m = read_meta(model_parts(model)[0])
         arch = m.get("general.architecture") or ""
-        if arch != "inkling2_loop":
-            return ub, ncmoe
+        if not arch or arch + ".loop.count" not in m:
+            return None
         n_l, ls_, le_, cnt = int(m[arch + ".block_count"]), int(m[arch + ".loop.start"]), int(m[arch + ".loop.end"]), int(m[arch + ".loop.count"])
+        if cnt <= 1 or not 0 <= ls_ < le_ <= n_l:
+            return None
+        h = m.get(arch + ".attention.head_count")
+        n_head = max(int(x) for x in h) if isinstance(h, (list, tuple)) and h else int(h or 0)
+        return arch, n_l, ls_, le_, cnt, n_head
     except Exception:
+        return None
+
+
+def loop_compute_mib(ctx, ub, n_head, staged_bytes):
+    """Our estimate (errs high) of the GPU compute buffer of a looped model at this context and micro-batch, without llama.cpp's compact bias (PR 32740 is not in b12651):
+    the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor and two of them are alive at once (2 x 32768 x 512 x 24 x 4 B = 3 GiB vs 2.8 GiB measured at
+    32k -ub 512, INKLING-1243, laptop), plus the normal-model buffer at -ub 512 from our table, plus what op-offload stages (staged_bytes)."""
+    from gguf_plan import compute_buffer_guess_mib
+    return 2 * ctx * ub * max(n_head, 1) * 4 / 1048576 + compute_buffer_guess_mib(ctx, 512) + staged_bytes / 1048576
+
+
+def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, tuned=None, ls=None):
+    """INKLING-SUPPORT-1 (2026-11-21), LOOP-SPEED-1 (2026-11-23): looped models (any arch with <arch>.loop.count > 1 in the GGUF; Inkling 2 Mini today) run their middle
+    layers loop.start..loop.end-1 loop.count times with the SAME weights. Three launch choices differ from a normal MoE model:
+      1. placement: --n-cpu-moe fills from layer 0, but a loop layer's experts are read loop.count times per token. The CPU side takes the once-used layers first (0..start-1, end..n-1),
+         then loop layers from the front: same GPU bytes, bench decode 27.9 vs 20.0 tok/s (laptop RTX 4060, Q2_K_XL, 1.40x, 5 valid runs vs 7, forecast).
+      2. op-offload (prompt batches of CPU-held experts computed on the GPU): ON when llama-server contains PR 32807 (build >= 12642; the bundled b12651 does), OFF
+         (--no-op-offload) for an older or unknown build, where it gives NaN. Without it the CPU computes the prompt for every CPU-held expert layer: laptop 64k
+         prefill 77.7 tok/s off (-ub 128) vs 328 on (-ub 256, 1 loop layer on the CPU; Q2_K_XL, n=1, forecast, a build with the compact bias). NOT YET MEASURED ON THE PC
+         (item P1, loop-speed-1). MOE_CACHE_INKLING_OP_OFFLOAD=1 / =0 forces it on / off.
+      3. micro-batch: the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor (loop_compute_mib). The largest of -ub 512 / 256 / 128 whose estimate,
+         with what op-offload stages, fits in the compute buffer the planner reserved for its own micro-batch (tuned["compute_mib"]); 128 when nothing fits or there is no plan.
+         If even -ub 128 does not fit with op-offload's staging, op-offload stays off.
+    Not touched: --exact, a placement or batch you chose yourself (--n-cpu-moe, -ot, --ub, -ub, --no-op-offload after --), a plan with nothing on the CPU. Returns (ub, ncmoe)."""
+    if a.exact or a.cpu_only or not (ncmoe or "").isdigit() or ncmoe in ("0", "999"):
         return ub, ncmoe
+    lm = loop_meta(model)
+    if not lm:
+        return ub, ncmoe
+    arch, n_l, ls_, le_, cnt, n_head = lm
     say("moe-cache: note: this model needs a llama.cpp that contains PR 32704 (commit 690b87d; the bundled build b12651 has it); a llama-server from before it answers '!!!!', then use one built with it (LLAMA_SERVER=...)")
-    user_ncmoe = ncmoe_user is not None or a.n_cpu_moe is not None or any(x in ("--n-cpu-moe", "-ncmoe", "--cpu-moe", "-cmoe", "-ot", "--override-tensor") for x in extra)
+    own_ot = any(x in ("-ot", "--override-tensor", "--cpu-moe", "-cmoe") for x in extra)
+    own_nc = ncmoe_user is not None or a.n_cpu_moe is not None or any(x in ("--n-cpu-moe", "-ncmoe") for x in extra)
     n = int(ncmoe)
-    say(f"moe-cache: arch inkling2_loop: layers {ls_}-{le_ - 1} of {n_l} run {cnt} times with the same weights (read from the GGUF: loop.start/end/count)")
-    if not user_ncmoe and 0 < n <= n_l:
+    say(f"moe-cache: arch {arch}: layers {ls_}-{le_ - 1} of {n_l} run {cnt} times with the same weights (read from the GGUF: {arch}.loop.start/end/count)")
+    cpu = None                                    # the CPU-held expert layers, when we know them
+    if not (own_ot or own_nc) and 0 < n <= n_l:
         order = [i for i in range(n_l) if not ls_ <= i < le_] + list(range(ls_, le_))
         cpu = sorted(order[:n])
         rx = "blk\\.(" + "|".join(str(i) for i in cpu) + ")\\.ffn_(gate_up|gate|up|down)_exps\\.weight=CPU"
@@ -4593,15 +4627,52 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock):
         say(f"moe-cache: expert placement by use count (source: the planner's {n} CPU layers, re-ordered): experts of layers {','.join(str(i) for i in cpu)} on the CPU, "
             f"the loop layers' experts stay on the GPU as long as they fit (a loop layer is read {cnt}x per token; --n-cpu-moe N or -ot after -- overrides)")
         ncmoe = "0"
-    if not any(x in ("--no-op-offload", "-nopo") for x in extra) and not os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD"):
+    elif not own_ot and 0 < n <= n_l:
+        cpu = list(range(n))                      # llama.cpp's own --n-cpu-moe N: layers 0..N-1
+    # what op-offload keeps on the GPU while it runs: every expert of the CPU-held LOOP layers (PR 32807 copies all experts of a host weight shared by several nodes); with
+    # none, one once-used layer's experts (the largest). Unknown placement (your own -ot): all loop layers counted, which errs high. A guess: the laptop's compute-buffer
+    # lines (inkling-speed-1 run_c/run_e) showed far less than this, so it can only make the micro-batch smaller than needed, never bigger.
+    try:
+        from gguf_plan import model_layout
+        by = model_layout(model_parts(model)[0]).get("expert_bytes_by_layer") or {}
+    except Exception:
+        by = {}
+    loop_cpu = [i for i in (cpu if cpu is not None else range(ls_, le_)) if ls_ <= i < le_]
+    staged = sum(by.get(i, 0) for i in loop_cpu) or max([by.get(i, 0) for i in (cpu or []) if not ls_ <= i < le_] or [0])
+    budget = tuned.get("compute_mib") if isinstance(tuned, dict) else None
+    ctx_n = int(ctx) if str(ctx or "").isdigit() else 0
+    fits = (lambda u, st: bool(budget and ctx_n and by) and loop_compute_mib(ctx_n, u, n_head, st) <= budget)
+    user_nopo = any(x in ("--no-op-offload", "-nopo") for x in extra)
+    force = os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD", "")
+    build = None
+    if user_nopo:
+        opo, why = False, "your --no-op-offload"
+    elif force in ("1", "0"):
+        opo, why = force == "1", f"MOE_CACHE_INKLING_OP_OFFLOAD={force}"
+    else:
+        build = ls_build(ls) if ls else None
+        if not build or build < LOOP_OP_OFFLOAD_BUILD:
+            opo, why = False, (f"llama-server build {build}" if build else "llama-server build unknown") + f" is older than b{LOOP_OP_OFFLOAD_BUILD} (PR 32807): op-offload gives NaN there"
+        elif not fits(128, staged):
+            opo, why = False, f"op-offload would stage {staged / 2**20:.0f} MiB of experts and the compute buffer the planner kept ({budget or '?'} MiB) has no room for it at -ub 128"
+        else:
+            opo, why = True, f"llama-server b{build} contains PR 32807"
+    if not opo and not user_nopo:
         extra.append("--no-op-offload")
-        say("moe-cache: --no-op-offload (source: inkling2_loop rule: the staging copy of the shared loop-layer experts is 4 GB at Q2 and does not fit an 8 GB card at IQ4_XS)")
-    if a.ub == "auto" and ub and str(ub).isdigit() and int(ub) > 128:
+    if not user_nopo:
+        say(f"moe-cache: op-offload {'on' if opo else 'off (--no-op-offload)'} for the looped model (source: {why}; "
+            f"{'prompt batches of the CPU-held experts run on the GPU' if opo else 'the CPU computes the prompt for its expert layers'}; MOE_CACHE_INKLING_OP_OFFLOAD=1/0 forces it)")
+    if a.ub == "auto" and ub and str(ub).isdigit() and int(ub) > 128 and not any(x in ("--ubatch-size",) for x in extra):
+        st = staged if opo else 0
+        pick = next((u for u in LOOP_UBS if u <= int(ub) and fits(u, st)), 128)
         for i, x in enumerate(extra):
             if x == "-ub" and i + 1 < len(extra):
-                extra[i + 1] = "128"
-        ub = "128"
-        say("moe-cache: micro-batch -ub 128 (source: inkling2_loop rule: the relative-position bias is n_kv x n_tokens x n_head F32 per layer; --ub N to change)")
+                extra[i + 1] = str(pick)
+        src = (f"our estimate {loop_compute_mib(ctx_n, pick, n_head, st):.0f} MiB (dense relative-position bias n_kv x n_tokens x {n_head} heads F32 x2"
+               f"{f' + {st / 2**20:.0f} MiB op-offload staging' if st else ''}) fits the {budget} MiB compute buffer the planner kept for -ub {ub}") if pick > 128 or fits(128, st) \
+            else "the floor: no planner budget to size it from" if not budget else f"the floor: even -ub 128 is estimated over the {budget} MiB the planner kept"
+        ub = str(pick)
+        say(f"moe-cache: micro-batch -ub {pick} for the looped model (source: {src}; --ub N to change)")
     return ub, ncmoe
 
 
@@ -5743,7 +5814,7 @@ def _launch_plan(a, extra, argv, machine):
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     kv_q8, tuned, desk_kw, ub_asked = long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked)
     ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
-    ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock)
+    ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=ctx, tuned=tuned, ls=ls)
     ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
     # DELIBERATE (owner decision 2026-11-08): the long-prompt default sets a.fast = "kv", so this 64-token threshold applies to every default launch of a big model at 32k+ context,
