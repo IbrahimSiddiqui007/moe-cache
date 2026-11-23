@@ -1,0 +1,17 @@
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index cffd083..a6c811f 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2365,7 +2365,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         weights = ggml_reshape_3d(ctx0, weights, 1, n_expert_used, n_tokens);
+     }
+     if (w_scale != 0.0f && w_scale != 1.0f) {
+-        weights = ggml_scale(ctx0, weights, w_scale);
++        // LLAMA_MOE_LOOP_CONT=1 (default off): give the scale its own contiguous copy of the router weights (llama.cpp #32710, Inkling 2 Mini
++        // loop layers: the looped passes share the layer's tensors and the strided/aliased input was the suspected shape of the garbage output
++        // and of the slow Vulkan path). Off: the graph is exactly the stock one.
++        static const bool moe_loop_cont = [] { const char * v = getenv("LLAMA_MOE_LOOP_CONT"); return v && atoi(v) > 0; }();
++        weights = ggml_scale(ctx0, moe_loop_cont ? ggml_cont(ctx0, weights) : weights, w_scale);
+         cb(weights, "ffn_moe_weights_scaled", il);
+     }
+ 
