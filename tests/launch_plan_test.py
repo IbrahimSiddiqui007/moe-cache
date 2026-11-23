@@ -191,7 +191,7 @@ def fake_machine(m, tmp):
 def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None):
     m = MACHINES[machine_name]
     saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy(), mc.other_llama_servers)
-    for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH")]:
+    for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH", "LD_LIBRARY_PATH")]:
         del os.environ[k]
     out, err = io.StringIO(), io.StringIO()
     rc = None

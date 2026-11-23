@@ -380,6 +380,19 @@ def ls_help(ls, run=None):
     return text
 
 
+SYSTEM_LIB_DIRS = ("/usr/lib", "/lib", "/usr/lib64", "/lib64", "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/local/lib")
+
+
+def server_ggml_dir(deps):
+    """Directory (real path) of the libggml-base that ldd output `deps` says llama-server uses; None when ldd shows none."""
+    for line in deps.splitlines():
+        if "libggml-base" in line and "=>" in line:
+            parts = line.split("=>")[1].split()
+            if parts and parts[0].startswith("/"):
+                return os.path.dirname(os.path.realpath(parts[0]))
+    return None
+
+
 def load_env(ls, lib, method="auto"):
     """Environment that makes this llama-server load the plugin, and the method used.
     preload: llama-server links its backends directly (distro packages): LD_PRELOAD.  path: backends are separate files (official releases): GGML_BACKEND_PATH."""
@@ -391,7 +404,14 @@ def load_env(ls, lib, method="auto"):
     if method == "preload":
         if WINDOWS:
             raise SystemExit("--load-method preload does not exist on Windows (use path)")
-        return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], method
+        env = [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")]
+        # The plugin's own libggml-base (DT_NEEDED, RUNPATH of the build machine, usually /usr/lib) is loaded first because LD_PRELOAD comes first, and then the server's llama
+        # library binds its ggml symbols to that copy, not to the libggml-base next to llama-server: a libggml-base 0.29 under the server's own 0.25 libggml/cpu/cuda, an ABI mix (distro llama-server with its own
+        # /usr/lib/llama.cpp-cuda copy 0.25 against /usr/lib 0.29: SIGSEGV, exit 139, 2026-11-23). Put the directory of the server's own libggml-base first on the loader path.
+        d = server_ggml_dir(deps)
+        if d and d not in SYSTEM_LIB_DIRS:      # a system dir is searched anyway and would only shadow the RUNPATH of cuda/rocm libs (critic 2026-11-23)
+            env.append(("LD_LIBRARY_PATH", d + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")))
+        return env, method
     if method == "path":
         return [("GGML_BACKEND_PATH", lib)], method
     raise SystemExit(f"unknown load method: {method} (use auto, preload or path)")
@@ -4633,7 +4653,7 @@ def stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=False):
         else:
             say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
-        env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
+        env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH", "LD_LIBRARY_PATH"))]
         method = "none (stock)"
         if not dense and ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
