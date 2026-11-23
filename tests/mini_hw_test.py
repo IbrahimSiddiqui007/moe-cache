@@ -126,4 +126,4 @@ if node:
     check(r_ is not None and r_["dec"].replace(".", "").isdigit() and "tok/s" in r_["title"], f"mini: decode tok/s in the big number and the window title ({r_ and (r_['dec'], r_['title'])})")
 else:
     print("  skip mini page checks: node not found")
-
+sys.exit(1 if fails else 0)     # audit row 16: the test used to print FAIL lines and still exit 0
