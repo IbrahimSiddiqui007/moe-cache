@@ -16,6 +16,13 @@ constexpr size_t GROW_MARGIN = GIB;                      // grow only when avail
 constexpr size_t GROW_STEP = (size_t) 256 << 20;         // at most this much per grow ...
 constexpr uint64_t GROW_EVERY_MS = 1000;                 // ... and at most one grow per second
 
+// Whether RAM-LIVE runs on this cache path (LAUNCHER-1277). It does not on Linux's file-view path: evicting there only drops mapped pages to the page cache, which
+// MemAvailable counts already, so the figure would not rise and the cache would shrink to its floor (critic 2026-11-17). tune(), the plugin's start-up line and the
+// launcher's plan line all use or mirror this one rule (tests/livecap_test.cpp, tests/ram_cap_decision_test.py).
+constexpr bool follows(bool file_view, bool is_windows) {
+    return !file_view || is_windows;
+}
+
 // The most private memory the process may hold: `target` (the ordinary limit), and never so much that available RAM falls under `keep`.
 // avail < keep: the process gives back the shortfall. avail >= keep: it may hold what it holds now plus the room over `keep`.
 inline size_t ceiling(size_t target, size_t rss, size_t avail, size_t keep) {

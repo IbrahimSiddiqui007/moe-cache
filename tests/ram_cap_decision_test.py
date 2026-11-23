@@ -101,5 +101,26 @@ ax2, _, _ = mc.parse_server(["m.gguf", "--no-pin", "--exact"])
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     envx = dict(mc.memory_env_stage(ax2, "llama-server", "lib.so", "m.gguf", "p", False, "off", M2(17.4 * GIB, True))[3])
 check("MOE_CACHE_AVAIL_KEEP_GIB" not in envx, "--exact: not set")
+# --- LAUNCHER-1277: the plan line says off exactly where the plugin's guard (mclive::follows) is off: Linux file-view (default), on with MOE_CACHE_LINUX_VIEW=0 and on Windows ---
+import re as _re
+_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "mc_livecap.h")).read()
+_m = _re.search(r"constexpr bool follows\(bool file_view, bool is_windows\) \{\s*return ([^;]+);", _src)
+check(bool(_m), "mc_livecap.h has the follows() rule")
+def _plugin_follows(file_view, is_windows):          # the header's expression, evaluated
+    return eval(_m.group(1).replace("!", " not ").replace("||", " or ").replace("&&", " and ").replace("file_view", str(file_view)).replace("is_windows", str(is_windows)))
+for _win in (False, True):
+    for _env in (None, "0", "1"):
+        if _env is None: os.environ.pop("MOE_CACHE_LINUX_VIEW", None)
+        else: os.environ["MOE_CACHE_LINUX_VIEW"] = _env
+        _mach = M2(17.4 * GIB, _win)
+        os.environ.pop("MOE_CACHE_AVAIL_KEEP_GIB", None)
+        _o = io.StringIO()
+        with contextlib.redirect_stdout(_o), contextlib.redirect_stderr(_o):
+            mc.memory_env_stage(a, "llama-server", "lib.so", "m.gguf", "p", False, "off", _mach)
+        _says_off = "live RAM follow: off on Linux's default path" in _o.getvalue()
+        _file_view = (_env != "0")                     # Linux default = file view; the Windows default view does not matter (is_windows wins)
+        check(_says_off == (not _plugin_follows(_file_view, _win)), f"plan line matches the plugin guard (windows={_win}, MOE_CACHE_LINUX_VIEW={_env}): says off {_says_off}")
+os.environ.pop("MOE_CACHE_LINUX_VIEW", None)
+
 print("ram cap decision test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)

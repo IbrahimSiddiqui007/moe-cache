@@ -9,6 +9,8 @@ using namespace mclive;
 
 int main() {
     const size_t keep = 4 * GIB;
+    // LAUNCHER-1277: the rule the plugin's lines and the launcher mirror: off only on a file view that is not Windows
+    CHECK(follows(false, false) && follows(false, true) && follows(true, true) && !follows(true, false), "follows(): off only on Linux's file-view path");
     // off
     CHECK(ceiling(20 * GIB, 10 * GIB, 0, keep) == 20 * GIB, "no available figure: the target stays");
     CHECK(ceiling(20 * GIB, 10 * GIB, 1 * GIB, 0) == 20 * GIB, "keep 0 (off): the target stays");

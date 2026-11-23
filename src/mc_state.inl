@@ -495,6 +495,10 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
                 size_t k = 0;
                 if (parse_gib("MOE_CACHE_AVAIL_KEEP_GIB", v, k) && k > 0) {
                     live_keep = k;
+                    if (!mclive::follows(win_view, plat::is_windows)) {
+                        fprintf(stderr, "moe-cache: live RAM follow is OFF on this path: the cached experts are read-only file mappings (page cache), which the kernel already manages "
+                                        "and which MemAvailable counts as free, so there is nothing to give back; MOE_CACHE_LINUX_VIEW=0 uses private memory, where it follows (%.2f GiB)\n", k / 1073741824.0);
+                    } else
                     fprintf(stderr, "moe-cache: live RAM follow on: the cache gives experts back when the system's available RAM falls under %.2f GiB and takes them back slowly "
                                     "above it (MOE_CACHE_AVAIL_KEEP_GIB); it is checked while graphs run, not while the server is idle\n", k / 1073741824.0);
                 }
