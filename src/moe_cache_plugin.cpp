@@ -106,7 +106,7 @@ static FILE * fopen_private(const char * path) {
 // commit because later 0.28.0 builds changed a struct layout without a version bump) release b12064 (0.28.0@51fe42c5d, the pin from 2026-11-03 to 2026-11-09) and release b12207 (0.29.0@998200491, the pin since 2026-11-09)
 #ifndef MOE_CACHE_TESTED_GGML
 #if defined(MC_API_TAG) && MC_API_TAG == 4
-#define MOE_CACHE_TESTED_GGML "1.0.0"     // GGML_API=4 build: laptop smoke only (llama.cpp 46eb1742d + PR 32704, Inkling-2-Mini Q2_K_XL / IQ4_XS, one 35B: correct text), no CI yet
+#define MOE_CACHE_TESTED_GGML "1.0.0"     // GGML_API=4 build: CI identity + Windows tests at release b12651 (f5e6915c2), not yet run on the test PC; a laptop smoke at 46eb1742d + PR 32704 (one 35B: correct text). Add "@f5e6915c2" after the PC run.
 #elif GGML_BACKEND_API_VERSION >= 3
 #define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0, 0.28.0@ff0d396e3, 0.28.0@51fe42c5d, 0.29.0@998200491"
 #else

@@ -12,12 +12,12 @@ No model yet? `python3 bin/moe_cache.py pick` names one for your machine and pri
 
 **Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
 
-You need: Linux, `python3`, and a MoE model in GGUF format. With the `-ggml0.26` release file (Option A in section 1) that is all: it includes llama.cpp b12207 (the official source plus moe-cache's patch set, every patch off), so no compiler and no separate `llama-server` are needed. Only if you build the plugin yourself (Option B) or use another llama.cpp do you also need `g++` and a `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release).
+You need: Linux, `python3`, and a MoE model in GGUF format. With the `-ggml0.26` release file (Option A in section 1) that is all: it includes llama.cpp b12651 (the official source plus moe-cache's patch set, every patch off), so no compiler and no separate `llama-server` are needed. Only if you build the plugin yourself (Option B) or use another llama.cpp do you also need `g++` and a `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release).
 The plugin is built and tested against four llama.cpp versions (the table below), and **a plugin build only works with the ggml backend API it was compiled for**:
 
 | llama.cpp | ggml | backend API | build the plugin with |
 |---|---|---|---|
-| release **b12207** = commit `998200491` (2026-11-08; the build the Windows kit and the Linux tarball bundle; the vendored headers differ from it by new declarations, optional hooks at the end of `ggml_backend_buffer_i` and one more tensor type, `tools/check_ggml_headers.py`) | 0.29.0 | 3 | `GGML_API=3 ./build.sh` |
+| release **b12207** = commit `998200491` (2026-11-08; the previous kit build, bundled until v0.3.8; the vendored headers differ from it by new declarations, optional hooks at the end of `ggml_backend_buffer_i` and one more tensor type, `tools/check_ggml_headers.py`) | 0.29.0 | 3 | `GGML_API=3 ./build.sh` |
 | release **b12064** = commit `51fe42c5d` (the previous pin, still tested) | 0.28.0 | 3 | `GGML_API=3 ./build.sh` |
 | release b11966 = commit `ff0d396e3` (2026-10-28; the previous pin) | 0.28.0 | 3 | `GGML_API=3 ./build.sh` |
 | commit `23b0202a1` (2026-10-10; GLM-5.3-Flash and its MTP support are in) | 0.26.0 | 3 | `GGML_API=3 ./build.sh` (add `BUILD_DIR=build-v3` to keep both builds) |

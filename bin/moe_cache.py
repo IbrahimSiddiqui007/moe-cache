@@ -7152,8 +7152,8 @@ def check(argv):
         if tested_commit(ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
-            warn("ggml version", "this llama.cpp build is not one we tested" + (f" ({ver})" if ver else "") + ": we tested " +
-                 ("b11669, b11966, b12064 and b12207 on Windows" if WINDOWS else "five llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966, 51fe42c5d = b12064 and 998200491 = b12207)") +
+            warn("ggml version", ("this llama.cpp build is the one this kit ships, tested in CI but not yet on our test PC" if re.search(r"f5e6915c2|b12651", vtxt or "") else "this llama.cpp build is not one we tested") + (f" ({ver})" if ver else "") + ": we tested " +
+                 ("b11669, b11966, b12064, b12207 and (CI only) b12651 on Windows" if WINDOWS else "five llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966, 51fe42c5d = b12064 and 998200491 = b12207)") +
                  ". Other builds usually work; if the plugin does not load, the lines below say so (moe_cache.py update --check shows the newest build)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):
