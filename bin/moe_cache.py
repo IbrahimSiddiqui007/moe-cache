@@ -4698,7 +4698,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     if (ncmoe or "") == "999":
         if os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD", "").strip().lower() in ("0", "false", "no", "off") and not any(x in ("--no-op-offload", "-nopo") for x in extra):
             extra.append("--no-op-offload")       # a forced off is honoured here too (documented: 0 = always add it)
-        return ub, ncmoe                          # loop-speed-2 critic: 999 is the placeholder the GPU-cache stage (gpu_cache_stage, runs after this one) still resolves; deciding here changed unmeasured picks (CUDA cache path: -ub 2048 + op-offload on -> 128 + off). Old behaviour kept until measured.
+        return ub, ncmoe                          # loop-speed-2 critic: 999 is the placeholder the GPU-cache stage (gpu_cache_stage) still resolves (after this stage unless MOE_CACHE_LOOP_FIT=1); deciding here changed unmeasured picks (CUDA cache path: -ub 2048 + op-offload on -> 128 + off). Old behaviour kept until measured.
     if not fit_on and (dense or not (ncmoe or "").isdigit() or ncmoe == "0"):
         return ub, ncmoe                          # owner 2026-11-23 (main24): with no env set the plan is exactly 9114606's; nothing on the CPU / dense is decided only with MOE_CACHE_LOOP_FIT=1 (the PC window decides it)
     arch, n_l, ls_, le_, cnt, n_head = lm
@@ -5962,10 +5962,15 @@ def _launch_plan(a, extra, argv, machine):
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     kv_q8, tuned, desk_kw, ub_asked = long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked)
     ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
-    ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx)
-    # LAUNCHER-1285 (loop-speed-2): the looped-model stage runs on the ncmoe the GPU-cache stage resolved (a cache too small to keep becomes the planner's static N, which is a normal
-    # spilled placement and gets the use-count order); a real cache plan (999) stays untouched until measured
-    ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=ctx, tuned=tuned, ls=ls, dense=dense)
+    # LAUNCHER-1285 (loop-speed-2): the looped-model stage runs on the ncmoe the GPU-cache stage resolved (a cache too small to keep becomes the planner's static N, a normal spilled
+    # placement that gets the use-count order; a real cache plan, 999, stays untouched). That order changes the CUDA auto-cache fallback command (-ub 2048 + op-offload -> -ub 128 +
+    # --no-op-offload; critic, unmeasured), so it is opt-in with MOE_CACHE_LOOP_FIT=1; without it the old order stands (stage first, owner rule: defaults stay as today).
+    if loop_fit_on():
+        ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx)
+        ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=ctx, tuned=tuned, ls=ls, dense=dense)
+    else:
+        ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=ctx, tuned=tuned, ls=ls, dense=dense)
+        ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
     # DELIBERATE (owner decision 2026-11-08): the long-prompt default sets a.fast = "kv", so this 64-token threshold applies to every default launch of a big model at 32k+ context,
     # not only to --fast users. It is part of what the +77 % prompt speed (claim v038-longprompt-default) measured; do not drop it for the long-prompt default without a new measurement.

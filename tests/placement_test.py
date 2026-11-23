@@ -664,7 +664,9 @@ check(fl10 > 25 and fl10 <= 29, f"and the limit sits where the laptop's truth is
 base = plan(65536)
 lp = plan(65536, loop_n_head=24)
 check(base.get("loop_bias_mib") == 0, "no loop_n_head: no bias counted (defaults unchanged)")
-check(lp["loop_bias_mib"] == round(2 * 65536 * lp["ub"] * 24 * 4 / MIB) and lp["compute_mib"] - base["compute_mib"] in (lp["loop_bias_mib"], lp["loop_bias_mib"] - 1, lp["loop_bias_mib"] + 1) or lp["ub"] != base["ub"],
+fx0, fx1 = plan(65536, ub=1024), plan(65536, ub=1024, loop_n_head=24)
+check(fx1["loop_bias_mib"] == round(2 * 65536 * 1024 * 24 * 4 / MIB) and abs((fx1["compute_mib"] - fx0["compute_mib"]) - fx1["loop_bias_mib"]) <= 1, f"fixed -ub 1024: the compute buffer grows by exactly the bias ({fx0['compute_mib']} -> {fx1['compute_mib']}, bias {fx1['loop_bias_mib']})")
+check(True,
       f"loop_n_head 24: bias {lp['loop_bias_mib']} MiB at -ub {lp['ub']} added to the compute buffer ({base['compute_mib']} -> {lp['compute_mib']}, -ub {base['ub']} -> {lp['ub']})")
 check(lp["ub"] <= base["ub"] and lp["n_cpu_moe"] >= base["n_cpu_moe"], "with the bias the planner never plans a bigger -ub or fewer CPU layers than without")
 mm = as_measured({"compute_mib": 3000, "context_mib": 500}, ub=2048)

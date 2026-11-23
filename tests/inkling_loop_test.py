@@ -191,9 +191,11 @@ check(ot and ot.startswith("blk\\.(10|11|"), f"dense, not looped: unchanged (the
 META.update({"inkling2_loop.loop.count": 1})
 check(mc.model_type("m.gguf")["loop"] is None and "looped: no" in mc.model_type("m.gguf")["line"], "model_type: loop.count 1 -> not looped")
 
-# LAUNCHER-1285: the looped-model stage runs after gpu_cache_stage (source-order guard) 
+# LAUNCHER-1285: with MOE_CACHE_LOOP_FIT=1 the stage runs after gpu_cache_stage, without it before (default command unchanged)
 src = open(os.path.join(HERE, "bin", "moe_cache.py")).read()
-check(src.index("ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned") < src.index("ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user"), "LAUNCHER-1285: inkling_loop_stage is called after gpu_cache_stage")
+k = src.index("    if loop_fit_on():\n        ncmoe = gpu_cache_stage(")
+check(src.index("ncmoe = gpu_cache_stage(", k) < src.index("ub, ncmoe = inkling_loop_stage(", k) < src.index("    else:\n        ub, ncmoe = inkling_loop_stage(", k) < src.index("ncmoe = gpu_cache_stage(", src.index("    else:\n        ub, ncmoe = inkling_loop_stage(", k)),
+      "LAUNCHER-1285: LOOP_FIT=1 runs gpu_cache_stage then the loop stage; default keeps the old order (loop stage first)")
 # LAUNCHER-1284: the stage's budget excludes the bias the planner already counted
 rename("inkling2_loop"); gguf_plan.model_layout = lambda p: {"expert_bytes_by_layer": {i: (668 if i in (20, 21) else 547) * MiB for i in range(24)}}; os.environ["MOE_CACHE_LOOP_FIT"] = "1"; mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
 extra = ["-ub", "4096"]
