@@ -246,7 +246,8 @@ def system_info():
         free_vram = total = None
     return {"os": "Windows" if WINDOWS else sys.platform, "ram_total": tot, "ram_avail": avail, "server_may_use": mc.mem_for_server(None),
             "gpu": (v or w or {}).get("name"), "vram_total": total, "vram_free": free_vram, "gpu_integrated": bool(w and w.get("integrated")),
-            "gpu_detecting": WINDOWS and not _GPU["done"]}
+            "gpu_detecting": WINDOWS and not _GPU["done"],
+            "version": mc.version_label()}          # same text as `moe-cache --version` (LAUNCHER-1281): shown in the header also when no server runs
 
 
 # ---- the Results view: the records this machine has (the reports' .record.json / .json, the repository's benchmarks/runs) ----
