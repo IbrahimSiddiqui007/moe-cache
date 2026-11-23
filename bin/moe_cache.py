@@ -4650,8 +4650,8 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
       1. placement (MoE with experts on the CPU): --n-cpu-moe fills from layer 0, but a loop layer's experts are read loop.count times per token. The CPU side takes the
          once-used layers first (0..start-1, end..n-1), then loop layers from the front: same GPU bytes, bench decode 27.9 vs 20.0 tok/s (laptop RTX 4060, Q2_K_XL, 1.40x,
          5 valid runs vs 7, forecast). A dense looped model gets the same order for its FFN weights in dense_ffn_override (built, not measured: no such model yet).
-      2. op-offload (prompt batches of CPU-held weights computed on the GPU): ON when llama-server contains PR 32807 (build >= 12642; the bundled b12651 does), OFF
-         (--no-op-offload) for an older or unknown build, where it gives NaN. Without it the CPU computes the prompt for every CPU-held expert layer: laptop 64k
+      2. op-offload (prompt batches of CPU-held weights computed on the GPU): the old rule stands by default (--no-op-offload when anything is on the CPU). With
+         MOE_CACHE_LOOP_FIT=1 (opt-in until the PC run): ON when llama-server contains PR 32807 (build >= 12642; the bundled b12651 does), OFF for an older or unknown build, where it gives NaN. Without it the CPU computes the prompt for every CPU-held expert layer: laptop 64k
          prefill 77.7 tok/s off (-ub 128) vs 328 on (-ub 256, 1 loop layer on the CPU; Q2_K_XL, n=1, forecast, a build with the compact bias). NOT YET MEASURED ON THE PC
          (item P1, loop-speed-1). MOE_CACHE_INKLING_OP_OFFLOAD=1 / =0 forces it on / off. Not decided when nothing is on the CPU (--n-cpu-moe 0).
       3. micro-batch, at ANY placement (all on the GPU too): the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor (loop_compute_mib; 2 x 65536 x 2048 x
@@ -4662,11 +4662,13 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
         return ub, ncmoe
     # OPT-IN until the PC run P1 (loop-speed-1 critic, R19): MOE_CACHE_LOOP_FIT=1 turns on op-offload by build and the -ub fit; without it the old rule holds
     # (--no-op-offload when anything is on the CPU, -ub 128), now at every placement (all on the GPU, a cache plan, a dense looped model too)
-    fit_on = os.environ.get("MOE_CACHE_LOOP_FIT", "") == "1"
+    fit_on = os.environ.get("MOE_CACHE_LOOP_FIT", "").strip().lower() in ("1", "true", "yes", "on")
     mt = getattr(a, "model_type", None)
     lm = mt.get("loop") if isinstance(mt, dict) else loop_meta(model)
     if not lm:
         return ub, ncmoe
+    if (ncmoe or "") == "999":
+        return ub, ncmoe                          # loop-speed-2 critic: 999 is the placeholder the GPU-cache stage (gpu_cache_stage, runs after this one) still resolves; deciding here changed unmeasured picks (CUDA cache path: -ub 2048 + op-offload on -> 128 + off). Old behaviour kept until measured.
     arch, n_l, ls_, le_, cnt, n_head = lm
     a.loop_locked = True
     assumed = "" if arch in LOOP_KNOWN_ARCHS else f" (assumed from Inkling 2: {arch} was never run here)"
@@ -4705,19 +4707,20 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     staged = sum(by.get(i, 0) for i in loop_cpu) or max([by.get(i, 0) for i in (cpu or []) if not ls_ <= i < le_] or [0])
     budget = tuned.get("compute_mib") if isinstance(tuned, dict) else None
     ctx_n = int(ctx) if str(ctx or "").isdigit() else 0
-    fits = (lambda u, st: bool(budget and ctx_n) and (dense or bool(by)) and loop_compute_mib(ctx_n, u, n_head, st) <= budget and loop_tensor_ok(ctx_n, u, n_head))
+    # n_head unknown (0) = nothing to size the bias from = no fit (loop-speed-2 critic); cap=False checks the budget only (the per-tensor cap says nothing about op-offload's staging)
+    fits = (lambda u, st, cap=True: n_head > 0 and bool(budget and ctx_n) and (dense or bool(by)) and loop_compute_mib(ctx_n, u, n_head, st) <= budget and (not cap or loop_tensor_ok(ctx_n, u, n_head)))
     user_nopo = any(x in ("--no-op-offload", "-nopo") for x in extra)
-    force = os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD", "")
-    on_cpu = dense or cpu is None or bool(cpu)    # anything op-offload could act on (a dense model: FFN weights dense_ffn_override may send to RAM)
+    force = os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD", "").strip()
+    on_cpu = fit_on if dense else (cpu is None or bool(cpu))    # anything op-offload could act on; a dense looped model (never run) keeps llama.cpp's default unless MOE_CACHE_LOOP_FIT=1
     opo = False
     if user_nopo:
         why = "your --no-op-offload"
     elif force:
-        opo, why = force != "0", f"MOE_CACHE_INKLING_OP_OFFLOAD={force}"
+        opo, why = force.lower() not in ("0", "false", "no", "off"), f"MOE_CACHE_INKLING_OP_OFFLOAD={force}"
     elif not on_cpu:
         why = None                                # nothing on the CPU: op-offload has nothing to do, llama.cpp's default stands
     elif not fit_on:
-        why = "inkling2_loop rule: the staging copy of the shared loop-layer experts can take 4-8 GB and op-offload gave NaN before PR 32807; MOE_CACHE_LOOP_FIT=1 tries it on llama.cpp b12642+ (PC test pending)"
+        why = "looped-model rule: the staging copy of the shared loop-layer experts can take 4-8 GB and op-offload gave NaN before PR 32807; MOE_CACHE_LOOP_FIT=1 tries it on llama.cpp b12642+ (PC test pending)"
     else:
         build = ls_build_cached(ls) if ls else None
         if not build or build < LOOP_OP_OFFLOAD_BUILD:
@@ -4726,7 +4729,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
             opo, why = True, f"llama-server b{build} contains PR 32807 (dense looped model: staging not estimated, built, not measured)"
         elif not budget:
             why = "no planner budget to check op-offload's staging against"
-        elif not fits(128, staged):
+        elif not fits(128, staged, cap=False):
             why = f"op-offload would stage {staged / 2**20:.0f} MiB of experts and the compute buffer the planner kept ({budget or '?'} MiB) has no room for it at -ub 128"
         else:
             opo, why = True, f"llama-server b{build} contains PR 32807{assumed}"
@@ -4738,16 +4741,35 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
             "MOE_CACHE_INKLING_OP_OFFLOAD=1/0 forces it)")
     if a.ub == "auto" and ub and str(ub).isdigit() and int(ub) > 128:
         st = staged if (opo and not dense) else 0
-        pick = next((u for u in LOOP_UBS if u <= int(ub) and fits(u, st)), 128) if fit_on else 128
+        keep = not fit_on and (dense or (cpu is not None and not cpu))       # nothing on the CPU (all on the GPU / dense): the planner's -ub stays unless the estimate says its bias does not fit (loop-speed-2 critic: no unmeasured default change)
+        if fit_on:
+            pick = next((u for u in LOOP_UBS if u <= int(ub) and fits(u, st)), 128)
+        elif keep:
+            pick = int(ub) if fits(int(ub), st) else 128
+        else:
+            pick = 128
         for i, x in enumerate(extra):
             if x == "-ub" and i + 1 < len(extra):
                 extra[i + 1] = str(pick)
-        src = (f"our estimate {loop_compute_mib(ctx_n, pick, n_head, st):.0f} MiB (dense relative-position bias n_kv x n_tokens x {n_head} heads F32 x2"
-               f"{f' + {st / 2**20:.0f} MiB op-offload staging' if st else ''}) fits the {budget} MiB compute buffer the planner kept for -ub {ub}") if fits(pick, st) \
-            else "inkling2_loop rule: the relative-position bias is n_kv x n_tokens x n_head F32; MOE_CACHE_LOOP_FIT=1 sizes it to the planner's budget (PC test pending)" if not fit_on \
-            else "the floor: no planner budget to size it from" if not budget else f"the floor: even -ub 128 is estimated over the {budget} MiB the planner kept"
+        if fits(pick, st):
+            src = (f"our estimate {loop_compute_mib(ctx_n, pick, n_head, st):.0f} MiB (dense relative-position bias n_kv x n_tokens x {n_head} heads F32 x2"
+                   f"{f' + {st / 2**20:.0f} MiB op-offload staging' if st else ''}) fits the {budget} MiB compute buffer the planner kept for -ub {ub}")
+        elif not fit_on and not keep:
+            src = "looped-model rule: the relative-position bias is n_kv x n_tokens x n_head F32; MOE_CACHE_LOOP_FIT=1 sizes it to the planner's budget (PC test pending)"
+        elif not budget or not ctx_n or n_head <= 0:
+            src = "the floor: no planner budget or head count to size it from"
+        elif not loop_tensor_ok(ctx_n, pick, n_head) and fits(pick, st, cap=False):
+            src = f"the floor: one bias tensor would pass the {LOOP_MAX_TENSOR_GIB:g} GiB per-tensor cap (assumed driver limit, not read from the device)"
+        else:
+            src = f"the floor: even -ub 128 is estimated over the {budget} MiB the planner kept"
+        if pick != int(ub) or not keep:
+            say(f"moe-cache: micro-batch -ub {pick} for the looped model (source: {src}; --ub N to change)")
+        else:
+            say(f"moe-cache: micro-batch -ub {pick} kept for the looped model, nothing on the CPU (source: {src})")
         ub = str(pick)
-        say(f"moe-cache: micro-batch -ub {pick} for the looped model (source: {src}; --ub N to change)")
+    # op-offload only fires for batches >= GGML_OP_OFFLOAD_MIN_BATCH; stock_env_stage sets 512 on the stock engine, which would never be reached at -ub 128/256 (critic)
+    if opo and str(ub).isdigit():
+        a.loop_min_batch = int(ub)
     return ub, ncmoe
 
 
@@ -4880,7 +4902,7 @@ def stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=False):
         if not dense and ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
             # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
-            env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
+            env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(min(STOCK_OFFLOAD_MIN_BATCH, getattr(a, "loop_min_batch", None) or STOCK_OFFLOAD_MIN_BATCH))))      # a looped model with op-offload on: no higher than its -ub
     return env, method
 
 

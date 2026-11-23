@@ -51,7 +51,7 @@ check(r0 == ("128", "0") and "-ot" not in extra and "--no-op-offload" not in ext
       f"all on the GPU (0): no placement, op-offload left alone, but -ub 128 (the bias grows with -ub at any placement) [got {r0}]")
 extra = ["-ub", "2048"]
 r9 = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "999", None, False)
-check(r9 == ("128", "999") and "-ot" not in extra and "--no-op-offload" in extra, f"GPU-cache plan (999): no placement, op-offload off (unknown build), -ub 128 [got {r9}]")
+check(r9 == ("2048", "999") and extra == ["-ub", "2048"], f"GPU-cache plan (999): placeholder, the GPU-cache stage resolves it later: untouched (loop-speed-2 critic) [got {r9}, {extra}]")
 
 # LOOP-SPEED-1: any arch with loop keys counts; count 1 does not
 def rename(arch, count=3):
@@ -111,7 +111,7 @@ ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False, ct
 check(ub == "512" and "--no-op-offload" not in extra, f"all on the GPU at 32k, budget 4660: -ub 512 (3072 + 770) [got {ub}]")
 extra = ["-ub", "2048"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "999", None, False, ctx=65536, tuned=T64, ls="ls")
-check(ub == "256" and "--no-op-offload" in extra, f"cache plan (999) at 64k on b12651: 12 loop layers would be staged -> op-offload off, -ub 256 without staging [got {ub}]")
+check(ub == "2048" and extra == ["-ub", "2048"], f"cache plan (999) at 64k on b12651, even with MOE_CACHE_LOOP_FIT=1: untouched, not decided before gpu_cache_stage [got {ub}]")
 extra = ["-ub", "2048"]
 ub, nc = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "", None, False, ctx=65536, tuned=T64, ls="ls", dense=True)
 check(ub == "256" and "--no-op-offload" not in extra and "-ot" not in extra, f"dense looped on b12651: no expert placement, op-offload on, -ub fit without staging [got {ub}]")
@@ -119,6 +119,43 @@ mc.ls_build = lambda ls: None; mc._LS_BUILD.clear()
 extra = ["-ub", "2048"]
 mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "", None, False, ctx=65536, tuned=T64, ls="ls", dense=True)
 check("--no-op-offload" in extra, "dense looped, unknown build: op-offload off")
+# loop-speed-2 critic fixes
+mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
+extra = ["-ub", "4096"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=262144, tuned={"compute_mib": 40000}, ls="ls")
+check("--no-op-offload" not in extra and ub == "128", f"256k, budget 40000: the 2 GiB tensor cap makes -ub 128 but does NOT turn op-offload off (it said 'no room' before) [got {ub}, {extra}]")
+mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
+a13 = A(); extra = ["-ub", "4096"]
+mc.inkling_loop_stage(a13, extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
+check("--no-op-offload" not in extra and getattr(a13, "loop_min_batch", None) == int(extra[extra.index("-ub") + 1]), "op-offload on: loop_min_batch = -ub (stock_env_stage lowers GGML_OP_OFFLOAD_MIN_BATCH to it)")
+META["inkling2_loop.attention.head_count"] = 0
+extra = ["-ub", "4096"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
+check(ub == "128" and "--no-op-offload" in extra, f"head count unknown: no fit, -ub 128, op-offload off [got {ub}]")
+META["inkling2_loop.attention.head_count"] = [24] * 24
+for v in ("false", "off", " 0"):
+    os.environ["MOE_CACHE_INKLING_OP_OFFLOAD"] = v; extra = ["-ub", "4096"]
+    mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
+    check("--no-op-offload" in extra, f"MOE_CACHE_INKLING_OP_OFFLOAD={v!r} = off")
+del os.environ["MOE_CACHE_INKLING_OP_OFFLOAD"]
+os.environ["MOE_CACHE_LOOP_FIT"] = "true"; extra = ["-ub", "4096"]
+mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
+check("--no-op-offload" not in extra, "MOE_CACHE_LOOP_FIT=true = on")
+# default path (LOOP_FIT off): all on the GPU keeps the planner's -ub when its bias fits, drops to 128 when not
+del os.environ["MOE_CACHE_LOOP_FIT"]
+extra = ["-ub", "2048"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False, ctx=4096, tuned={"compute_mib": 20000}, ls="ls")
+check(ub == "2048" and extra == ["-ub", "2048"], f"default, all on the GPU, bias fits the budget: planner -ub kept [got {ub}]")
+extra = ["-ub", "2048"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False, ctx=32768, tuned={"compute_mib": 4660}, ls="ls")
+check(ub == "128", f"default, all on the GPU, 12 GiB bias over the budget: -ub 128 [got {ub}]")
+extra = ["-ub", "2048"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "13", None, False, ctx=65536, tuned=T64, ls="ls")
+check(ub == "128" and "--no-op-offload" in extra, "default, experts on the CPU: old rule, -ub 128 + --no-op-offload (unchanged)")
+os.environ["MOE_CACHE_LOOP_FIT"] = "1"
+# stock_env_stage: the 512 threshold goes down to the looped model's -ub
+env, _m = mc.stock_env_stage(types.SimpleNamespace(stock=False, api_stock=None, loop_min_batch=256), [], True, "13", 10e9, 40e9, "x")
+check(("GGML_OP_OFFLOAD_MIN_BATCH", "256") in env, f"stock_env_stage: GGML_OP_OFFLOAD_MIN_BATCH <= the looped -ub [{env}]")
 # model_type: one line, read once; dense looped header (synthetic)
 LAYOUT = {"n_layers": 24, "expert_bytes_per_layer": 0, "mtp_blocks": 0, "expert_bytes_by_layer": {}}
 gguf_plan.model_layout = lambda p: dict(LAYOUT)
