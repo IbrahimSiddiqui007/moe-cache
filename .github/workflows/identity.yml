@@ -432,7 +432,7 @@ jobs:
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99 MOE_CACHE_LINUX_VIEW=0"   # private memory: with the file view a stepped-aside op reads the mapped file, so there is no race to wait for
           IDENT_EXTRA: "--no-repack"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_STEPASIDE_WAIT BUILD_DIR=build-mutant ./build.sh --portable
           if tests/identity.sh tiny-gptoss-q8.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_mutant.txt; then
             echo "FAIL: the mutant without the wait passed, so the step above does not cover it"; exit 1
@@ -446,7 +446,7 @@ jobs:
           LLAMA_PERPLEXITY: ${{ github.workspace }}/llama.cpp/build/bin/llama-perplexity
           MOE_CACHE_STATS: "1"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT BUILD_DIR=build-mut-exec ./build.sh --portable
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_TILED_WAIT BUILD_DIR=build-mut-tiled ./build.sh --portable
           # 1: executor graphs on the Q2_0 tiny gpt-oss with reads delayed 2 ms (same settings as the Q2_0 step above)
@@ -502,7 +502,7 @@ jobs:
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DUP_IDS BUILD_DIR=build-mut-dup ./build.sh --portable
           if MOE_CACHE_LIB=$PWD/build-mut-dup/libggml-moe-cache.so IDENT_KEEP=mut_dup timeout 900 tests/dup_ids.sh granite.gguf 2>&1 | tee dup_ids_mutant.txt; then
             echo "FAIL: the mutant passed, so the repeated-ids step does not cover the overflow"; exit 1; fi
@@ -518,7 +518,7 @@ jobs:
           IDENT_KEEP: mut_abi
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_ABI BUILD_DIR=build-mut-abi ./build.sh --portable
           MOE_CACHE_LIB=$PWD/build-mut-abi/libggml-moe-cache.so tests/identity.sh granite.gguf --tokens 8 --ctx 2048 --n-cpu-moe 999 | tee abi_mutant.txt || true   # the refused plugin makes identity.sh exit 2: the greps decide
           grep -q "does not match the ggml headers this plugin was built with (op .* expected MUL_MAT_ID)" mut_abi/plugin.log ||
@@ -554,7 +554,7 @@ jobs:
           MOE_CACHE_TEST_POISON_READS: "1"
           MOE_CACHE_TEST_READ_DELAY_US: "2000"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DIRECT_SHARED BUILD_DIR=build-mut-shared ./build.sh --portable
           if MOE_CACHE_LIB=$PWD/build-mut-shared/libggml-moe-cache.so IDENT_KEEP=mut_poison timeout 900 tests/dup_ids.sh granite.gguf 1 2>&1 | tee poison_mutant.txt; then
             echo "FAIL: the mutant passed, so the poisoned-reads step does not cover reads over shared pages"; exit 1; fi
