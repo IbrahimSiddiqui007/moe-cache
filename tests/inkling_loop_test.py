@@ -195,7 +195,7 @@ check(mc.model_type("m.gguf")["loop"] is None and "looped: no" in mc.model_type(
 src = open(os.path.join(HERE, "bin", "moe_cache.py")).read()
 check(src.index("ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned") < src.index("ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user"), "LAUNCHER-1285: inkling_loop_stage is called after gpu_cache_stage")
 # LAUNCHER-1284: the stage's budget excludes the bias the planner already counted
-rename("inkling2_loop"); os.environ["MOE_CACHE_LOOP_FIT"] = "1"; mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
+rename("inkling2_loop"); gguf_plan.model_layout = lambda p: {"expert_bytes_by_layer": {i: (668 if i in (20, 21) else 547) * MiB for i in range(24)}}; os.environ["MOE_CACHE_LOOP_FIT"] = "1"; mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned={"compute_mib": 4660 + 3072, "loop_bias_mib": 3072}, ls="ls")
 check(ub == "256", f"tuned with loop_bias_mib: budget = compute_mib - bias, same pick as without [got {ub}]")
