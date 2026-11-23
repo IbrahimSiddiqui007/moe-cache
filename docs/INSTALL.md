@@ -31,6 +31,8 @@ It needs Python 3.8 or newer (`winget install Python.Python.3.12`, or python.org
 moe-cache launch
 ```
 
+A new install into another folder (`-Root DIR`; on Linux `--prefix DIR`) keeps its own settings, API key and chats in `DIR\cache\moe-cache` (`DIR/cache/moe-cache`) and does not share them with other kits; an install made before this keeps using your user cache.
+
 Undo (removes exactly what it added: the kit folder, the command, the PATH entry if it added it; your models and settings stay): `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall`, or without the file `& ([scriptblock]::Create((irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1))) -Uninstall`. Other flags: `-DryRun` (print the plan), `-Version X.Y.Z`, `-Root DIR`, `-NoPath`, `-Force`.
 
 **Linux (x86-64):** download first, then run, so you can read it in between:

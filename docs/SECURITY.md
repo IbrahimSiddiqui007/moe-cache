@@ -63,7 +63,7 @@ Where each agent's file and its first backup live (checked in `bin/moe_cache.py`
 
 With a symlinked config the `.bak` sits beside the real file the link points to.
 
-Delete a row's files to remove that data; the cache folder (`~/.cache/moe-cache/`, or `$XDG_CACHE_HOME/moe-cache`) can be removed whole. Backups of your home folder will contain these files too. On Windows the cache folder is the same relative path under your user profile.
+Delete a row's files to remove that data; the cache folder (`~/.cache/moe-cache/`, or `$XDG_CACHE_HOME/moe-cache`) can be removed whole. Backups of your home folder will contain these files too. On Windows the cache folder is the same relative path under your user profile. An install made with `-Root DIR` (Windows) or `--prefix DIR` (Linux release install) keeps it in `DIR/cache/moe-cache` instead.
 
 The shareable report and the default JSON export contain none of the prompts, outputs, token ids or absolute paths; the full versions (`?full=1`) do, so look before you share them.
 

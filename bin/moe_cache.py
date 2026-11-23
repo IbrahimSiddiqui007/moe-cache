@@ -31,7 +31,40 @@ from moe_cache_wintool import win_tool  # noqa: E402  (bin/: Windows helpers by 
 VERSION = "0.3.8"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
-CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
+
+
+def own_cache_base(here=None, windows=None):
+    """LAUNCHER-1222 item 5: the folder an install in its own -Root / --prefix keeps its launcher cache in (settings, api.key, chats, pids, probe cache), or None.
+    install.ps1 writes "own_cache": true into <root>\\install.json (kit = <root>\\kit), install.sh writes own_cache=1 into <prefix>/.installed (this copy = <prefix>/versions/moe-cache-v*).
+    It is read here, not in a shim, so every way to start the launcher agrees: the command, the Startup link, the Start-menu / .bat paths and a plain `python moe_cache.py`.
+    An install without the flag (every install made before this) returns None: it keeps using the user cache, nothing moves."""
+    here = os.path.realpath(here or HERE)
+    win = WINDOWS if windows is None else windows
+    try:
+        if win:
+            root = os.path.dirname(here)
+            rec = os.path.join(root, "install.json")
+            if os.path.basename(here).lower() == "kit" and os.path.isfile(rec):
+                with open(rec, encoding="utf-8-sig") as f:
+                    if json.load(f).get("own_cache") is True:
+                        return os.path.join(root, "cache")
+            return None
+        parent = os.path.dirname(here)
+        if os.path.basename(parent) == "versions":
+            prefix = os.path.dirname(parent)
+            rec = os.path.join(prefix, ".installed")
+            if os.path.isfile(rec):
+                with open(rec, encoding="utf-8") as f:
+                    vals = dict(l.rstrip("\n").split("=", 1) for l in f if "=" in l)
+                if vals.get("own_cache") == "1":
+                    return os.path.join(prefix, "cache")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+# the cache folder: XDG_CACHE_HOME when the user set it, else this install's own cache (own_cache_base), else ~/.cache
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or own_cache_base() or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
 NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 

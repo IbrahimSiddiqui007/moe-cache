@@ -148,7 +148,10 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   printf '#!/bin/sh\n%s\nexec "${MOE_CACHE_PYTHON:-python3}" %s "$@"\n' "$REL_MARK (remove: sh install.sh --uninstall)" "$QPY" > "$NEWSHIM"
   chmod +x "$NEWSHIM"
   ln -sfn "versions/$REL_NAME" "$NEWLINK"
-  printf 'version=%s\nprefix=%s\ncommand=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" > "$NEWREC"
+  # LAUNCHER-1222 item 5: an install under its own --prefix keeps its own launcher cache (<prefix>/cache/moe-cache; bin/moe_cache.py reads own_cache=1 from this record).
+  # An install that already exists keeps what it had (no own_cache line = the shared user cache; nothing moves under anyone); a new one is isolated when --prefix was given.
+  if [ -f "$REL_REC" ]; then OWN="$(rec own_cache || true)"; OWN="${OWN:-0}"; elif [ -n "${PREFIX:-}" ]; then OWN=1; else OWN=0; fi
+  printf 'version=%s\nprefix=%s\ncommand=%s\nown_cache=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" "$OWN" > "$NEWREC"
   failpoint link
   mv -T "$NEWLINK" "$REL_PREFIX/current"            # atomic: current names the old version or the new one, never nothing
   failpoint shim
@@ -162,6 +165,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   echo "installed: $("$REL_SHIM" --version 2>&1 | head -1)${OLD:+ (was $OLD)}"
   echo "  files:   $REL_PREFIX (versions/, current, .installed)"
   echo "  command: $REL_SHIM"
+  if [ "$OWN" = 1 ]; then echo "  cache:   $REL_PREFIX/cache/moe-cache   (this install keeps its own settings, key and chats)"; else echo "  cache:   ${XDG_CACHE_HOME:-~/.cache}/moe-cache   (settings, key and chats)"; fi
   echo "  undo:    sh install.sh --uninstall   (removes exactly the two things above; your models stay)"
   if ! ldconfig -p 2>/dev/null | grep -q libvulkan.so.1; then
     echo "note: the bundled llama.cpp uses Vulkan and no libvulkan.so.1 was found."
