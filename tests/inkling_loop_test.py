@@ -156,6 +156,14 @@ os.environ["MOE_CACHE_LOOP_FIT"] = "1"
 # stock_env_stage: the 512 threshold goes down to the looped model's -ub
 env, _m = mc.stock_env_stage(types.SimpleNamespace(stock=False, api_stock=None, loop_min_batch=256), [], True, "13", 10e9, 40e9, "x")
 check(("GGML_OP_OFFLOAD_MIN_BATCH", "256") in env, f"stock_env_stage: GGML_OP_OFFLOAD_MIN_BATCH <= the looped -ub [{env}]")
+env, _m = mc.stock_env_stage(types.SimpleNamespace(stock=False, api_stock=None, loop_min_batch=256), [], True, "0", 10e9, 40e9, "x")
+check(("GGML_OP_OFFLOAD_MIN_BATCH", "256") in env, "stock_env_stage through the ncmoe '0' placement path: threshold follows the looped -ub")
+env, _m = mc.stock_env_stage(types.SimpleNamespace(stock=False, api_stock=None), [], True, "0", 10e9, 40e9, "x")
+check(not any(k == "GGML_OP_OFFLOAD_MIN_BATCH" for k, v in env), "stock_env_stage, other models at ncmoe 0: unchanged (no threshold)")
+os.environ["MOE_CACHE_INKLING_OP_OFFLOAD"] = "0"; extra = ["-ub", "2048"]
+mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "999", None, False, ctx=65536, tuned=T64, ls="ls")
+check(extra == ["-ub", "2048", "--no-op-offload"], f"999 with a forced MOE_CACHE_INKLING_OP_OFFLOAD=0: --no-op-offload only [{extra}]")
+del os.environ["MOE_CACHE_INKLING_OP_OFFLOAD"]
 # model_type: one line, read once; dense looped header (synthetic)
 LAYOUT = {"n_layers": 24, "expert_bytes_per_layer": 0, "mtp_blocks": 0, "expert_bytes_by_layer": {}}
 gguf_plan.model_layout = lambda p: dict(LAYOUT)

@@ -4657,17 +4657,23 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
       3. micro-batch, at ANY placement (all on the GPU too): the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor (loop_compute_mib; 2 x 65536 x 2048 x
          24 x 4 B = 24 GiB at 64k -ub 2048). The largest of -ub 512 / 256 / 128 whose estimate, with what op-offload stages, fits in the compute buffer the planner reserved
          for its own micro-batch (tuned["compute_mib"]); 128 when nothing fits or there is no plan. If even -ub 128 does not fit with op-offload's staging, op-offload stays off.
-    Not touched: --exact, --cpu-only, a placement or batch you chose yourself (--n-cpu-moe, -ot, --ub, -ub, --no-op-offload after --). Returns (ub, ncmoe)."""
+    Not touched: --exact, --cpu-only, the 999 cache placeholder (except a forced MOE_CACHE_INKLING_OP_OFFLOAD=0), a placement or batch you chose yourself (--n-cpu-moe, -ot, --ub, -ub,
+    --no-op-offload after --); your own -ot at --n-cpu-moe 0 still gets --no-op-offload and the -ub rule. Returns (ub, ncmoe)."""
     if a.exact or a.cpu_only:
         return ub, ncmoe
     # OPT-IN until the PC run P1 (loop-speed-1 critic, R19): MOE_CACHE_LOOP_FIT=1 turns on op-offload by build and the -ub fit; without it the old rule holds
-    # (--no-op-offload when anything is on the CPU, -ub 128), now at every placement (all on the GPU, a cache plan, a dense looped model too)
+    # (--no-op-offload when anything is on the CPU, -ub 128). Now also with nothing on the CPU, but there the -ub is only lowered when the estimate says so; in practice the estimate
+    # (2 x bias + the normal buffer at -ub 512) is over the planner's budget at almost every real context, so the result is mostly -ub 128 (9114606 left it untouched: an unmeasured
+    # default change that the scope of LAUNCHER-1283 item 2 asks for; owner/main to confirm). A cache plan (999) is not decided here.
     fit_on = os.environ.get("MOE_CACHE_LOOP_FIT", "").strip().lower() in ("1", "true", "yes", "on")
     mt = getattr(a, "model_type", None)
     lm = mt.get("loop") if isinstance(mt, dict) else loop_meta(model)
     if not lm:
         return ub, ncmoe
+    a.loop_min_batch = None                       # reset: this stage may run again for the same `a`
     if (ncmoe or "") == "999":
+        if os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD", "").strip().lower() in ("0", "false", "no", "off") and not any(x in ("--no-op-offload", "-nopo") for x in extra):
+            extra.append("--no-op-offload")       # a forced off is honoured here too (documented: 0 = always add it)
         return ub, ncmoe                          # loop-speed-2 critic: 999 is the placeholder the GPU-cache stage (gpu_cache_stage, runs after this one) still resolves; deciding here changed unmeasured picks (CUDA cache path: -ub 2048 + op-offload on -> 128 + off). Old behaviour kept until measured.
     arch, n_l, ls_, le_, cnt, n_head = lm
     a.loop_locked = True
@@ -4899,7 +4905,7 @@ def stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=False):
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH", "LD_LIBRARY_PATH"))]
         method = "none (stock)"
-        if not dense and ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
+        if not dense and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH") and (ncmoe != "0" or getattr(a, "loop_min_batch", None)):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
             # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
             env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(min(STOCK_OFFLOAD_MIN_BATCH, getattr(a, "loop_min_batch", None) or STOCK_OFFLOAD_MIN_BATCH))))      # a looped model with op-offload on: no higher than its -ub
