@@ -40,7 +40,7 @@ def release(ver, tamper=False):
     """A release folder: moe-cache-v<ver>-ggml0.26-linux-x86_64.tar.gz with bin/moe_cache.py, and SHA256SUMS (wrong hash when tamper)."""
     d = os.path.join(T, "rel-" + ver + ("-bad" if tamper else "")); os.makedirs(d, exist_ok=True)
     n = f"moe-cache-v{ver}-ggml0.26-linux-x86_64"
-    py = f'import sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n'.encode()
+    py = f'# own_cache_base (the real kit reads the flag)\nimport sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n'.encode()
     with tarfile.open(os.path.join(d, n + ".tar.gz"), "w:gz") as tf:
         ti = tarfile.TarInfo(n + "/bin/moe_cache.py"); ti.size = len(py); ti.mode = 0o755; tf.addfile(ti, io.BytesIO(py))
         so = tarfile.TarInfo(n + "/llama/libllama.so.0.8.0"); so.size = 3; tf.addfile(so, io.BytesIO(b"elf"))      # RELEASE-686: the real tarball ships llama.cpp's libraries with symlinks

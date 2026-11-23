@@ -21,7 +21,7 @@ d, ver, mode = sys.argv[1:4]
 os.makedirs(d, exist_ok=True)
 n = "moe-cache-v%s-windows-x64" % ver
 z = os.path.join(d, n + ".zip")
-src = 'import sys\nprint("moe-cache %s" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n' % ver
+src = '# own_cache_base\nimport sys\nprint("moe-cache %s" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n' % ver
 with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
     f.writestr(n + "/bin/moe_cache.py", src)
     f.writestr(n + "/LICENSE", "x")

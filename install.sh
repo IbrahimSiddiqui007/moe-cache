@@ -12,7 +12,7 @@
 # Downloaded on its own (the release's install.sh, not inside a checkout or tarball) it installs the release instead of building: it fetches the
 # ggml0.26 tarball (official llama.cpp inside), checks it against SHA256SUMS (refuses on a mismatch; that catches a damaged download, not a tampered release: see the attestation below), unpacks it under --prefix (default
 # ~/.local/share/moe-cache) and adds a `moe-cache` command in ~/.local/bin. No apt, no compiler, no root, nothing sent anywhere. Run it again to update.
-#     --uninstall  remove exactly what a release install added (the versions folder, the moe-cache command); models and ~/.cache/moe-cache stay
+#     --uninstall  remove exactly what a release install added (the versions folder, the moe-cache command); models and the moe-cache folder under your user cache (<prefix>/cache for an install under its own --prefix) stay
 #     --build      build from source even when downloaded on its own (the old behaviour)
 #     --bin-dir D  where the moe-cache command goes (default ~/.local/bin)
 #     --yes-unverified  install even though the build attestation could not be checked (gh missing / not logged in / GitHub unreachable; a verification that ran and FAILED is never overridden); same as MOE_CACHE_ALLOW_UNVERIFIED=1. The sha256 check is never skipped.
@@ -47,7 +47,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   if [ $UNINSTALL = 1 ]; then
     [ -f "$REL_REC" ] || { echo "moe-cache: nothing to remove: $REL_REC does not exist (this installer added nothing under $REL_PREFIX)"; exit 0; }
     if [ $DRY = 1 ]; then echo "install.sh: would remove the moe-cache-v* folders in $REL_PREFIX/versions, $REL_PREFIX/current, $REL_REC and $REL_SHIM (if it is ours)"; exit 0; fi
-    REC_CMD="$(rec command || true)"
+    REC_CMD="$(rec command || true)"; KEPT_CACHE="${XDG_CACHE_HOME:-~/.cache}/moe-cache"; [ "$(rec own_cache || true)" = 1 ] && KEPT_CACHE="$REL_PREFIX/cache/moe-cache"
     for d in "$REL_PREFIX"/versions/moe-cache-v*-ggml0.26-linux-x86_64*; do [ -d "$d" ] && rm -rf "$d"; done     # only the folders this installer makes (the prefix may be shared)
     rmdir "$REL_PREFIX/versions" 2>/dev/null || true
     rm -f "$REL_PREFIX/current" "$REL_REC"
@@ -55,7 +55,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
       if [ -n "$c" ] && [ -f "$c" ] && grep -qF "$REL_MARK" "$c"; then rm -f "$c"; echo "removed $c"; fi
     done
     rmdir "$REL_PREFIX" 2>/dev/null || true
-    echo "removed what the moe-cache installer added. Kept: your models and ~/.cache/moe-cache (settings, learned profiles); delete them by hand if you want."
+    echo "removed what the moe-cache installer added. Kept: your models and $KEPT_CACHE (settings, learned profiles); delete them by hand if you want."
     exit 0
   fi
   [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || { echo "the release install is for Linux x86-64 (this is $(uname -s) $(uname -m)); build from source: sh install.sh --build"; exit 1; }
@@ -131,6 +131,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   tar -tzf "$TMP/$REL_NAME.tar.gz" | awk -v n="$REL_NAME/" 'index($0, n) != 1 || $0 ~ /\.\.\//{bad=1} END{exit bad}' || { echo "REFUSED: the tarball has files outside $REL_NAME/"; exit 1; }
   # RELEASE-686: members are plain files and folders; a symlink is allowed only to a plain file name next to it (llama.cpp's libllama.so -> libllama.so.0), never to a path, never a hard link or a device
   tar -tvzf "$TMP/$REL_NAME.tar.gz" | awk '{c=substr($0,1,1)} c=="-"||c=="d"{next} c=="l"{i=index($0," -> "); t=substr($0,i+4); if(i>0 && t !~ /\// && t != ".." && t != "."){next}} {bad=1} END{exit bad}' || { echo "REFUSED: the tarball has a member that is not a plain file, folder or a link to a file name beside it"; exit 1; }
+  HAD_COPY=0; ls "$REL_PREFIX"/versions/moe-cache-v* >/dev/null 2>&1 && HAD_COPY=1     # LAUNCHER-1222 item 5: a copy with no record is an existing install
   OLD="$(rec version || true)"
   if [ -f "$REL_PREFIX/versions/$REL_NAME/bin/moe_cache.py" ] && [ "$OLD" = "$REL_VER" ]; then echo "moe-cache $REL_VER is already unpacked here: refreshing the command only"
   else
@@ -150,8 +151,13 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   ln -sfn "versions/$REL_NAME" "$NEWLINK"
   # LAUNCHER-1222 item 5: an install under its own --prefix keeps its own launcher cache (<prefix>/cache/moe-cache; bin/moe_cache.py reads own_cache=1 from this record).
   # An install that already exists keeps what it had (no own_cache line = the shared user cache; nothing moves under anyone); a new one is isolated when --prefix was given.
-  if [ -f "$REL_REC" ]; then OWN="$(rec own_cache || true)"; OWN="${OWN:-0}"; elif [ -n "${PREFIX:-}" ]; then OWN=1; else OWN=0; fi
-  printf 'version=%s\nprefix=%s\ncommand=%s\nown_cache=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" "$OWN" > "$NEWREC"
+  DEFPFX="${XDG_DATA_HOME:-$HOME/.local/share}/moe-cache"
+  if [ -f "$REL_REC" ]; then OWNC="$(rec own_cache || true)"; OWNC="${OWNC:-0}"
+  elif [ $HAD_COPY = 1 ]; then OWNC=0
+  elif [ -n "${PREFIX:-}" ] && [ "$REL_PREFIX" != "$DEFPFX" ]; then OWNC=1; else OWNC=0; fi
+  # an older release (MOE_CACHE_REF) ignores the flag and would use the user cache while the record says otherwise: only a kit that reads it gets it
+  grep -q own_cache_base "$REL_PREFIX/versions/$REL_NAME/bin/moe_cache.py" 2>/dev/null || OWNC=0
+  printf 'version=%s\nprefix=%s\ncommand=%s\nown_cache=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" "$OWNC" > "$NEWREC"
   failpoint link
   mv -T "$NEWLINK" "$REL_PREFIX/current"            # atomic: current names the old version or the new one, never nothing
   failpoint shim
@@ -165,7 +171,8 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   echo "installed: $("$REL_SHIM" --version 2>&1 | head -1)${OLD:+ (was $OLD)}"
   echo "  files:   $REL_PREFIX (versions/, current, .installed)"
   echo "  command: $REL_SHIM"
-  if [ "$OWN" = 1 ]; then echo "  cache:   $REL_PREFIX/cache/moe-cache   (this install keeps its own settings, key and chats)"; else echo "  cache:   ${XDG_CACHE_HOME:-~/.cache}/moe-cache   (settings, key and chats)"; fi
+  if [ "$OWNC" = 1 ]; then echo "  cache:   $REL_PREFIX/cache/moe-cache   (this install keeps its own settings, key and chats)"; else echo "  cache:   ${XDG_CACHE_HOME:-~/.cache}/moe-cache   (settings, key and chats)"; fi
+  if [ "$OWNC" = 1 ] && [ -z "${OLD:-}" ] && { [ -f "${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/api.key" ] || [ -f "${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/ui.json" ]; }; then echo "  note:    settings, key and chats you made with another kit are in ${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache; this install starts with its own empty cache. Copy what you want from there."; fi
   echo "  undo:    sh install.sh --uninstall   (removes exactly the two things above; your models stay)"
   if ! ldconfig -p 2>/dev/null | grep -q libvulkan.so.1; then
     echo "note: the bundled llama.cpp uses Vulkan and no libvulkan.so.1 was found."
