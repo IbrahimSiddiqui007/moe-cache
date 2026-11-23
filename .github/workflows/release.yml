@@ -79,6 +79,9 @@ jobs:
           # a tagged release must not install an older moe-cache when install.sh is run on its own
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
             grep -q "MOE_CACHE_REF:-${GITHUB_REF_NAME}}" install.sh || { echo "install.sh MOE_CACHE_REF does not match ${GITHUB_REF_NAME}: bump it with the version"; exit 1; }
+            V="$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' bin/moe_cache.py | head -n 1)"
+            [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "bin/moe_cache.py VERSION is '$V' but the tag is ${GITHUB_REF_NAME}: run tools/set_version.sh"; exit 1; }
+            grep -q "plugin ${GITHUB_REF_NAME} (ggml backend API" src/mc_state.inl || { echo "src/mc_state.inl banner does not say ${GITHUB_REF_NAME}: run tools/set_version.sh"; exit 1; }
           fi
 
       - name: No release-night blank left in the release text (tags only; a manual dry run reports it but is not blocked)

@@ -4,7 +4,7 @@ name: quick
 
 on:
   push:
-    branches: [experimental, main]
+    branches: [experimental, main, 'claude/**']       # R13: a branch merges after CI is green, so its pushes run the quick tier too (audit row 30)
   pull_request:                  # AUD-001: an outside PR gets the model-free checks too (no secrets are used; permissions are read-only)
     branches: [experimental, main]
   workflow_dispatch:
