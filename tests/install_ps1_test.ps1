@@ -133,7 +133,7 @@ try {
     $r = Run-Installer $good1 '9.9.1' @()
     Check ($r.Code -eq 0 -and $r.Out -match 'sha256 matches' -and $r.Out -match 'installed: moe-cache 9.9.1') 'install: hash checked, version printed'
     Check ((Test-Path (Join-Path $kit 'bin\moe_cache.py')) -and (Test-Path $shim)) '...kit and command written'
-    Check ((Get-Content -LiteralPath $shim -Raw) -match 'if not defined XDG_CACHE_HOME set "XDG_CACHE_HOME=%~dp0\.\.\cache"') 'LAUNCHER-1222 item 5: an install in its own -Root keeps its own launcher cache (XDG_CACHE_HOME in the shim)'
+    Check ((Get-Content -LiteralPath $shim -Raw).Contains('if not defined XDG_CACHE_HOME set "XDG_CACHE_HOME=%~dp0..\cache"')) 'LAUNCHER-1222 item 5: an install in its own -Root keeps its own launcher cache (XDG_CACHE_HOME in the shim)'
     Check ((Count-Entry $bin) -eq 1) '...the bin folder is on the user PATH, once'
     Check ($r.Out -match 'folder added to your user PATH by this installer') '...and it says it added it'
     Check ($r.Out -match 'undo:' -and $r.Out -match '-Uninstall') '...it says how to undo'
