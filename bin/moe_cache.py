@@ -1753,7 +1753,8 @@ def sampling_args(off, agent, model, extra):
         planner_path()
         from gguf_plan import sampling_meta
         args, why = sampling_decide(sampling_meta(model), model, extra, agent)
-    except Exception:
+    except Exception as e:      # LAUNCHER-1234 row 14: said, not silent (the model-card sampling defaults are skipped)
+        say(f"moe-cache: could not read the model's sampling defaults ({type(e).__name__}: {e}): none are added", err=True)
         return []
     if why:
         say(why)
@@ -3006,6 +3007,7 @@ def server(argv):
             if i is not None:
                 argv_full[i:i + (1 if "=" in argv_full[i] else 2)] = [f"--approx={final}"]
                 a2, extra2, argv2 = parse_server(argv_full)
+                a2.autotune_probe = getattr(a, "autotune_probe", False)       # LAUNCHER-1234 row 19: the stepped-down plan is tuned like the first one
                 plan = launch_plan(a2, extra2, argv2)
                 if getattr(a2, "approx_info", None):
                     a2.approx_info["canary"] = f"stepped down from {a.approx} to {final}"
@@ -4831,6 +4833,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         ot = dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes)
         if ot:
             cmd += ["-ot", ot]
+            EXPECT_CPU_WORK[0], LOAD_NONE_BY_RULE[0] = True, False     # LAUNCHER-1234 row 18: module globals, a plan returning here must not read the previous plan's values
             return cmd, extra
         del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]
         margin = ""
@@ -4893,7 +4896,8 @@ def template_stage(a, extra, model, dry=False):
         if not path and ctf.needs_fix(ctf.model_template(model)):
             say("moe-cache: WARNING: this model's chat template refuses system messages in the middle of a conversation (Claude Code sends them: HTTP 500), and the automatic "
                 "fix does not recognise its shape; pass your own template: -- --chat-template-file FIXED.jinja", err=True)
-    except Exception:
+    except Exception as e:      # LAUNCHER-1234 row 14: said, not silent (Claude Code then gets HTTP 500 on a model with a strict template)
+        say(f"moe-cache: could not check or fix the chat template ({type(e).__name__}: {e}): the model's own template is used", err=True)
         return []
     if not path:
         return []
@@ -7111,7 +7115,7 @@ def gpu_summary(listing, ok):
 
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
-    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram")
+    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram", type=gb_arg)
     ap.add_argument("--run", action="store_true", help="also start llama-server with the plugin and a small cache for one short request (about a minute): "
                     "proves the cache really computes on this machine")
     a = ap.parse_args(argv)
@@ -7296,7 +7300,7 @@ def check(argv):
                 warn("MoE model", "no expert_count in the header: this may not be a MoE model, moe-cache will not help")
             if not WINDOWS:
                 try:
-                    os.close(os.open(a.model, os.O_RDONLY | os.O_DIRECT))
+                    os.close(os.open(a.model, os.O_RDONLY | getattr(os, "O_DIRECT", 0)))   # LAUNCHER-1234 row 25: no O_DIRECT on macOS
                     ok("direct reads", "O_DIRECT works on this file system")
                 except OSError:
                     warn("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): the plugin reads through the page cache instead, which works but is slower; a normal local disk is faster")
@@ -7315,9 +7319,14 @@ def check(argv):
                      f"are read from it, so start-up, long prompts and models far bigger than RAM get slower. An NVMe drive reads 3 GB/s or more")
             else:
                 ok("drive speed", f"{gbs:.1f} GB/s (random 1 MiB reads, 4 s)")
-            lim = float(a.ram) if a.ram else (cg or memav)
-            if lim and size > lim:
-                ok("fit", f"model ({size:.1f} GB) is larger than the memory limit ({lim:.1f} GB): this is where moe-cache helps most")
+            # LAUNCHER-1234 row 9: the same memory and the same headroom as the launcher's stock-or-plugin decision (mem_for_server: --ram, the cgroup limit, the 7/8 cap; STOCK_HEADROOM)
+            try:
+                mfs = mem_for_server(float(a.ram) if a.ram else None)
+            except Exception:
+                mfs = None
+            lim = (mfs / 1e9) if mfs else (float(a.ram) if a.ram else (cg or memav))
+            if lim and size + STOCK_HEADROOM / 1e9 > lim:
+                ok("fit", f"model ({size:.1f} GB) does not fit in the memory limit ({lim:.1f} GB, with {STOCK_HEADROOM / 1e9:.1f} GB to spare): this is where moe-cache helps most")
             elif lim:
                 warn("fit", f"model ({size:.1f} GB) fits in {lim:.1f} GB: you get about stock speed, the gain is when memory is short")
     else:
