@@ -143,6 +143,23 @@ open(rec_path, "w").write("".join(l for l in open(rec_path) if not l.startswith(
 rc, out = run(release("9.9.2"), "9.9.2")
 check(rc == 0 and "own_cache=0" in open(rec_path).read() and "cache:   " in out and "/cache/moe-cache   (this install" not in out, "an install without the flag stays on the user cache after an update (nothing moves)")
 
+# ---- LAUNCHER-1222 item 5 (critic J): a new install at the DEFAULT prefix is not isolated: no --prefix at all, and --prefix naming the default folder, both record own_cache=0
+def run_default(pfx, xdg=None):
+    h = tempfile.mkdtemp(dir=T); bd = os.path.join(h, "bin"); os.makedirs(bd)
+    env = dict(os.environ, MOE_CACHE_BASE_URL="file://" + release("9.9.2"), MOE_CACHE_REF="v9.9.2", HOME=h, **GOOD_ENV); env.pop("XDG_DATA_HOME", None)
+    if xdg: env["XDG_DATA_HOME"] = xdg
+    r = subprocess.run(["sh", inst, *pfx(h), "--bin-dir", bd, "--no-apt"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=120)
+    return h, r.returncode, r.stdout + r.stderr
+h, rc, out = run_default(lambda h: [])
+rec = os.path.join(h, ".local", "share", "moe-cache", ".installed")
+check(rc == 0 and os.path.exists(rec) and "own_cache=0" in open(rec).read() and "/cache/moe-cache   (this install" not in out, "no --prefix: the default folder, own_cache=0, the user cache is named")
+h, rc, out = run_default(lambda h: ["--prefix", os.path.join(h, ".local", "share", "moe-cache")])
+rec = os.path.join(h, ".local", "share", "moe-cache", ".installed")
+check(rc == 0 and os.path.exists(rec) and "own_cache=0" in open(rec).read(), "--prefix naming the default folder: own_cache=0")
+xd = tempfile.mkdtemp(dir=T)
+h, rc, out = run_default(lambda h: ["--prefix", os.path.join(xd, "moe-cache")], xdg=xd)
+check(rc == 0 and "own_cache=0" in open(os.path.join(xd, "moe-cache", ".installed")).read(), "--prefix naming the XDG_DATA_HOME default folder: own_cache=0")
+
 # ---- failure midway (AUD-049): a failed update keeps the old install, a failed first install leaves nothing
 def state():
     return sorted(os.listdir(prefix)) if os.path.isdir(prefix) else None
