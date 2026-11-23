@@ -7460,6 +7460,39 @@ def default_diffusion_cli():
     return "llama-diffusion-cli"
 
 
+def run_plain_child(cmd, env):
+    """Run a command to the end like subprocess.call, but tied to the launcher (LAUNCHER-1234 row 15): the child gets SIGTERM when the launcher dies (also on SIGKILL, Linux), is tied
+    to a kill-on-close job object on Windows, and a SIGTERM / SIGINT / SIGHUP sent to the launcher is passed on, so a killed `diffusion` run leaves no llama-diffusion-cli behind. Returns the exit code."""
+    kw = {"preexec_fn": _die_with_parent_linux} if sys.platform.startswith("linux") else {}
+    p = subprocess.Popen(cmd, env=env, **kw)
+    if WINDOWS:
+        try:
+            _kill_with_parent_windows(p)
+        except Exception as e:
+            say(f"moe-cache: warning: could not tie the child to the launcher ({e})", err=True)
+    def forward(signum, frame):
+        try:
+            p.send_signal(signum)
+        except Exception:
+            pass
+    old = {}
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                old[sig] = signal.signal(sig, forward)
+            except (ValueError, OSError):
+                pass
+    try:
+        return p.wait()
+    finally:
+        for sig, h in old.items():
+            try:
+                signal.signal(sig, h)
+            except (ValueError, OSError):
+                pass
+
+
 def diffusion_plan(a, extra, cli, lib, stock, size, avail):
     """Command, environment and notes for one llama-diffusion-cli run (no side effects, so tests can call it). A diffusion step is a prefill of
     the whole canvas with no KV cache (every expert of a layer is used in every step: cache hit rate ~0 %, RESULTS 70); what the plugin still
@@ -7538,7 +7571,7 @@ def diffusion(argv):
         shown = " ".join(f'"{c}"' if " " in c else c for c in cmd)
         say(("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + shown) if WINDOWS else (("env " + " ".join(f"{k}={v}" for k, v in env) + " ") if env else "") + shown)
         return 0
-    return subprocess.call(cmd, env=dict(os.environ, **dict(env)))
+    return run_plain_child(cmd, dict(os.environ, **dict(env)))
 
 
 def pack_cmd(argv):
