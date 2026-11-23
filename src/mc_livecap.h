@@ -2,7 +2,7 @@
 //
 // The launcher sizes the cache once from the RAM available at start. Other programs then take or free RAM: this keeps `keep` bytes of the system's
 // available RAM free by lowering the cache's ceiling (tune() evicts down to it) and gives the room back slowly once the RAM is free again.
-// Off unless MOE_CACHE_AVAIL_KEEP_GIB is set (the launcher sets it: max(4 GiB, 12.5 % of the RAM)); without it nothing here is called.
+// Off unless MOE_CACHE_AVAIL_KEEP_GIB is set (the launcher sets it: max(4 GiB, 12.5 % of the RAM)) AND follows() is true for the cache path (the plugin then sets live_keep); with live_keep 0 nothing here is called.
 // Only the cache's own memory can be given back: what llama-server or other programs map or allocate is not touched.
 #pragma once
 #include <algorithm>
@@ -15,6 +15,13 @@ constexpr size_t GIB = (size_t) 1 << 30;
 constexpr size_t GROW_MARGIN = GIB;                      // grow only when available is this far over `keep` (no flapping around the line)
 constexpr size_t GROW_STEP = (size_t) 256 << 20;         // at most this much per grow ...
 constexpr uint64_t GROW_EVERY_MS = 1000;                 // ... and at most one grow per second
+
+// Whether RAM-LIVE runs on this cache path (LAUNCHER-1277). It does not on Linux's file-view path: evicting there only drops mapped pages to the page cache, which
+// MemAvailable counts already, so the figure would not rise and the cache would shrink to its floor (critic 2026-11-17). tune(), the plugin's start-up line and the
+// launcher's plan line all use or mirror this one rule (tests/livecap_test.cpp, tests/ram_cap_decision_test.py).
+constexpr bool follows(bool file_view, bool is_windows) {
+    return !file_view || is_windows;
+}
 
 // The most private memory the process may hold: `target` (the ordinary limit), and never so much that available RAM falls under `keep`.
 // avail < keep: the process gives back the shortfall. avail >= keep: it may hold what it holds now plus the room over `keep`.

@@ -380,6 +380,19 @@ def ls_help(ls, run=None):
     return text
 
 
+SYSTEM_LIB_DIRS = ("/usr/lib", "/lib", "/usr/lib64", "/lib64", "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/local/lib")
+
+
+def server_ggml_dir(deps):
+    """Directory (real path) of the libggml-base that ldd output `deps` says llama-server uses; None when ldd shows none."""
+    for line in deps.splitlines():
+        if "libggml-base" in line and "=>" in line:
+            parts = line.split("=>")[1].split()
+            if parts and parts[0].startswith("/"):
+                return os.path.dirname(os.path.realpath(parts[0]))
+    return None
+
+
 def load_env(ls, lib, method="auto"):
     """Environment that makes this llama-server load the plugin, and the method used.
     preload: llama-server links its backends directly (distro packages): LD_PRELOAD.  path: backends are separate files (official releases): GGML_BACKEND_PATH."""
@@ -391,7 +404,14 @@ def load_env(ls, lib, method="auto"):
     if method == "preload":
         if WINDOWS:
             raise SystemExit("--load-method preload does not exist on Windows (use path)")
-        return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], method
+        env = [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")]
+        # The plugin's own libggml-base (DT_NEEDED, RUNPATH of the build machine, usually /usr/lib) is loaded first because LD_PRELOAD comes first, and then the server's llama
+        # library binds its ggml symbols to that copy, not to the libggml-base next to llama-server: a libggml-base 0.29 under the server's own 0.25 libggml/cpu/cuda, an ABI mix (distro llama-server with its own
+        # /usr/lib/llama.cpp-cuda copy 0.25 against /usr/lib 0.29: SIGSEGV, exit 139, 2026-11-23). Put the directory of the server's own libggml-base first on the loader path.
+        d = server_ggml_dir(deps)
+        if d and d not in SYSTEM_LIB_DIRS:      # a system dir is searched anyway and would only shadow the RUNPATH of cuda/rocm libs (critic 2026-11-23)
+            env.append(("LD_LIBRARY_PATH", d + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")))
+        return env, method
     if method == "path":
         return [("GGML_BACKEND_PATH", lib)], method
     raise SystemExit(f"unknown load method: {method} (use auto, preload or path)")
@@ -1733,7 +1753,8 @@ def sampling_args(off, agent, model, extra):
         planner_path()
         from gguf_plan import sampling_meta
         args, why = sampling_decide(sampling_meta(model), model, extra, agent)
-    except Exception:
+    except Exception as e:      # LAUNCHER-1234 row 14: said, not silent (the model-card sampling defaults are skipped)
+        say(f"moe-cache: could not read the model's sampling defaults ({type(e).__name__}: {e}): none are added", err=True)
         return []
     if why:
         say(why)
@@ -2986,6 +3007,7 @@ def server(argv):
             if i is not None:
                 argv_full[i:i + (1 if "=" in argv_full[i] else 2)] = [f"--approx={final}"]
                 a2, extra2, argv2 = parse_server(argv_full)
+                a2.autotune_probe = getattr(a, "autotune_probe", False)       # LAUNCHER-1234 row 19: the stepped-down plan is tuned like the first one
                 plan = launch_plan(a2, extra2, argv2)
                 if getattr(a2, "approx_info", None):
                     a2.approx_info["canary"] = f"stepped down from {a.approx} to {final}"
@@ -4140,6 +4162,13 @@ def avail_reserve_gib(a, machine, stock=False, model=None):
     return (d["gib"], d["avail"], d["keep"], d) if d else None
 
 
+def live_follow_off_path(machine, stock=False):
+    """LAUNCHER-1277: True when the plugin will NOT follow the system's RAM while running because it keeps its experts as file mappings: Linux's default path (MOE_CACHE_LINUX_VIEW
+    not 0; the plugin's mclive::follows(file_view, is_windows) is the same rule). The plugin's own start-up line is the final word (a pack or a failed mapping uses private memory)."""
+    return (not stock and not bool(getattr(machine, "windows", False)) and sys.platform.startswith("linux") and os.environ.get("MOE_CACHE_LINUX_VIEW", "") != "0"
+            and not os.environ.get("MOE_CACHE_PACK"))
+
+
 def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     """ENGINE-029, stage "plugin environment": how the plugin is loaded (preload or backend path), the cache and memory settings of the plugin in environment form (RAM, cap, peers) and the memory cap the plan prints. --gpu-cache falls back to static layers when the plugin can only be loaded as a file. Returns (load settings, load method, gpu cache setting, environment, memory cap or None)."""
     load, method = ([], "none (stock)") if stock else machine.load_env(ls, lib, a.load_method)
@@ -4168,8 +4197,12 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
         lk = None
     if lk:
         env.append(("MOE_CACHE_AVAIL_KEEP_GIB", f"{lk:.3f}"))
-        say(f"moe-cache: live RAM follow: while the server runs the cache gives experts back when the system's available RAM falls under {lk:.1f} GiB and takes them back slowly above it "
-            "(about 1 GiB over the line, 256 MiB a second); it can only give back the cache's own memory; MOE_CACHE_LIVE_FOLLOW=0 turns it off")
+        if live_follow_off_path(machine, stock):
+            say("moe-cache: live RAM follow: off on Linux's default path (the cached experts are read-only file mappings: page cache the kernel manages itself); "
+                "MOE_CACHE_LINUX_VIEW=0 uses private memory, where the cache follows the system's available RAM; the plugin's own line says which applies")
+        else:
+            say(f"moe-cache: live RAM follow: while the server runs the cache gives experts back when the system's available RAM falls under {lk:.1f} GiB and takes them back slowly above it "
+                "(about 1 GiB over the line, 256 MiB a second); it can only give back the cache's own memory; MOE_CACHE_LIVE_FOLLOW=0 turns it off")
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
@@ -4634,7 +4667,7 @@ def stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=False):
         else:
             say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
-        env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
+        env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH", "LD_LIBRARY_PATH"))]
         method = "none (stock)"
         if not dense and ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
@@ -4812,6 +4845,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         ot = dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes)
         if ot:
             cmd += ["-ot", ot]
+            EXPECT_CPU_WORK[0], LOAD_NONE_BY_RULE[0] = True, False     # LAUNCHER-1234 row 18: module globals, a plan returning here must not read the previous plan's values
             return cmd, extra
         del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]
         margin = ""
@@ -4874,7 +4908,8 @@ def template_stage(a, extra, model, dry=False):
         if not path and ctf.needs_fix(ctf.model_template(model)):
             say("moe-cache: WARNING: this model's chat template refuses system messages in the middle of a conversation (Claude Code sends them: HTTP 500), and the automatic "
                 "fix does not recognise its shape; pass your own template: -- --chat-template-file FIXED.jinja", err=True)
-    except Exception:
+    except Exception as e:      # LAUNCHER-1234 row 14: said, not silent (Claude Code then gets HTTP 500 on a model with a strict template)
+        say(f"moe-cache: could not check or fix the chat template ({type(e).__name__}: {e}): the model's own template is used", err=True)
         return []
     if not path:
         return []
@@ -7092,7 +7127,7 @@ def gpu_summary(listing, ok):
 
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
-    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram")
+    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram", type=gb_arg)
     ap.add_argument("--run", action="store_true", help="also start llama-server with the plugin and a small cache for one short request (about a minute): "
                     "proves the cache really computes on this machine")
     a = ap.parse_args(argv)
@@ -7277,7 +7312,7 @@ def check(argv):
                 warn("MoE model", "no expert_count in the header: this may not be a MoE model, moe-cache will not help")
             if not WINDOWS:
                 try:
-                    os.close(os.open(a.model, os.O_RDONLY | os.O_DIRECT))
+                    os.close(os.open(a.model, os.O_RDONLY | getattr(os, "O_DIRECT", 0)))   # LAUNCHER-1234 row 25: no O_DIRECT on macOS
                     ok("direct reads", "O_DIRECT works on this file system")
                 except OSError:
                     warn("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): the plugin reads through the page cache instead, which works but is slower; a normal local disk is faster")
@@ -7296,11 +7331,15 @@ def check(argv):
                      f"are read from it, so start-up, long prompts and models far bigger than RAM get slower. An NVMe drive reads 3 GB/s or more")
             else:
                 ok("drive speed", f"{gbs:.1f} GB/s (random 1 MiB reads, 4 s)")
-            lim = float(a.ram) if a.ram else (cg or memav)
-            if lim and size > lim:
-                ok("fit", f"model ({size:.1f} GB) is larger than the memory limit ({lim:.1f} GB): this is where moe-cache helps most")
-            elif lim:
-                warn("fit", f"model ({size:.1f} GB) fits in {lim:.1f} GB: you get about stock speed, the gain is when memory is short")
+            # LAUNCHER-1234 row 9: the same memory and the same headroom as the launcher's stock-or-plugin decision (mem_for_server: --ram, the cgroup limit, the 7/8 cap; STOCK_HEADROOM)
+            try:
+                mfs = mem_for_server(float(a.ram) if a.ram else None)
+            except Exception:
+                mfs = None
+            lim = (mfs / 1e9) if mfs else (float(a.ram) if a.ram else (cg or memav))
+            fit = fit_line(size, lim)
+            if fit:
+                (ok if fit[0] else warn)("fit", fit[1])
     else:
         say("  (give a model path to also check the model: moe-cache-check MODEL.gguf)")
     if a.run:
@@ -7352,6 +7391,17 @@ def arch_in_log(lines):
         if m:
             return m.group(1)
     return None
+
+
+def fit_line(size_gb, lim_gb):
+    """check's "fit" line (LAUNCHER-1234 row 9): (True, text) when the model plus the launcher's stock headroom is over the memory the server may use (the cache helps), (False, text) when it fits; None without a limit.
+    Same sum as the launcher's stock decision (size + STOCK_HEADROOM <= memory the server may use); the plugin can still be picked for a model that fits when experts stay on the CPU."""
+    if not lim_gb:
+        return None
+    need = size_gb + STOCK_HEADROOM / 1e9
+    if need > lim_gb:
+        return True, f"model {size_gb:.1f} GB + {STOCK_HEADROOM / 1e9:.1f} GB headroom = {need:.1f} GB is over the {lim_gb:.1f} GB the server may use (after the RAM cap): this is where moe-cache helps most"
+    return False, f"model ({size_gb:.1f} GB) fits in {lim_gb:.1f} GB (after the RAM cap): you get about stock speed unless layers stay on the CPU; the gain is when memory is short"
 
 
 def run_check(lsp, model, load, port=8097):
@@ -7420,6 +7470,39 @@ def default_diffusion_cli():
         if d and os.path.isfile(os.path.join(d, n)):
             return os.path.join(d, n)
     return "llama-diffusion-cli"
+
+
+def run_plain_child(cmd, env):
+    """Run a command to the end like subprocess.call, but tied to the launcher (LAUNCHER-1234 row 15): the child gets SIGTERM when the launcher dies (also on SIGKILL, Linux), is tied
+    to a kill-on-close job object on Windows, and a SIGTERM / SIGINT / SIGHUP sent to the launcher is passed on, so a killed `diffusion` run leaves no llama-diffusion-cli behind. Returns the exit code."""
+    kw = {"preexec_fn": _die_with_parent_linux} if sys.platform.startswith("linux") else {}
+    p = subprocess.Popen(cmd, env=env, **kw)
+    if WINDOWS:
+        try:
+            _kill_with_parent_windows(p)
+        except Exception as e:
+            say(f"moe-cache: warning: could not tie the child to the launcher ({e})", err=True)
+    def forward(signum, frame):
+        try:
+            p.send_signal(signum)
+        except Exception:
+            pass
+    old = {}
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                old[sig] = signal.signal(sig, forward)
+            except (ValueError, OSError):
+                pass
+    try:
+        return p.wait()
+    finally:
+        for sig, h in old.items():
+            try:
+                signal.signal(sig, h)
+            except (ValueError, OSError):
+                pass
 
 
 def diffusion_plan(a, extra, cli, lib, stock, size, avail):
@@ -7500,7 +7583,7 @@ def diffusion(argv):
         shown = " ".join(f'"{c}"' if " " in c else c for c in cmd)
         say(("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + shown) if WINDOWS else (("env " + " ".join(f"{k}={v}" for k, v in env) + " ") if env else "") + shown)
         return 0
-    return subprocess.call(cmd, env=dict(os.environ, **dict(env)))
+    return run_plain_child(cmd, dict(os.environ, **dict(env)))
 
 
 def pack_cmd(argv):

@@ -494,9 +494,15 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             if (const char * v = getenv("MOE_CACHE_AVAIL_KEEP_GIB")) {      // RAM-LIVE: set by the launcher; 0 or unset = the cache does not follow the system's free RAM
                 size_t k = 0;
                 if (parse_gib("MOE_CACHE_AVAIL_KEEP_GIB", v, k) && k > 0) {
-                    live_keep = k;
-                    fprintf(stderr, "moe-cache: live RAM follow on: the cache gives experts back when the system's available RAM falls under %.2f GiB and takes them back slowly "
-                                    "above it (MOE_CACHE_AVAIL_KEEP_GIB); it is checked while graphs run, not while the server is idle\n", k / 1073741824.0);
+                    if (!mclive::follows(win_view, plat::is_windows)) {
+                        // live_keep stays 0 here: with it set and tune()'s probe skipped, live_avail stays 0 and grow_step(0, keep) = 0 would stop the cache from ever growing (critic 2026-11-23)
+                        fprintf(stderr, "moe-cache: live RAM follow is OFF on this path: the cached experts are read-only file mappings (page cache), which the kernel manages itself "
+                                        "(evicting them only moves pages to the page cache; not measured here), so the cache does not follow available RAM; MOE_CACHE_LINUX_VIEW=0 uses private memory, where it follows (%.2f GiB)\n", k / 1073741824.0);
+                    } else {
+                        live_keep = k;
+                        fprintf(stderr, "moe-cache: live RAM follow on: the cache gives experts back when the system's available RAM falls under %.2f GiB and takes them back slowly "
+                                        "above it (MOE_CACHE_AVAIL_KEEP_GIB); it is checked while graphs run, not while the server is idle\n", k / 1073741824.0);
+                    }
                 }
             }
             // llama-server keeps saved prompt states in host RAM (--cache-ram, MiB): that memory is outside this cache's control and arrives in bursts

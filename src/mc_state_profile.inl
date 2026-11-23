@@ -325,7 +325,7 @@
         // shrink to its floor (critic 2026-11-17). Probed at most every 250 ms; after a live shrink the figure is given 500 ms to settle before the next one.
         size_t live_room_ok = 1;
         bool live_limited = false;
-        if (live_keep && !(win_view && !plat::is_windows)) {
+        if (live_keep && mclive::follows(win_view, plat::is_windows)) {
             const uint64_t now = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             if (!live_last_ms || now >= live_last_ms + 250) {
                 live_avail = plat::mem_available();
