@@ -548,17 +548,6 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                               s.graphs.load() >= c->gpu_retry_at && !(s.route_mode || s.fewer > 0);
             exec_jobs += s.prepare_group(tidx, used, exec_graph || pipe);
             piped = piped || pipe;
-            if (s.lookahead && n_tok == 1) {
-                const ggml_tensor * xin = node->src[1];
-                if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {
-                    std::vector<float> xv((size_t) xin->ne[0]);
-                    memcpy(xv.data(), xin->data, xv.size() * sizeof(float));
-                    const int layer = s.tensors[tidx[0]]->layer;
-                    if (layer >= 0) {
-                        s.pf_submit([&s, layer, xv = std::move(xv), n_used = (int) n_used] { s.predict_and_prefetch(layer, xv, n_used); });
-                    }
-                }
-            }
             if (!s.profile_path.empty() && ++s.groups_since_save >= 100000) {
                 s.groups_since_save = 0;
                 s.save_profile();

@@ -19,7 +19,7 @@ PRE=(); [ -n "$LIMIT" ] && PRE=(systemd-run --user --scope -q -p MemoryMax=${LIM
 TMP=$(mktemp -d); trap 'kill $SPID 2>/dev/null || true; [ -n "$IDENT_KEEP" ] && mkdir -p "$IDENT_KEEP" && cp "$TMP"/* "$IDENT_KEEP"/ 2>/dev/null; rm -rf "$TMP"' EXIT
 COMMON=(-m "$MODEL" ${DEVICE:+--device $DEVICE} -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -np "$NP" -fa on --load-mode mmap --no-warmup --port $PORT --seed 42)
 # IDENT_EXTRA="--moe-cache-mib 2000": more llama-server arguments for both servers (e.g. llama.cpp's GPU expert cache)
-# IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1 MOE_CACHE_AVX512=1": more environment for the plugin server only
+# IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1": more environment for the plugin server only
 [ -n "$IDENT_EXTRA" ] && COMMON+=($IDENT_EXTRA)
 wait_up() { for i in $(seq 300); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health)" = 200 ] && return 0; sleep 2; done; echo "server did not start"; return 1; }
 if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health"; then echo "port $PORT is already in use (a leftover server?): stop it first, the comparison would be wrong"; exit 1; fi

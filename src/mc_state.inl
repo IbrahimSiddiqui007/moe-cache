@@ -43,7 +43,7 @@ void remove_crash_report();
 #include "mc_state_rebalance_members.h"
 #include "mc_state_exec.h"
 #include "mc_state_times.h"
-#include "mc_state_prefetch.h"
+#include "mc_state_io_members.h"
 #include "mc_state_budget.h"
 #include "mc_state_profile_members.h"
 #include "mc_state_counters.h"
@@ -55,13 +55,12 @@ void remove_crash_report();
 #include "mc_state_scan.h"
 #include "mc_state_tables.h"
 #include "mc_state_rbstats.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_rbstats_t {
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_io_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_rbstats_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
     // "all" for the default range (hi = 2^30 means no upper bound; the log printed "layers 0-1073741824", T7)
     std::string layer_range() const { return lo == 0 && hi >= (1 << 30) ? std::string("all") : std::to_string(lo) + "-" + std::to_string(hi); }
-    // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
 #ifdef _WIN32
@@ -233,9 +232,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             for (int64_t i = 0; i < n; i++) {
                 const char * nm = gguf_get_tensor_name(g, i);
                 file_tensors[nm] = { data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i) };
-                if (strstr(nm, "ffn_gate_inp") || strstr(nm, "ffn_norm") || strstr(nm, "post_attention_norm")) {
-                    tmeta[nm] = { (int) gguf_get_tensor_type(g, i), data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i), (int) si };
-                }
                 file_shard[nm] = (int) si;
             }
             gguf_free(g);
@@ -711,29 +707,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         }
         if (const char * v = getenv("MOE_CACHE_COALESCE_MIB")) {
             coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;
-        }
-        if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
-            lookahead = mcenv::flag_value(v, false);
-            la_exec = strcmp(v, "2") == 0;
-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_GUESS")) {
-                la_guess = atoi(g);
-            }
-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_CAP")) {
-                la_cap = std::max(1, atoi(g));
-            }
-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_ECORES")) {
-                la_ecores = strcmp(g, "0") != 0;
-            }
-            if (lookahead) {
-                int nt = 4;
-                if (const char * t = getenv("MOE_CACHE_LOOKAHEAD_THREADS")) {
-                    nt = std::max(1, std::min(32, atoi(t)));
-                }
-                for (int i = 0; i < nt; i++) {
-                    pf_threads.emplace_back([this] { pf_main(); });
-                }
-                fprintf(stderr, "moe-cache: lookahead prefetch on (%d helper threads)\n", nt);
-            }
         }
 #ifdef __linux__
         if (getenv("MOE_CACHE_STATS_SIGNAL")) {
