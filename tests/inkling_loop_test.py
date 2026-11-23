@@ -47,8 +47,8 @@ check(mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "12", None, False) == 
 META["general.architecture"] = "inkling2_loop"
 extra = ["-ub", "2048"]
 r0 = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False)
-check(r0 == ("128", "0") and "-ot" not in extra and "--no-op-offload" not in extra,
-      f"all on the GPU (0): no placement, op-offload left alone, but -ub 128 (the bias grows with -ub at any placement) [got {r0}]")
+check(r0 == ("2048", "0") and extra == ["-ub", "2048"],
+      f"all on the GPU (0), default (no MOE_CACHE_LOOP_FIT): untouched, exactly 9114606's plan (main24 2026-11-23) [got {r0}]")
 extra = ["-ub", "2048"]
 r9 = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "999", None, False)
 check(r9 == ("2048", "999") and extra == ["-ub", "2048"], f"GPU-cache plan (999): placeholder, the GPU-cache stage resolves it later: untouched (loop-speed-2 critic) [got {r9}, {extra}]")
@@ -148,7 +148,15 @@ ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False, ct
 check(ub == "2048" and extra == ["-ub", "2048"], f"default, all on the GPU, bias fits the budget: planner -ub kept [got {ub}]")
 extra = ["-ub", "2048"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False, ctx=32768, tuned={"compute_mib": 4660}, ls="ls")
-check(ub == "128", f"default, all on the GPU, 12 GiB bias over the budget: -ub 128 [got {ub}]")
+check(ub == "2048", f"default, all on the GPU, 12 GiB bias over the budget: still untouched without MOE_CACHE_LOOP_FIT [got {ub}]")
+extra = ["-ub", "2048"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "", None, False, ctx=65536, tuned=T64, ls="ls", dense=True)
+check(ub == "2048" and extra == ["-ub", "2048"], "default, dense looped: untouched")
+os.environ["MOE_CACHE_LOOP_FIT"] = "1"
+extra = ["-ub", "2048"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False, ctx=32768, tuned={"compute_mib": 4660}, ls="ls")
+check(ub == "512", f"MOE_CACHE_LOOP_FIT=1, all on the GPU at 32k, budget 4660: -ub 512 fit [got {ub}]")
+del os.environ["MOE_CACHE_LOOP_FIT"]
 extra = ["-ub", "2048"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "13", None, False, ctx=65536, tuned=T64, ls="ls")
 check(ub == "128" and "--no-op-offload" in extra, "default, experts on the CPU: old rule, -ub 128 + --no-op-offload (unchanged)")

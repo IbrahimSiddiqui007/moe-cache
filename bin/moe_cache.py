@@ -4639,6 +4639,11 @@ def loop_compute_mib(ctx, ub, n_head, staged_bytes):
     return 2 * ctx * ub * max(n_head, 1) * 4 / 1048576 + compute_buffer_guess_mib(ctx, 512) + staged_bytes / 1048576
 
 
+def loop_fit_on():
+    """MOE_CACHE_LOOP_FIT=1/true/yes/on: the opt-in looped-model fit (op-offload by build, -ub sized to the budget, decisions at nothing-on-the-CPU and dense placements)."""
+    return os.environ.get("MOE_CACHE_LOOP_FIT", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def loop_tensor_ok(ctx, ub, n_head):
     """One bias tensor under LOOP_MAX_TENSOR_GIB."""
     return ctx * ub * max(n_head, 1) * 4 <= LOOP_MAX_TENSOR_GIB * 2**30
@@ -4662,10 +4667,9 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     if a.exact or a.cpu_only:
         return ub, ncmoe
     # OPT-IN until the PC run P1 (loop-speed-1 critic, R19): MOE_CACHE_LOOP_FIT=1 turns on op-offload by build and the -ub fit; without it the old rule holds
-    # (--no-op-offload when anything is on the CPU, -ub 128). Now also with nothing on the CPU, but there the -ub is only lowered when the estimate says so; in practice the estimate
-    # (2 x bias + the normal buffer at -ub 512) is over the planner's budget at almost every real context, so the result is mostly -ub 128 (9114606 left it untouched: an unmeasured
-    # default change that the scope of LAUNCHER-1283 item 2 asks for; owner/main to confirm). A cache plan (999) is not decided here.
-    fit_on = os.environ.get("MOE_CACHE_LOOP_FIT", "").strip().lower() in ("1", "true", "yes", "on")
+    # (--no-op-offload, -ub 128, loop-aware -ot when experts are on the CPU). Nothing on the CPU (ncmoe 0), a dense looped model and the 999 cache placeholder are NOT decided
+    # without MOE_CACHE_LOOP_FIT=1: with no env set the plan is exactly 9114606's (owner 2026-11-23, main24).
+    fit_on = loop_fit_on()
     mt = getattr(a, "model_type", None)
     lm = mt.get("loop") if isinstance(mt, dict) else loop_meta(model)
     if not lm:
@@ -4675,6 +4679,8 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
         if os.environ.get("MOE_CACHE_INKLING_OP_OFFLOAD", "").strip().lower() in ("0", "false", "no", "off") and not any(x in ("--no-op-offload", "-nopo") for x in extra):
             extra.append("--no-op-offload")       # a forced off is honoured here too (documented: 0 = always add it)
         return ub, ncmoe                          # loop-speed-2 critic: 999 is the placeholder the GPU-cache stage (gpu_cache_stage, runs after this one) still resolves; deciding here changed unmeasured picks (CUDA cache path: -ub 2048 + op-offload on -> 128 + off). Old behaviour kept until measured.
+    if not fit_on and (dense or not (ncmoe or "").isdigit() or ncmoe == "0"):
+        return ub, ncmoe                          # owner 2026-11-23 (main24): with no env set the plan is exactly 9114606's; nothing on the CPU / dense is decided only with MOE_CACHE_LOOP_FIT=1 (the PC window decides it)
     arch, n_l, ls_, le_, cnt, n_head = lm
     a.loop_locked = True
     assumed = "" if arch in LOOP_KNOWN_ARCHS else f" (assumed from Inkling 2: {arch} was never run here)"
@@ -4747,11 +4753,8 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
             "MOE_CACHE_INKLING_OP_OFFLOAD=1/0 forces it)")
     if a.ub == "auto" and ub and str(ub).isdigit() and int(ub) > 128:
         st = staged if (opo and not dense) else 0
-        keep = not fit_on and (dense or (cpu is not None and not cpu))       # nothing on the CPU (all on the GPU / dense): the planner's -ub stays unless the estimate says its bias does not fit (loop-speed-2 critic: no unmeasured default change)
         if fit_on:
             pick = next((u for u in LOOP_UBS if u <= int(ub) and fits(u, st)), 128)
-        elif keep:
-            pick = int(ub) if fits(int(ub), st) else 128
         else:
             pick = 128
         for i, x in enumerate(extra):
@@ -4760,7 +4763,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
         if fits(pick, st):
             src = (f"our estimate {loop_compute_mib(ctx_n, pick, n_head, st):.0f} MiB (dense relative-position bias n_kv x n_tokens x {n_head} heads F32 x2"
                    f"{f' + {st / 2**20:.0f} MiB op-offload staging' if st else ''}) fits the {budget} MiB compute buffer the planner kept for -ub {ub}")
-        elif not fit_on and not keep:
+        elif not fit_on:
             src = "looped-model rule: the relative-position bias is n_kv x n_tokens x n_head F32; MOE_CACHE_LOOP_FIT=1 sizes it to the planner's budget (PC test pending)"
         elif not budget or not ctx_n or n_head <= 0:
             src = "the floor: no planner budget or head count to size it from"
@@ -4768,10 +4771,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
             src = f"the floor: one bias tensor would pass the {LOOP_MAX_TENSOR_GIB:g} GiB per-tensor cap (assumed driver limit, not read from the device)"
         else:
             src = f"the floor: even -ub 128 is estimated over the {budget} MiB the planner kept"
-        if pick != int(ub) or not keep:
-            say(f"moe-cache: micro-batch -ub {pick} for the looped model (source: {src}; --ub N to change)")
-        else:
-            say(f"moe-cache: micro-batch -ub {pick} kept for the looped model, nothing on the CPU (source: {src})")
+        say(f"moe-cache: micro-batch -ub {pick} for the looped model (source: {src}; --ub N to change)")
         ub = str(pick)
     # op-offload only fires for batches >= GGML_OP_OFFLOAD_MIN_BATCH; stock_env_stage sets 512 on the stock engine, which would never be reached at -ub 128/256 (critic)
     if opo and str(ub).isdigit():
@@ -4962,7 +4962,7 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
     if not r["n_off"]:
         return None
     lm = (getattr(a, "model_type", None) or {}).get("loop") if isinstance(getattr(a, "model_type", None), dict) else None
-    if lm and lm[1] == r["n_layers"]:
+    if lm and lm[1] == r["n_layers"] and loop_fit_on():
         # a dense LOOPED model (none exists yet: built, not measured): the once-used layers' FFN goes to RAM first, the loop layers (run loop.count times per token) last
         off = sorted(loop_first_order(lm[1], lm[2], lm[3])[:r["n_off"]])
         layers = "|".join(str(i) for i in off)
