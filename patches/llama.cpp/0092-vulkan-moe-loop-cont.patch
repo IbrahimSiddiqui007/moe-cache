@@ -1,17 +1,31 @@
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index cffd083..a6c811f 100644
+index 1bd3f8d..78a04fb 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -2365,7 +2365,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -2487,7 +2487,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          weights = ggml_reshape_3d(ctx0, weights, 1, n_expert_used, n_tokens);
      }
      if (w_scale != 0.0f && w_scale != 1.0f) {
 -        weights = ggml_scale(ctx0, weights, w_scale);
-+        // LLAMA_MOE_LOOP_CONT=1 (default off): give the scale its own contiguous copy of the router weights (llama.cpp #32710, Inkling 2 Mini
-+        // loop layers: the looped passes share the layer's tensors and the strided/aliased input was the suspected shape of the garbage output
-+        // and of the slow Vulkan path). Off: the graph is exactly the stock one.
-+        static const bool moe_loop_cont = [] { const char * v = getenv("LLAMA_MOE_LOOP_CONT"); return v && atoi(v) > 0; }();
-+        weights = ggml_scale(ctx0, moe_loop_cont ? ggml_cont(ctx0, weights) : weights, w_scale);
++        // LLAMA_MOE_LOOP_CONT (default off = the stock graph; moe-cache patch 0092), bit 1: the scale reads a contiguous copy of the router weights.
++        // Experimental, site unconfirmed (llama.cpp #32710 reports "ggml_cont before ggml_scale in build_moe_ffn"); bit 2 is the SITU site below.
++        static const int moe_loop_cont = [] { const char * v = getenv("LLAMA_MOE_LOOP_CONT"); return v ? atoi(v) : 0; }();
++        weights = ggml_scale(ctx0, (moe_loop_cont & 1) ? ggml_cont(ctx0, weights) : weights, w_scale);
          cb(weights, "ffn_moe_weights_scaled", il);
      }
  
+@@ -2607,6 +2610,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+                     const float beta = hparams.situ_beta;
+                     const float lb   = hparams.situ_linear_beta;
+ 
++                    // LLAMA_MOE_LOOP_CONT bit 2 (moe-cache patch 0092, default off): gate and up are strided views of the merged gate_up output; the
++                    // scales below read a contiguous copy instead
++                    static const int moe_loop_cont_situ = [] { const char * v = getenv("LLAMA_MOE_LOOP_CONT"); return v ? atoi(v) : 0; }();
++                    if (moe_loop_cont_situ & 2) {
++                        cur = ggml_cont(ctx0, cur);
++                        up  = ggml_cont(ctx0, up);
++                    }
++
+                     ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
+                     act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
+                     if (lb > 0.0f) {
