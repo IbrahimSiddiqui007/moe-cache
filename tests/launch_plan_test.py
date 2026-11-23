@@ -6,7 +6,7 @@ only on the launcher's code and on the model's GGUF header.
    python3 tests/launch_plan_test.py                       the same on a synthetic 18 GB MoE header (sparse file, no download): tests/launch_plan_golden_synth.json
    python3 tests/launch_plan_test.py MODEL.gguf            compare with tests/launch_plan_golden.json (skipped when the model is not the recorded one)
    python3 tests/launch_plan_test.py MODEL.gguf --record   write the golden file from the current code
-The recorded model is Qwen3.6-35B-A3B (Ollama blob sha256-d372de8e...): reading its header is cheap, nothing is loaded."""
+The recorded model is Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf (13 211 155 424 bytes, the dense_fits file; re-recorded 2026-11-23 from the code at experimental 9114606 because the first recorded Ollama blob was deleted): reading its header is cheap, nothing is loaded."""
 import contextlib, io, json, os, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
