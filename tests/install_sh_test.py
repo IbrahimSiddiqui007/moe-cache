@@ -40,7 +40,7 @@ def release(ver, tamper=False):
     """A release folder: moe-cache-v<ver>-ggml0.26-linux-x86_64.tar.gz with bin/moe_cache.py, and SHA256SUMS (wrong hash when tamper)."""
     d = os.path.join(T, "rel-" + ver + ("-bad" if tamper else "")); os.makedirs(d, exist_ok=True)
     n = f"moe-cache-v{ver}-ggml0.26-linux-x86_64"
-    py = f'import sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n'.encode()
+    py = f'# own_cache_base (the real kit reads the flag)\nimport sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n'.encode()
     with tarfile.open(os.path.join(d, n + ".tar.gz"), "w:gz") as tf:
         ti = tarfile.TarInfo(n + "/bin/moe_cache.py"); ti.size = len(py); ti.mode = 0o755; tf.addfile(ti, io.BytesIO(py))
         so = tarfile.TarInfo(n + "/llama/libllama.so.0.8.0"); so.size = 3; tf.addfile(so, io.BytesIO(b"elf"))      # RELEASE-686: the real tarball ships llama.cpp's libraries with symlinks
@@ -135,6 +135,13 @@ check(os.listdir(os.path.join(prefix, "versions")) == ["moe-cache-v9.9.1-ggml0.2
 rc, out = run(release("9.9.2"), "9.9.2")
 check(rc == 0 and "installed: moe-cache 9.9.2 (was 9.9.1)" in out, "update in place says what it replaced")
 check(os.listdir(os.path.join(prefix, "versions")) == ["moe-cache-v9.9.2-ggml0.26-linux-x86_64"], "...the old version folder is gone")
+# ---- LAUNCHER-1222 item 5: a new install under --prefix keeps its own launcher cache; an install without the flag keeps what it had
+rec_path = os.path.join(prefix, ".installed")
+check("own_cache=1" in open(rec_path).read() and f"{prefix}/cache/moe-cache" in out, "a new install under --prefix records own_cache=1 and says where the cache is")
+check("own_cache=1" in open(rec_path).read(), "...the update kept it")
+open(rec_path, "w").write("".join(l for l in open(rec_path) if not l.startswith("own_cache=")))      # what an install made before the flag looks like
+rc, out = run(release("9.9.2"), "9.9.2")
+check(rc == 0 and "own_cache=0" in open(rec_path).read() and "cache:   " in out and "/cache/moe-cache   (this install" not in out, "an install without the flag stays on the user cache after an update (nothing moves)")
 
 # ---- failure midway (AUD-049): a failed update keeps the old install, a failed first install leaves nothing
 def state():

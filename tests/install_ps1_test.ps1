@@ -21,7 +21,7 @@ d, ver, mode = sys.argv[1:4]
 os.makedirs(d, exist_ok=True)
 n = "moe-cache-v%s-windows-x64" % ver
 z = os.path.join(d, n + ".zip")
-src = 'import sys\nprint("moe-cache %s" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n' % ver
+src = '# own_cache_base\nimport sys\nprint("moe-cache %s" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n' % ver
 with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
     f.writestr(n + "/bin/moe_cache.py", src)
     f.writestr(n + "/LICENSE", "x")
@@ -144,6 +144,24 @@ try {
 
     $r = Run-Installer (New-Release 'good2' '9.9.2' 'ok') '9.9.2' @()
     Check ($r.Code -eq 0 -and $r.Out -match 'installed: moe-cache 9.9.2 \(was 9.9.1\)') 'update in place says what it replaced'
+    # LAUNCHER-1222 item 5: a new install in its own -Root keeps its own launcher cache (moe_cache.py reads the flag; the shim has no cache line any more)
+    $recJ = Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json
+    Check ($recJ.own_cache -eq $true -and $r.Out -match 'cache:\s+\S*cache\\moe-cache') 'LAUNCHER-1222 item 5: a new install in its own -Root records own_cache and says where the cache is'
+    Check (-not ((Get-Content -LiteralPath $shim -Raw) -match 'XDG_CACHE_HOME')) '...the command itself sets nothing (the Startup link and the Start-menu paths read the same flag)'
+    # an install made before the flag (no own_cache in its record) keeps the user cache when updated: nothing moves under anyone
+    $j = Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json; $j.PSObject.Properties.Remove('own_cache')
+    [IO.File]::WriteAllText((Join-Path $root 'install.json'), ($j | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    $r = Run-Installer (Join-Path $T 'good2') '9.9.2' @('-Force')
+    $recJ = Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json
+    Check ($r.Code -eq 0 -and $recJ.own_cache -eq $false -and $r.Out -match 'cache:\s+your user cache') '...an older install without the flag stays on the user cache after an update'
+    # the default root is not isolated: LOCALAPPDATA pointed at a temp folder, no -Root
+    $savedLad = $env:LOCALAPPDATA; $env:LOCALAPPDATA = Join-Path $T 'lad'; New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+    try {
+        $r = & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -BaseUrl (Join-Path $T 'good2') -Version 9.9.2 2>&1 | Out-String
+        $recD = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'moe-cache\install.json') -Raw | ConvertFrom-Json
+        Check ($LASTEXITCODE -eq 0 -and $recD.own_cache -eq $false) '...an install into the default root does not isolate the cache'
+        & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -Uninstall 2>&1 | Out-Null
+    } finally { $env:LOCALAPPDATA = $savedLad }
 
     # ---- failure midway (AUD-050): a failed update keeps the 9.9.2 install whole, a failed first install leaves nothing
     function Snapshot { $k = if (Test-Path $kit) { (Get-ChildItem -LiteralPath $kit -Recurse -Force | ForEach-Object { $_.FullName.Substring($kit.Length) }) -join '|' } else { '' }
