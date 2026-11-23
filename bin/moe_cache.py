@@ -4164,7 +4164,8 @@ def avail_reserve_gib(a, machine, stock=False, model=None):
 def live_follow_off_path(machine, stock=False):
     """LAUNCHER-1277: True when the plugin will NOT follow the system's RAM while running because it keeps its experts as file mappings: Linux's default path (MOE_CACHE_LINUX_VIEW
     not 0; the plugin's mclive::follows(file_view, is_windows) is the same rule). The plugin's own start-up line is the final word (a pack or a failed mapping uses private memory)."""
-    return not stock and not bool(getattr(machine, "windows", False)) and os.environ.get("MOE_CACHE_LINUX_VIEW", "") != "0"
+    return (not stock and not bool(getattr(machine, "windows", False)) and sys.platform.startswith("linux") and os.environ.get("MOE_CACHE_LINUX_VIEW", "") != "0"
+            and not os.environ.get("MOE_CACHE_PACK"))
 
 
 def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
@@ -4196,7 +4197,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     if lk:
         env.append(("MOE_CACHE_AVAIL_KEEP_GIB", f"{lk:.3f}"))
         if live_follow_off_path(machine, stock):
-            say("moe-cache: live RAM follow: off on Linux's default path (the cached experts are read-only file mappings: page cache the kernel already manages, nothing to give back); "
+            say("moe-cache: live RAM follow: off on Linux's default path (the cached experts are read-only file mappings: page cache the kernel manages itself); "
                 "MOE_CACHE_LINUX_VIEW=0 uses private memory, where the cache follows the system's available RAM; the plugin's own line says which applies")
         else:
             say(f"moe-cache: live RAM follow: while the server runs the cache gives experts back when the system's available RAM falls under {lk:.1f} GiB and takes them back slowly above it "

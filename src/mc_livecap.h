@@ -2,7 +2,7 @@
 //
 // The launcher sizes the cache once from the RAM available at start. Other programs then take or free RAM: this keeps `keep` bytes of the system's
 // available RAM free by lowering the cache's ceiling (tune() evicts down to it) and gives the room back slowly once the RAM is free again.
-// Off unless MOE_CACHE_AVAIL_KEEP_GIB is set (the launcher sets it: max(4 GiB, 12.5 % of the RAM)); without it nothing here is called.
+// Off unless MOE_CACHE_AVAIL_KEEP_GIB is set (the launcher sets it: max(4 GiB, 12.5 % of the RAM)) AND follows() is true for the cache path (the plugin then sets live_keep); with live_keep 0 nothing here is called.
 // Only the cache's own memory can be given back: what llama-server or other programs map or allocate is not touched.
 #pragma once
 #include <algorithm>

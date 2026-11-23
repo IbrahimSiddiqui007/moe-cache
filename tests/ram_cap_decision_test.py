@@ -122,5 +122,13 @@ for _win in (False, True):
         check(_says_off == (not _plugin_follows(_file_view, _win)), f"plan line matches the plugin guard (windows={_win}, MOE_CACHE_LINUX_VIEW={_env}): says off {_says_off}")
 os.environ.pop("MOE_CACHE_LINUX_VIEW", None)
 
+# the plugin's two use sites call the one rule (a copy of the old inline guard would not fail the truth table above); live_keep is set only where it follows (critic 2026-11-23: with it set and the probe skipped, growth stopped)
+_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+_tune = open(os.path.join(_base, "mc_state_profile.inl")).read(); _init = open(os.path.join(_base, "mc_state.inl")).read()
+check("if (live_keep && mclive::follows(win_view, plat::is_windows))" in _tune, "tune(): the RAM-LIVE guard is mclive::follows()")
+_i = _init.index("if (!mclive::follows(win_view, plat::is_windows)) {"); _blk = _init[_i:_i + 1800]
+check(_blk.index("live RAM follow is OFF") < _blk.index("live_keep = k") if "live_keep = k" in _blk else False, "start-up: live_keep is set only in the branch where it follows (off branch leaves it 0)")
+check(_init.count("live_keep = k") == 1, "live_keep is assigned once, from the launcher's value")
+
 print("ram cap decision test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)
