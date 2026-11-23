@@ -9,7 +9,7 @@ A helper thread reads ahead so a model that fits in RAM decodes faster. The owne
 
 | Earlier work | What it did | Result | Source |
 |---|---|---|---|
-| `MOE_CACHE_LOOKAHEAD=1` (in the plugin, `src/mc_state_io.inl`, helper reader threads) | while layer N computes, guess layer N+1's experts from the router weights and read them | -12 % to -74 % | RESULTS.md (X1), archive/README.md |
+| `MOE_CACHE_LOOKAHEAD=1` (code removed 2026-11-23, CLEANUP-1198; restore with `archive/plugin/lookahead_avx512_removal_CLEANUP-1198.patch`) | while layer N computes, guess layer N+1's experts from the router weights and read them | -12 % to -74 % | RESULTS.md (X1), archive/README.md |
 | Block prefetch, `archive/plugin/gpu_prefetch.patch` | upload the next block while the current one computes | 34k: 598/593 off, 598/597 on; 128k: 414 vs 418 (no gain) | archive/README.md |
 | A helper-thread design from a third-party project (not re-measured by us) | same as look-ahead | reported to lose on CPU-bound machines | private research notes, 2026-10-29 |
 | Startup fill (`preload()`, `src/mc_state_profile.inl`) | when every CPU expert fits the cache, all are read in layer order before the first token | in the plugin, on by default | code |
@@ -19,7 +19,7 @@ A helper thread reads ahead so a model that fits in RAM decodes faster. The owne
 
 | Form | New versus the killed ones? | Why it cannot gain | Exactness risk | Time to build |
 |---|---|---|---|---|
-| Read next layer's experts early | no, this is `MOE_CACHE_LOOKAHEAD` | measured loss | none | built |
+| Read next layer's experts early | no, this is `MOE_CACHE_LOOKAHEAD` | measured loss | none | built, then removed |
 | Warm the experts that are not in RAM yet | no, the startup fill does it before the first token | after the fill nothing is left to warm; the fill is synchronous so it costs no decode time | none | built |
 | Touch resident pages from a helper so they stay mapped | partly (it is the view-mode idea) | with everything resident there is no eviction, so no page faults to hide; with a tight cache it is look-ahead again | none | 1 day |
 | Helper thread that copies weights while the CPU computes, to "use" idle bandwidth | yes | CPU and GPU share one bus: a copy that reads the same bytes the dot products read competes with them; the decode step is bandwidth bound, so any extra read slows it | none | 2 days |

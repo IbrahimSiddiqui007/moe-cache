@@ -180,6 +180,12 @@ rc, out = launcher("192.168.1.20", host_env="localhost")
 check(rc == 0 and "other computers can reach it" not in out and "WARNING" not in out, "SECURITY-1231: LLAMA_ARG_HOST=localhost: accepted, nothing forced")
 rc, out = launcher("192.168.1.20", host_env="8.8.8.8")
 check("LLAMA_ARG_HOST" in out, "SECURITY-1231: the refusal names LLAMA_ARG_HOST as the source")
+# empty value: llama.cpp (arg.cpp, same code in b12207 and the pin tree) throws "--host requires at least one address" for an empty or blank list, so it never binds: no key needed
+rc, out = launcher("192.168.1.20", host_env="")
+check(rc == 0 and "other computers can reach it" not in out, "SECURITY-1231: LLAMA_ARG_HOST='' : llama-server refuses to start on it, the launcher forces nothing")
+# a comma list is a bind list in llama.cpp: any non-loopback member must count
+rc, out = launcher("192.168.1.20", host_env="127.0.0.1,0.0.0.0")
+check(rc != 0 and "LLAMA_ARG_HOST" in out and "not an IP address" in out, "SECURITY-1231: LLAMA_ARG_HOST='127.0.0.1,0.0.0.0' (a list) is refused, never read as loopback (fails closed)")
 rc, out = launcher("192.168.1.20", "--lan", host_env="0.0.0.0")
 check(rc == 0 and "--host 0.0.0.0" in out, "SECURITY-1231: --lan with LLAMA_ARG_HOST set still works (the --host --lan adds wins)")
 

@@ -36,7 +36,7 @@ int main() {
     }
     // through the environment
     setenv("MOE_CACHE_LOOKAHEAD", "", 1);
-    CHECK(!mcenv::env_on("MOE_CACHE_LOOKAHEAD"));                  // MOE_CACHE_LOOKAHEAD= used to switch the lookahead on (and the executor off)
+    CHECK(!mcenv::env_on("MOE_CACHE_LOOKAHEAD"));                  // MOE_CACHE_LOOKAHEAD= (removed 2026-11-23) used to switch the lookahead on (and the executor off)
     setenv("MOE_CACHE_HYBRID", "off", 1);
     CHECK(!mcenv::env_on("MOE_CACHE_HYBRID"));
     setenv("MOE_CACHE_SEG_TIMES", "0", 1);
