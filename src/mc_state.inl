@@ -251,7 +251,7 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
                             default:               return -1;
                         }
                     };
-                    const int ls = ival(arch + ".loop.start"), le = ival(arch + ".loop.end"), lc = ival(arch + ".loop.count");
+                    const int ls = ival((arch + ".loop.start").c_str()), le = ival((arch + ".loop.end").c_str()), lc = ival((arch + ".loop.count").c_str());
                     if (ls >= 0 && le > ls && lc > 1) {
                         loop_start = ls;
                         loop_end = le;
