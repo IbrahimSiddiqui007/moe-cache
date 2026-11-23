@@ -70,7 +70,7 @@ Windows desktop, head kit (the v0.3.7.1 code, scheduling tuning off), official l
 | C, long-prompt mode (two runs: 331.4 / 332.3 prompt, 19.30 / 19.39 decode) | **331.8** | **19.35** <!-- claim:v038-longprompt-default --> |
 | C over A | +77.0 % | +1.8 % <!-- claim:v038-longprompt-default --> |
 
-- With the long-prompt mode the q8_0 KV cache changes the numbers a little, so answers are not byte-identical to stock: KL divergence 0.014–0.015 against f16, the same top token in 94–95 % of positions, and the meaning was kept in 10 of 10 checks at 55k (2026-11-07). `--exact` or `--no-long-prompt` go back to f16.
+- With the long-prompt mode the q8_0 KV cache changes the numbers a little, so answers are not byte-identical to stock: KL divergence 0.014–0.015 against f16, the same top token in 94–95 % of positions, and the meaning was kept in 10 of 10 checks at 55k (2026-11-07; a forecast: our test runs, machine and model not recorded in the public result files, no claim id). `--exact` or `--no-long-prompt` go back to f16.
 - The first answer after a big paste is the visible gap: at 16k–32k depth the median first-token time is 10.27 s with moe-cache against 39.38 s stock on IQ3_XXS, and 3.94 s against 8.81 s on Q2_0. <!-- claim:v038-conv-iq3xxs --><!-- claim:v038-conv-q2_0 -->
 
 ### Decode speed in a 65k conversation, tokens per second
