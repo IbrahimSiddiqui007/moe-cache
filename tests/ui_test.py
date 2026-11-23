@@ -898,6 +898,8 @@ check(saved["last"]["model"] == bolt and saved["pick"]["use"] == "agents", "/api
 st, j = preq("/api/system")
 check(st == 200 and (j.get("pick") or {}).get("id") == "bolt" and j["last"]["model"] == bolt, "/api/system: the page sees the pick at load")
 check("pickuse" in open(ui.PAGE, encoding="utf-8").read(), "the page has the Which model? panel")
+check(j.get("version") == ui.mc.version_label() and j["version"].startswith(ui.mc.VERSION), f"/api/system: version + commit as `moe-cache --version` prints them, no server needed ({j.get('version')})")
+check('$("sys").textContent = "moe-cache " + s.version' in open(ui.PAGE, encoding="utf-8").read(), "the page header shows it (source check)")
 
 # "llama.cpp not found" dialog: /api/system says so, /api/llama checks the path with --version and remembers it in ui.json (no setx)
 import subprocess as _sp, shutil as _sh

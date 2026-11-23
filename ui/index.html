@@ -90,7 +90,7 @@ p.whysum { margin:4px 0 6px; font-size:13px; line-height:1.45; }
 .app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
 .top { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--top); border-bottom:2px solid var(--ink); min-width:0; position:relative; }
 .top .logo { image-rendering:pixelated; margin-right:6px; vertical-align:middle; flex:none; }
-.top .brand { font-weight:600; font-size:15px; cursor:default; white-space:nowrap; }
+.top .brand { font-weight:600; font-size:15px; cursor:default; white-space:nowrap; max-width:24em; overflow:hidden; text-overflow:ellipsis; }
 @media (max-width: 1000px) { .top .seg[data-seg=mode] { display:none; } }
 .top .grow { flex:1; }
 .modelpick { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:4px 10px; background:var(--bg); cursor:pointer; min-width:0; max-width:460px; }
@@ -692,6 +692,7 @@ const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM and al
 async function loadSystem() {
   S.sys = await api("/api/system");
   const s = S.sys, last = s.last || {};
+  if (s.version) $("sys").textContent = "moe-cache " + s.version;
   $("sys").title = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "") +
     "\nllama-server: " + s.llama_server + "\nplugin: " + s.plugin;
   $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
