@@ -56,10 +56,16 @@ def build_commit(here=None):
         return None
 
 
+_VERSION_LABEL = None
+
+
 def version_label():
     """'0.3.8 (commit abc123456)' or just '0.3.8' when the commit is unknown."""
-    c = build_commit()
-    return f"{VERSION} (commit {c})" if c else VERSION
+    global _VERSION_LABEL
+    if _VERSION_LABEL is None:          # once per process: the control page asks every second, and a git call per poll is slow on Windows (critic 2026-11-23)
+        c = build_commit()
+        _VERSION_LABEL = f"{VERSION} (commit {c})" if c else VERSION
+    return _VERSION_LABEL
 
 
 def own_cache_base(here=None, windows=None):
