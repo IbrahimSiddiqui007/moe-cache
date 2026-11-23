@@ -7325,10 +7325,9 @@ def check(argv):
             except Exception:
                 mfs = None
             lim = (mfs / 1e9) if mfs else (float(a.ram) if a.ram else (cg or memav))
-            if lim and size + STOCK_HEADROOM / 1e9 > lim:
-                ok("fit", f"model ({size:.1f} GB) does not fit in the memory limit ({lim:.1f} GB, with {STOCK_HEADROOM / 1e9:.1f} GB to spare): this is where moe-cache helps most")
-            elif lim:
-                warn("fit", f"model ({size:.1f} GB) fits in {lim:.1f} GB: you get about stock speed, the gain is when memory is short")
+            fit = fit_line(size, lim)
+            if fit:
+                (ok if fit[0] else warn)("fit", fit[1])
     else:
         say("  (give a model path to also check the model: moe-cache-check MODEL.gguf)")
     if a.run:
@@ -7380,6 +7379,17 @@ def arch_in_log(lines):
         if m:
             return m.group(1)
     return None
+
+
+def fit_line(size_gb, lim_gb):
+    """check's "fit" line (LAUNCHER-1234 row 9): (True, text) when the model plus the launcher's stock headroom is over the memory the server may use (the cache helps), (False, text) when it fits; None without a limit.
+    Same sum as the launcher's stock decision (size + STOCK_HEADROOM <= memory the server may use); the plugin can still be picked for a model that fits when experts stay on the CPU."""
+    if not lim_gb:
+        return None
+    need = size_gb + STOCK_HEADROOM / 1e9
+    if need > lim_gb:
+        return True, f"model {size_gb:.1f} GB + {STOCK_HEADROOM / 1e9:.1f} GB headroom = {need:.1f} GB is over the {lim_gb:.1f} GB the server may use (after the RAM cap): this is where moe-cache helps most"
+    return False, f"model ({size_gb:.1f} GB) fits in {lim_gb:.1f} GB (after the RAM cap): you get about stock speed unless layers stay on the CPU; the gain is when memory is short"
 
 
 def run_check(lsp, model, load, port=8097):
