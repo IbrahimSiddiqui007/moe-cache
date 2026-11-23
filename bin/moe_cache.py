@@ -3491,7 +3491,8 @@ def api_key_stage(a, extra, lan_addr=None):
             say(line)
     key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
     if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
-        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
+        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages (b12207) or, since
+        # llama.cpp 5bacb7c, only the same origin (the built-in page; a browser app on another local port such as :3000 gets 403 unless the user passes --cors-origins http://localhost:3000).
         # Passed as the environment variable so a llama-server without the flag just ignores it
         key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
     return api_key, key_env
@@ -4485,7 +4486,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock):
         n_l, ls_, le_, cnt = int(m[arch + ".block_count"]), int(m[arch + ".loop.start"]), int(m[arch + ".loop.end"]), int(m[arch + ".loop.count"])
     except Exception:
         return ub, ncmoe
-    say("moe-cache: note: llama.cpp 46eb174 and later load this model only with PR 32704 (without it the output is '!!!!'); use a llama-server built with it (LLAMA_SERVER=...)")
+    say("moe-cache: note: this model needs a llama.cpp that contains PR 32704 (commit 690b87d; the bundled build 5bacb7c has it); a llama-server from before it answers '!!!!', then use one built with it (LLAMA_SERVER=...)")
     user_ncmoe = ncmoe_user is not None or a.n_cpu_moe is not None or any(x in ("--n-cpu-moe", "-ncmoe", "--cpu-moe", "-cmoe", "-ot", "--override-tensor") for x in extra)
     n = int(ncmoe)
     say(f"moe-cache: arch inkling2_loop: layers {ls_}-{le_ - 1} of {n_l} run {cnt} times with the same weights (read from the GGUF: loop.start/end/count)")

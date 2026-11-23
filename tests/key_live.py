@@ -111,7 +111,14 @@ else:
             check("evil.example" not in allow and allow != "*", f"preflight from http://evil.example is not allowed (Access-Control-Allow-Origin: '{allow}')")
             st, hdr, _ = call("OPTIONS", "/v1/chat/completions", headers=dict(pre, Origin="http://localhost:3000"))
             allow = {k.lower(): v for k, v in hdr.items()}.get("access-control-allow-origin", "")
-            check("localhost" in allow, f"a localhost origin is still allowed (Access-Control-Allow-Origin: '{allow}')")
+            if "localhost" in allow:
+                check(True, f"a localhost origin is still allowed (Access-Control-Allow-Origin: '{allow}')")
+            else:
+                # llama.cpp 5bacb7c and later: `localhost` means same-origin only (no header, other local ports get 403; the built-in page and clients without an Origin work)
+                other = call("POST", "/v1/chat/completions", chat, {"Origin": "http://localhost:3000"})[0]
+                same = call("POST", "/v1/chat/completions", chat, {"Origin": f"http://127.0.0.1:{a.port}"})[0]
+                nono = call("POST", "/v1/chat/completions", chat)[0]
+                check(other == 403 and same == 200 and nono == 200, f"same-origin-only build: another local port 403, the server's own origin 200, no Origin 200 ({other}/{same}/{nono}; ACAO '{allow}')")
     finally:
         stop(p)
 
