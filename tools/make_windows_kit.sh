@@ -7,9 +7,9 @@
 #   moe-cache.ico                 the app icon (concept D, the curled dragon); also the icon of moe-cache.exe and of the Start menu shortcut
 #   moe-cache.exe                 the same as a program (for winget/scoop; it runs moe-cache.bat from its own folder, also through a symlink)
 #   README_WINDOWS.txt            what to install and the first commands
-#   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 - 0.29 (b11669 to b12207); -api4.dll for ggml 1.0 (Inkling 2 pin); -api2.dll for ggml 0.25
+#   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 - 0.29 (b11669 to b12207, the older kits); -api4.dll for ggml 1.0 (Inkling 2 pin); -api2.dll for ggml 0.25
 #   bin\ planner\ ui\ tools\ profiles\ docs\ LICENSE   the launcher, the page and what they read (Python 3.8+, standard library only)
-#   llama\                        the llama.cpp Vulkan build (b12207, MIT) so a friend downloads one zip: our patched build (patches built in, all off) when LLAMA_PATCHED_WIN_DIR is set, else the official one
+#   llama\                        the llama.cpp Vulkan build (b12651, MIT) so a friend downloads one zip: our patched build (patches built in, all off) when LLAMA_PATCHED_WIN_DIR is set, else the official one
 set -e
 cd "$(dirname "$0")/.."
 V="$1"; [ -n "$V" ] || { echo "usage: tools/make_windows_kit.sh VERSION"; exit 1; }
@@ -45,12 +45,12 @@ mkdir -p "$K/docs/img" && cp "$X"/docs/img/gui-3pane-desktop.png "$K/docs/img/" 
 cp "$X/LICENSE" "$X/CHANGELOG.md" "$X/models.json" "$K/"     # the model catalogue (bin/moe_cache_catalogue.py reads it from the folder above bin)
 # one download for friends: the official, unmodified llama.cpp Vulkan build in llama\ (MIT; its licence is copied next to it). Pinned and checked
 # against the release asset's sha256; MOE_CACHE_KIT_NO_LLAMA=1 builds the kit without it (the launcher then searches C:\llama and the rest as before)
-LLAMA_TAG=b12207; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=c8c84eff8b7eae83602d3cf2dd6defe16c47d1011b4a2514905c1817e3a909ca
+LLAMA_TAG=b12651; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=e58fa9a137d8046c69334005ad6fb3e904ddc7e56f2a61ad1b844335826ef3f4
 LLAMA_LICENSE_SHA=94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d     # sha256 of the LICENSE file at that tag (update with LLAMA_TAG)
 # LLAMA_PATCHED_WIN_DIR=DIR (the release workflow sets it: the unpacked llama_patched.yml server + ggml-vulkan.dll) bundles OUR patched build of the same pin
 # instead, every patch built in and off (tools/bundle_llama_patched.sh). Unset = the official build as below.
 if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_WIN_DIR:-}" ]; then
-  tools/bundle_llama_patched.sh "$K" "$LLAMA_PATCHED_WIN_DIR" win 5bacb7c   # the label of our build of the pinned commit (LLAMA_TAG above is the official b12207 FALLBACK only)
+  tools/bundle_llama_patched.sh "$K" "$LLAMA_PATCHED_WIN_DIR" win b12651   # the label of our build of the pinned commit (LLAMA_TAG above is the official b12651 FALLBACK only)
 elif [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ]; then
   Z="${LLAMA_ZIP_CACHE:-$X}/$LLAMA_ZIP"
   # retried with backoff, and skipped when the zip is already in the cache folder with the right sha256 (CI restores LLAMA_ZIP_CACHE with actions/cache)

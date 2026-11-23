@@ -114,7 +114,7 @@ else:
             if "localhost" in allow:
                 check(True, f"a localhost origin is still allowed (Access-Control-Allow-Origin: '{allow}')")
             else:
-                # llama.cpp 5bacb7c and later: `localhost` means same-origin only (no header, other local ports get 403; the built-in page and clients without an Origin work)
+                # llama.cpp b12651 and later: `localhost` means same-origin only (no header, other local ports get 403; the built-in page and clients without an Origin work)
                 other = call("POST", "/v1/chat/completions", chat, {"Origin": "http://localhost:3000"})[0]
                 same = call("POST", "/v1/chat/completions", chat, {"Origin": f"http://127.0.0.1:{a.port}"})[0]
                 nono = call("POST", "/v1/chat/completions", chat)[0]

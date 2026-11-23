@@ -1,7 +1,7 @@
 <h1 align="center">moe-cache: run Mixture-of-Experts LLMs bigger than your RAM with llama.cpp</h1>
 
 <p align="center"><b>Run big MoE models (Qwen3, GLM, gpt-oss and more) that do not fit in your RAM on a normal PC with llama.cpp: the experts you use stay in RAM, the rest is read from your SSD.</b><br>
-moe-cache is a plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle our build of llama.cpp 5bacb7c (a master commit after #32807, ggml 1.0; no upstream release tag yet) built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
+moe-cache is a plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle our build of llama.cpp b12651 (ggml 1.0) built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
 
 <p align="center">
 <img alt="status" src="https://img.shields.io/badge/status-v0.3.8-blue">
@@ -30,7 +30,7 @@ MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. W
 
 **Privacy:** no telemetry, no account; the plugin opens no network connections. The few times the launcher or installer uses the internet (downloads you ask for, the update check) are listed in [docs/SECURITY.md](docs/SECURITY.md#privacy-what-moe-cache-sends-and-stores).
 
-> **Speed numbers below come from the previous llama.cpp build (b12064)** on our test PC; the kits in this version bundle our build of llama.cpp 5bacb7c (ggml 1.0, Inkling 2 support), which has not been re-measured on our test PC yet; the plugin is CI-tested on b12207 (Windows) only.
+> **Speed numbers below come from the previous llama.cpp build (b12064)** on our test PC; the kits in this version bundle our build of llama.cpp b12651 (ggml 1.0, Inkling 2 support), which has not been re-measured on our test PC yet; the plugin is CI-tested on b12207 (Windows) only.
 
 **What's new in v0.3.8.** **The default is not token-identical to plain llama.cpp's** (it switches on only the speed-ups that looked like a win in our runs; the q8_0 KV check on one 27B run is under Long prompts below; no quality-gate result on this kit yet); **`--exact` gives plain llama.cpp's answers**, on the control page choose **Exact**. Long-prompt mode is on by default from 32k context (65k conversation, Flash-Next IQ3_XXS, against the previous default: prompt 187.4 → 331.8 tok/s, decode 19.01 → 19.35 tok/s (one run, not a paired result); our test PC, one run per arm (forecast), earlier b12064 build, 2026-11-07 <!-- claim:v038-longprompt-default -->). **Auto-tune** (first start, at most 180 s, models under 40 % of RAM only; `--retune`), a **Windows commit guard** that refuses a start that would take Windows down, never a shorter context for dense models (KV f16, then q8_0 / q8_0, and then layers to RAM; the two 4-bit steps, K q8_0 / V q4_0 and q4_0 / q4_0, are off by default since 2026-11-20 and come only with `--kv-4bit`: floor-corrected on Qwen3-30B-A3B (a different MoE model; one laptop run each, forecast) they cost +0.003 to +0.006 and +0.022 to +0.040 KL, the second over the quality gate's 0.015; the dense 27B is not measured with a floor; `--exact` keeps f16), a **Monitor** view and a small window on the control page, an **audit (exact)** button, Claude Code on Qwen3.8, no crash on 512-expert models, llama.cpp b12207 with every patch off. Details: [CHANGELOG](CHANGELOG.md), [release notes](docs/releases/RELEASE_NOTES_v0.3.8.md).
 ## Questions people ask
@@ -76,7 +76,7 @@ If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says w
 
 | Step | What to do |
 |---|---|
-| 1. Download | From [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases): `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` (our llama.cpp 5bacb7c build included, Vulkan + CPU), or `moe-cache-vX-linux-x86_64.tar.gz` for an older llama.cpp of your own (ggml 0.24 / 0.25). `tar xzf` it and `cd` into the folder |
+| 1. Download | From [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases): `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` (our llama.cpp b12651 build included, Vulkan + CPU), or `moe-cache-vX-linux-x86_64.tar.gz` for an older llama.cpp of your own (ggml 0.24 / 0.25). `tar xzf` it and `cd` into the folder |
 | 2. A model | `python3 bin/moe_cache.py pick` |
 | 3. Check | `bin/moe-cache-check /path/to/model.gguf --run` ("cache runs: yes" means it works on your machine) |
 | 4. Run | `bin/moe-cache-server /path/to/model.gguf --open` (chat page and an OpenAI-compatible API at http://localhost:8080), or `bin/moe-cache-server --ui` for the control page |
@@ -85,8 +85,8 @@ Which file on the Releases page:
 
 | Your PC | File | Contains |
 |---|---|---|
-| Windows | `moe-cache-vX-windows-x64.zip` | the kit: plugin, launcher, our llama.cpp 5bacb7c build (Vulkan) |
-| Linux, no llama.cpp of your own, or ggml 0.26 or newer | `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` | plugin, launcher, our llama.cpp 5bacb7c build (Vulkan + CPU) |
+| Windows | `moe-cache-vX-windows-x64.zip` | the kit: plugin, launcher, our llama.cpp b12651 build (Vulkan) |
+| Linux, no llama.cpp of your own, or ggml 0.26 or newer | `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` | plugin, launcher, our llama.cpp b12651 build (Vulkan + CPU) |
 | Linux, your own older llama.cpp (ggml 0.24 / 0.25) | `moe-cache-vX-linux-x86_64.tar.gz` | plugin and launcher only |
 
 Your own llama.cpp (CUDA, ROCm), `install.sh`, building from source, the speed options (`--fast`, `--hybrid`) and proving the output yourself: [docs/INSTALL.md](docs/INSTALL.md).

@@ -160,7 +160,7 @@ def ls_build(ls):
 
 def llama_patch_line(ls):
     """The one-line note the kit's patched llama.cpp carries next to llama-server (PATCHES-moe-cache.txt, written by tools/bundle_llama_patched.sh), e.g.
-    'llama.cpp 5bacb7c + moe-cache patches 0004,0020,0030,0040,0090,0091 built in, all off'. None for an official or any other build (no such file)."""
+    'llama.cpp b12651 + moe-cache patches 0004,0020,0030,0040,0090,0091 built in, all off'. None for an official or any other build (no such file)."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(ls)), "PATCHES-moe-cache.txt"), encoding="utf-8", errors="replace") as f:
             line = f.readline().strip()
@@ -3492,7 +3492,7 @@ def api_key_stage(a, extra, lan_addr=None):
     key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
     if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
         # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages (b12207) or, since
-        # llama.cpp 5bacb7c, only the same origin (the built-in page; a browser app on another local port such as :3000 gets 403 unless the user passes --cors-origins http://localhost:3000).
+        # llama.cpp b12651, only the same origin (the built-in page; a browser app on another local port such as :3000 gets 403 unless the user passes --cors-origins http://localhost:3000).
         # Passed as the environment variable so a llama-server without the flag just ignores it
         key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
     return api_key, key_env
@@ -4486,7 +4486,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock):
         n_l, ls_, le_, cnt = int(m[arch + ".block_count"]), int(m[arch + ".loop.start"]), int(m[arch + ".loop.end"]), int(m[arch + ".loop.count"])
     except Exception:
         return ub, ncmoe
-    say("moe-cache: note: this model needs a llama.cpp that contains PR 32704 (commit 690b87d; the bundled build 5bacb7c has it); a llama-server from before it answers '!!!!', then use one built with it (LLAMA_SERVER=...)")
+    say("moe-cache: note: this model needs a llama.cpp that contains PR 32704 (commit 690b87d; the bundled build b12651 has it); a llama-server from before it answers '!!!!', then use one built with it (LLAMA_SERVER=...)")
     user_ncmoe = ncmoe_user is not None or a.n_cpu_moe is not None or any(x in ("--n-cpu-moe", "-ncmoe", "--cpu-moe", "-cmoe", "-ot", "--override-tensor") for x in extra)
     n = int(ncmoe)
     say(f"moe-cache: arch inkling2_loop: layers {ls_}-{le_ - 1} of {n_l} run {cnt} times with the same weights (read from the GGUF: loop.start/end/count)")

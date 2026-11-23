@@ -22,19 +22,19 @@ rm -f dist/SHA256SUMS
 for API in 2 3; do
   if [ $API = 3 ]; then SUF=-ggml0.26; export GGML_API=3; else SUF=; unset GGML_API; fi
   ./build.sh --portable
-  if [ $API = 3 ]; then GGML_API=4 BUILD_DIR=build-api4 ./build.sh --portable; fi   # ggml 1.0 headers (backend API 4 tag): the bundled llama.cpp 5bacb7c is ggml 1.0, an API-3 plugin must not be its only match
+  if [ $API = 3 ]; then GGML_API=4 BUILD_DIR=build-api4 ./build.sh --portable; fi   # ggml 1.0 headers (backend API 4 tag): the bundled llama.cpp b12651 is ggml 1.0, an API-3 plugin must not be its only match
   N=moe-cache-v$V$SUF-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
   cp -r bin planner ui tests tools profiles docs LICENSE README.md CHANGELOG.md models.json build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; if [ $API = 3 ]; then mkdir -p dist/$N/build-api4; cp build-api4/libggml-moe-cache.so dist/$N/build-api4/; fi; tools/release_copy_src.sh dist/$N/src
   rm -rf dist/$N/docs/internal dist/$N/tools/make_release.sh dist/$N/tools/release_copy_src.sh dist/$N/tools/bundle_llama_linux.sh dist/$N/tools/bundle_llama_patched.sh dist/$N/tools/ci
-  # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12207 = ggml 0.29 = API 3), unmodified, sha256-checked
+  # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12651 = ggml 1.0, our API 4 build; b12207 = ggml 0.29 = API 3 before), unmodified, sha256-checked
   # against the release asset, in llama/ (the launcher finds it); the API-2 tarball (llama.cpp 7fe450e19) has no official build to bundle: it needs your own.
   # MOE_CACHE_RELEASE_NO_LLAMA=1 builds the old tarball without it.
   # LLAMA_PATCHED_LINUX_DIR=DIR (the release workflow sets it: the unpacked llama_patched.yml build) bundles OUR patched build of the same pin instead
   # (tools/bundle_llama_patched.sh; every patch built in and off). Unset = the official build, as before; the workflow's `llama_build: official` input unsets it.
   if [ $API = 3 ] && [ "${MOE_CACHE_RELEASE_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_LINUX_DIR:-}" ]; then
-    tools/bundle_llama_patched.sh dist/$N "$LLAMA_PATCHED_LINUX_DIR" linux 5bacb7c
+    tools/bundle_llama_patched.sh dist/$N "$LLAMA_PATCHED_LINUX_DIR" linux b12651
   elif [ $API = 3 ] && [ "${MOE_CACHE_RELEASE_NO_LLAMA:-0}" != 1 ]; then
-    tools/bundle_llama_linux.sh dist/$N b12207 llama-b12207-bin-ubuntu-vulkan-x64.tar.gz 178a5d6a940d74a24ee359dc8af68ce6b2fccb99150c1bdd458dbec640653c06 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
+    tools/bundle_llama_linux.sh dist/$N b12651 llama-b12651-bin-ubuntu-vulkan-x64.tar.gz 0bbcf2093f15c64c8a9bf54b809c9b2c812b982992dc2fbc9b36720c1d32cf13 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
   fi
   [ -f dist/$N/ui/index.html ] || { echo "FAIL: ui/index.html missing from $N (the control page needs it)"; exit 1; }
   # reproducible archive layout (PACKAGING-828; two builds of one commit are not proven byte-identical): sorted names, owner 0, the commit's date, no name or time in the gzip header

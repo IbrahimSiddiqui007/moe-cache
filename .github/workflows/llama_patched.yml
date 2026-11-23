@@ -15,7 +15,7 @@ on:
 # LLAMA_CONNECT=OFF: at b12064 (and b12207) =ON makes CMake download a prebuilt llama-connect binary from github.com (scripts/connect-download.cmake, 3 tries, no sha256) at
 # configure/build time; a github.com 504 broke the build on 2026-11-08. We build only llama-server (+ test-backend-ops), not that tool. The option is OFF by default upstream.
 env:
-  LLAMA_COMMIT: 5bacb7c868a2bc98682de15f447fc1ce17c9c49c   # DRAFT pin: llama.cpp master after #32807 (ggml 1.0, backend API 4), no b-tag; the identity reference is built from this same commit with no patch (variant plain)
+  LLAMA_COMMIT: f5e6915c28f10330885fcb9243a93ae98d3115ab   # llama.cpp release b12651 (2026-11-23; ggml 1.0, backend API 4; contains #32704 and #32807); the identity reference is built from this same commit with no patch (variant plain; the official zips are not used for it)
   VULKAN_VERSION: "1.4.357.0"
   CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=OFF"
 
