@@ -29,4 +29,6 @@ check(r and r[0] and "5.0 GB + 1.5 GB headroom = 6.5 GB is over the 6.0 GB" in r
 r = mc.fit_line(4.0, 6.0)
 check(r and not r[0] and "fits in 6.0 GB" in r[1], "row 9: 4 GB model, 6 GB limit: fits")
 check(mc.fit_line(4.0, None) is None, "row 9: no limit: no line")
+# row 28 (source check, not a run: the lambda lives inside plan_launch): the auto-tune's commit check gets the same argv as the real one (argv + the user's own flags after --)
+check("commit_fits(a, c_cmd, c_env, list(argv) + user_extra," in src, "row 28: auto-tune fits() passes argv + user_extra to the commit check (source check)")
 sys.exit(1 if FAILS else 0)

@@ -31,7 +31,69 @@ from moe_cache_wintool import win_tool  # noqa: E402  (bin/: Windows helpers by 
 VERSION = "0.3.8"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
-CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
+
+
+def build_commit(here=None):
+    """LAUNCHER-1281: the git commit this copy was built from, 'abc1234' (+ '-dirty' for a checkout with local changes), or None when unknown.
+    A release / kit has no .git: tools/make_release.sh and make_windows_kit.sh write the commit into <kit>/BUILD_COMMIT; a checkout asks git. Log text only."""
+    here = here or HERE
+    try:
+        t = open(os.path.join(here, "BUILD_COMMIT"), encoding="utf-8").read().strip()
+        m = re.fullmatch(r"([0-9a-f]{7,40})(-dirty)?", t)
+        if m:
+            return m.group(1)[:12] + (m.group(2) or "")
+    except OSError:
+        pass
+    if not os.path.exists(os.path.join(here, ".git")):
+        return None
+    try:
+        g = lambda *a: subprocess.run(["git", "-C", here, *a], capture_output=True, text=True, timeout=10)
+        c = g("rev-parse", "--short=9", "HEAD")
+        if c.returncode != 0 or not re.fullmatch(r"[0-9a-f]{7,40}", c.stdout.strip()):
+            return None
+        return c.stdout.strip() + ("-dirty" if g("status", "--porcelain", "--untracked-files=no").stdout.strip() else "")
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def version_label():
+    """'0.3.8 (commit abc123456)' or just '0.3.8' when the commit is unknown."""
+    c = build_commit()
+    return f"{VERSION} (commit {c})" if c else VERSION
+
+
+def own_cache_base(here=None, windows=None):
+    """LAUNCHER-1222 item 5: the folder an install in its own -Root / --prefix keeps its launcher cache in (settings, api.key, chats, pids, probe cache), or None.
+    install.ps1 writes "own_cache": true into <root>\\install.json (kit = <root>\\kit), install.sh writes own_cache=1 into <prefix>/.installed (this copy = <prefix>/versions/moe-cache-v*).
+    It is read here, not in a shim, so every way to start the launcher agrees: the command, the Startup link, the Start-menu / .bat paths and a plain `python moe_cache.py`.
+    An install without the flag (every install made before this) returns None: it keeps using the user cache, nothing moves."""
+    here = os.path.realpath(here or HERE)
+    win = WINDOWS if windows is None else windows
+    try:
+        if win:
+            root = os.path.dirname(here)
+            rec = os.path.join(root, "install.json")
+            if os.path.basename(here).lower() == "kit" and os.path.isfile(rec):
+                with open(rec, encoding="utf-8-sig") as f:
+                    if json.load(f).get("own_cache") is True:
+                        return os.path.join(root, "cache")
+            return None
+        parent = os.path.dirname(here)
+        if os.path.basename(parent) == "versions":
+            prefix = os.path.dirname(parent)
+            rec = os.path.join(prefix, ".installed")
+            if os.path.isfile(rec):
+                with open(rec, encoding="utf-8") as f:
+                    vals = dict(l.rstrip("\n").split("=", 1) for l in f if "=" in l)
+                if vals.get("own_cache") == "1":
+                    return os.path.join(prefix, "cache")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+# the cache folder: XDG_CACHE_HOME when the user set it, else this install's own cache (own_cache_base), else ~/.cache
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or own_cache_base() or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
 NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -5704,7 +5766,7 @@ def _launch_plan(a, extra, argv, machine):
     ncmoe0, ub0, kv_q80 = ncmoe, ub, kv_q8
     cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"),
                                           size=size, avail=avail, vram_user=vram_user,
-                                          fits=lambda c_cmd, c_env: commit_fits(a, c_cmd, c_env, argv, model, ctx, arg_after(c_cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(c_cmd, "-ub", "--ubatch-size") or ub,
+                                          fits=lambda c_cmd, c_env: commit_fits(a, c_cmd, c_env, list(argv) + user_extra, model, ctx, arg_after(c_cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(c_cmd, "-ub", "--ubatch-size") or ub,
                                                                                  kv_quantized(c_cmd), gpu, machine, mm_bytes))
     env[:] = env_t                          # the same list object the plan keeps
     if tune_info and tune_info.get("changed"):
@@ -7137,7 +7199,7 @@ def check(argv):
     def ok(k, m): say(f"  [ OK ] {k:<22} {m}")
     def warn(k, m): say(f"  [WARN] {k:<22} {m}"); n["warn"] += 1; todo.append(("WARN", k, m))
     def fail(k, m): say(f"  [FAIL] {k:<22} {m}"); n["fail"] += 1; todo.append(("FAIL", k, m))
-    say(f"moe-cache {VERSION} check")
+    say(f"moe-cache {version_label()} check")
     import platform
     if sys.platform.startswith("linux"):
         ok("system", "Linux " + platform.release())
@@ -7684,7 +7746,7 @@ def main():
         from moe_cache_record import main as record_main
         return record_main(sys.argv[2:]) or 0
     if sys.argv[1:2] in (["--version"], ["-V"], ["version"]):
-        say(f"moe-cache {VERSION}")
+        say(f"moe-cache {version_label()}")
         return 0
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         say(__doc__.strip())

@@ -14,10 +14,11 @@
 # Run it again to update in place (same version: it only repairs the command and the PATH entry; -Force reinstalls).
 #
 #   -Uninstall   remove exactly what it added: the kit folder, the command, the PATH entry (only when this installer added it), the record.
-#                Your models, your settings (%LOCALAPPDATA%\... moe-cache cache) and every other file stay.
+#                Your models, your settings (the moe-cache folder under your user cache; for an install in its own -Root: <root>\cache) and every other file stay.
 #   -DryRun      print what it would do and stop
 #   -Version X   install release X (default: the release this file belongs to; run from a checkout: the newest)
-#   -Root DIR    install somewhere else (default %LOCALAPPDATA%\moe-cache)
+#   -Root DIR    install somewhere else (default %LOCALAPPDATA%\moe-cache). A NEW install in another folder keeps its own settings, key and chats in DIR\cache\moe-cache
+#                (not shared with other kits); an install that already exists keeps using the cache it had.
 #   -NoPath      do not touch the PATH
 #   -YesUnverified  install even though the build attestation could not be checked (gh missing / not logged in / GitHub unreachable; a verification that ran and FAILED is never overridden); same as $env:MOE_CACHE_ALLOW_UNVERIFIED='1'
 #                (the only way with `| iex`). The sha256 check is never skipped.
@@ -119,7 +120,7 @@ function Install-MoeCache {
     }
     $Root = [IO.Path]::GetFullPath($Root)
     $kit = Join-Path $Root 'kit'; $bin = Join-Path $Root 'bin'; $shim = Join-Path $bin 'moe-cache.cmd'; $rec = Join-Path $Root 'install.json'
-    $old = $null
+    $old = $null; $kitExistedBefore = Test-Path -LiteralPath $kit      # LAUNCHER-1222 item 5: a kit with no usable record is an existing install, not a new one
     if (Test-Path -LiteralPath $rec) { try { $old = Get-Content -LiteralPath $rec -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $old = $null } }
 
     if ($Uninstall) {
@@ -136,7 +137,8 @@ function Install-MoeCache {
         }
         Remove-Item -LiteralPath $rec -Force
         foreach ($d in $bin, $Root) { if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force } }
-        Say 'moe-cache was removed. Kept: your models and your settings (the moe-cache folder under your user cache), and any other file you put in these folders.'
+        $keptCache = if ($old.own_cache) { (Join-Path $Root 'cache\moe-cache') } else { 'the moe-cache folder under your user cache' }
+        Say "moe-cache was removed. Kept: your models and your settings ($keptCache), and any other file you put in these folders."
         return 0
     }
 
@@ -284,7 +286,16 @@ function Install-MoeCache {
         $list = Split-PathList (Get-UserPathRaw)
         if (-not ($list | Where-Object { Same-Dir $_ $bin })) { $needPath = $true; $added = $true }
     }
-    $json = [ordered]@{ version = $Version; root = $Root; kit = $kit; bin = $bin; command = $shim; added_path = $added }
+    # LAUNCHER-1222 item 5: an install in its own -Root keeps its own launcher cache (<root>\cache\moe-cache; bin\moe_cache.py reads this flag, so the shim, the Startup link and the Start-menu / .bat paths all agree).
+    # An install that already exists keeps what it had (a record without the flag = it uses the shared user cache: nothing moves under anyone); a new one is isolated when its root is not the default.
+    $defaultRoot = if ($env:LOCALAPPDATA) { [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'moe-cache')) } else { '' }
+    if ($old) { $ownCache = [bool](($old.PSObject.Properties.Name -contains 'own_cache') -and $old.own_cache) }
+    elseif ($kitExistedBefore) { $ownCache = $false }
+    else { $ownCache = [bool]($Root.TrimEnd('\') -ine $defaultRoot.TrimEnd('\')) }
+    # an older kit (-Version X) ignores the flag and would use the user cache while the record says otherwise: only a kit that reads it gets it
+    $kitPy = Join-Path $kit 'bin\moe_cache.py'
+    if ($ownCache -and -not ((Test-Path -LiteralPath $kitPy) -and (Select-String -LiteralPath $kitPy -SimpleMatch 'own_cache_base' -Quiet))) { $ownCache = $false }
+    $json = [ordered]@{ version = $Version; root = $Root; kit = $kit; bin = $bin; command = $shim; added_path = $added; own_cache = $ownCache }
     $recWritten = $true
     [IO.File]::WriteAllText($rec, ($json | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
     Fail-At 'record'
@@ -325,6 +336,13 @@ function Install-MoeCache {
                  elseif ($onPath) { 'folder on your user PATH: was already there' }
                  else { 'folder not on your user PATH' }
     Say "  command: $shim   ($pathWords)"
+    $userCache = Join-Path $(if ($env:XDG_CACHE_HOME) { $env:XDG_CACHE_HOME } else { Join-Path $env:USERPROFILE '.cache' }) 'moe-cache'      # the launcher reads XDG_CACHE_HOME first (bin/moe_cache.py CACHE_DIR)
+    Say ("  cache:   " + $(if ($ownCache) { (Join-Path $Root 'cache\moe-cache') + '   (this install keeps its own settings, key and chats)' } else { "your user cache ($userCache): settings, key and chats" }))
+    if ($ownCache -and -not $old) {
+        if ((Test-Path -LiteralPath (Join-Path $userCache 'api.key')) -or (Test-Path -LiteralPath (Join-Path $userCache 'ui.json'))) {
+            Say "  note:    settings, key and chats you made with another kit are in $userCache; this install starts with its own empty cache. Copy what you want from there."
+        }
+    }
     Say '  undo:    powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall      (removes exactly the above; your models stay)'
     Say ('           or, without the file:  & ([scriptblock]::Create((irm https://github.com/' + $Repo + '/releases/latest/download/install.ps1))) -Uninstall')
     Say ''

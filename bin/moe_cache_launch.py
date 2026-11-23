@@ -531,7 +531,7 @@ def launch(argv, deps=None):
         for x in want:
             try:
                 deps.connect([x, "--url", url, "--write"])
-            except SystemExit as e:
+            except (SystemExit, Exception) as e:       # audit row 28: a write error (read-only config, bad JSON) is a message, not a traceback after the server is up
                 say(f"     could not connect {x}: {e}")
         if "claude" in want:       # AUD-083: Claude Code 2.1.317 ignored ANTHROPIC_BASE_URL from settings.local.json (went to Anthropic, 401); the exported lines work
             say("     Claude Code: start it from a shell where these are set (the settings file alone was not enough in the version we tested, docs/AGENTS.md):\n"
