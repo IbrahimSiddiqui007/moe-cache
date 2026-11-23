@@ -18,6 +18,7 @@ git rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git checkout: cannot bu
 [ -z "$(git status --porcelain --untracked-files=no)" ] || echo "warning: uncommitted changes are NOT part of the kit (only the last commit is)"
 X="$(mktemp -d)"; trap 'rm -rf "$X"' EXIT
 git archive HEAD | tar -x -C "$X"
+git rev-parse --short=9 HEAD > "$X/BUILD_COMMIT"     # no .git in the export: build.sh and the launcher read this (LAUNCHER-1281)
 N=moe-cache-v$V-windows-x64; K="$X/kit/$N"; mkdir -p "$K"
 ( cd "$X" && BUILD_DIR=build/win-api2 ./build.sh --windows && GGML_API=3 BUILD_DIR=build/win-api3 ./build.sh --windows )
 cp "$X/build/win-api2/ggml-moe-cache.dll" "$K/ggml-moe-cache-api2.dll"
@@ -37,6 +38,7 @@ done
 mkdir -p "$K/bin" "$K/tools" "$K/docs"
 cp "$X"/bin/*.py "$X"/bin/moe-cache-ui.bat "$K/bin/"     # every launcher module (v0.3.0 left out moe_cache_pick.py: the control page did not start)
 cp -r "$X/planner" "$X/ui" "$X/profiles" "$K/"
+cp "$X/BUILD_COMMIT" "$K/"
 cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$X"/tools/conversation_bench.py "$X"/tools/loop_check.py "$K/tools/"
 cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$X"/docs/SHARE_YOUR_NUMBERS.md "$X"/docs/TROUBLESHOOTING.md "$X"/docs/EXACTNESS.md "$X"/docs/BENCHMARK_TEMPLATE.md "$X"/docs/bench_record.schema.json "$X"/docs/CONFIGURATION.md "$X"/docs/QUALITY_GATE.md "$X"/docs/CONVERSATION_BENCH.md "$X"/docs/moe-cache-server.service "$K/docs/"   # WINDOWS.md links WINDOWS_TEST.md; the other kit docs link CONFIGURATION, QUALITY_GATE, RESULTS and the systemd unit (PACKAGING-032)
 mkdir -p "$K/docs/results-archive" && cp "$X"/docs/results-archive/RESULTS.md "$X"/docs/results-archive/RESULTS_OLD_LAPTOP.md "$K/docs/results-archive/"   # linked from the kit's README and docs
