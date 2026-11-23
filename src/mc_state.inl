@@ -29,6 +29,12 @@ void install_crash_report(state_t * s);
 void remove_crash_report();
 #endif
 
+#ifndef MC_BUILD_COMMIT
+#define MC_BUILD_COMMIT unknown     // build.sh passes -DMC_BUILD_COMMIT=<git commit> (LAUNCHER-1281); a build by hand says "unknown"
+#endif
+#define MC_BC_STR2(x) #x
+#define MC_BC_STR(x) MC_BC_STR2(x)
+#define MC_BUILD_COMMIT_STR MC_BC_STR(MC_BUILD_COMMIT)
 #include "mc_state_route.h"
 #include "mc_state_testfault.h"
 #include "mc_state_gpu.h"
@@ -118,7 +124,7 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
 
     state_t() {
         stats = mcenv::env_on("MOE_CACHE_STATS");
-        fprintf(stderr, "moe-cache: plugin v0.3.8 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
+        fprintf(stderr, "moe-cache: plugin v0.3.8 (ggml backend API %d) build %s, running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, MC_BUILD_COMMIT_STR, ggml_version(), ggml_commit());
         if (!moe_cache_tested_ggml(ggml_version())) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only (this is %s); if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML, ggml_version());
         }
