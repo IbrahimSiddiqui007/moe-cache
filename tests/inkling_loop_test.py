@@ -45,8 +45,13 @@ META["general.architecture"] = "qwen3moe"
 extra = []
 check(mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "12", None, False) == ("2048", "12") and extra == [], "other architectures: untouched")
 META["general.architecture"] = "inkling2_loop"
-check(mc.inkling_loop_stage(A(), [], "m.gguf", "2048", "0", None, False) == ("2048", "0") and mc.inkling_loop_stage(A(), [], "m.gguf", "2048", "999", None, False) == ("2048", "999"),
-      "nothing on the CPU (0) or a cache plan (999): untouched")
+extra = ["-ub", "2048"]
+r0 = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False)
+check(r0 == ("128", "0") and "-ot" not in extra and "--no-op-offload" not in extra,
+      f"all on the GPU (0): no placement, op-offload left alone, but -ub 128 (the bias grows with -ub at any placement) [got {r0}]")
+extra = ["-ub", "2048"]
+r9 = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "999", None, False)
+check(r9 == ("128", "999") and "-ot" not in extra and "--no-op-offload" in extra, f"GPU-cache plan (999): no placement, op-offload off (unknown build), -ub 128 [got {r9}]")
 
 # LOOP-SPEED-1: any arch with loop keys counts; count 1 does not
 def rename(arch, count=3):
@@ -59,6 +64,7 @@ rename("future_looped", count=1)
 extra = []
 check(mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "12", None, False) == ("2048", "12") and extra == [], "generic: loop.count 1 = not looped, untouched")
 rename("inkling2_loop")
+os.environ["MOE_CACHE_LOOP_FIT"] = "1"   # opt-in until PC item P1
 T64 = {"compute_mib": 4660}            # tune() at 64k, IQ4_XS, 15.3 GiB free, long-prompt mode: -ub 4096, 13 CPU layers (checked 2026-11-23)
 mc.ls_build = lambda ls: 12651
 extra = ["-ub", "4096", "-b", "4096"]
@@ -98,6 +104,39 @@ check(extra.count("--no-op-offload") == 1, "your --no-op-offload stands, once")
 extra = ["-ub", "4096", "-ot", "blk\\.(6|7)\\.ffn_.*=CPU"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
 check(extra.count("-ot") == 1 and ub == "256" and "--no-op-offload" in extra, f"your -ot: all 12 loop layers counted as staged (errs high): op-offload off, -ub sized without staging [got {ub}]")
+
+# engine-review-2 (2026-11-23): all on the GPU / cache plan / dense looped, at 64k with a budget
+extra = ["-ub", "2048"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "0", None, False, ctx=32768, tuned={"compute_mib": 4660}, ls="ls")
+check(ub == "512" and "--no-op-offload" not in extra, f"all on the GPU at 32k, budget 4660: -ub 512 (3072 + 770) [got {ub}]")
+extra = ["-ub", "2048"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "999", None, False, ctx=65536, tuned=T64, ls="ls")
+check(ub == "256" and "--no-op-offload" in extra, f"cache plan (999) at 64k on b12651: 12 loop layers would be staged -> op-offload off, -ub 256 without staging [got {ub}]")
+extra = ["-ub", "2048"]
+ub, nc = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "", None, False, ctx=65536, tuned=T64, ls="ls", dense=True)
+check(ub == "256" and "--no-op-offload" not in extra and "-ot" not in extra, f"dense looped on b12651: no expert placement, op-offload on, -ub fit without staging [got {ub}]")
+mc.ls_build = lambda ls: None
+extra = ["-ub", "2048"]
+mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "", None, False, ctx=65536, tuned=T64, ls="ls", dense=True)
+check("--no-op-offload" in extra, "dense looped, unknown build: op-offload off")
+# model_type: one line, read once; dense looped header (synthetic)
+LAYOUT = {"n_layers": 24, "expert_bytes_per_layer": 0, "mtp_blocks": 0, "expert_bytes_by_layer": {}}
+gguf_plan.model_layout = lambda p: dict(LAYOUT)
+mt = mc.model_type("m.gguf")
+check(mt and mt["dense"] and mt["loop"][2:5] == (6, 18, 3) and "dense (24 layers)" in mt["line"] and "looped: layers 6-17 x3" in mt["line"] and "source: the GGUF header" in mt["line"],
+      f"model_type: a dense looped header -> dense + looped, one line with its source [{mt and mt['line']}]")
+# dense_ffn_override: a dense looped model sends once-used FFN layers to RAM first
+mc.planner_path = lambda: None
+gguf_plan.dense_ffn_split = lambda *a, **k: {"n_layers": 24, "first_layer": 10, "n_off": 14, "ffn_gib": 0.3, "need_gib": 20, "free_gib": 15, "kv_gib": 2, "fits_all": False}
+a = A(vram="16", gpu_margin=None, no_ffn_ram=False, cpu_gpu_split=None); a.model_type = mt
+ot = mc.dense_ffn_override(a, "m.gguf", 65536, False, None, types.SimpleNamespace(free_vram_bytes=lambda: 16 * 2**30), [])
+check(ot == "blk\\.(0|1|2|3|4|5|16|17|18|19|20|21|22|23)\\.ffn_(up|down|gate|gate_up)\\.weight=CPU",
+      f"dense looped spill: 12 once-used layers + loop layers 16,17 (from the back) in RAM [{ot}]")
+a.model_type = dict(mt, loop=None)
+ot = mc.dense_ffn_override(a, "m.gguf", 65536, False, None, types.SimpleNamespace(free_vram_bytes=lambda: 16 * 2**30), [])
+check(ot and ot.startswith("blk\\.(10|11|"), f"dense, not looped: unchanged (the last 14 layers) [{ot}]")
+META.update({"inkling2_loop.loop.count": 1})
+check(mc.model_type("m.gguf")["loop"] is None and "looped: no" in mc.model_type("m.gguf")["line"], "model_type: loop.count 1 -> not looped")
 
 print("inkling_loop_test: " + ("all passed" if not fails else f"{len(fails)} failed"))
 sys.exit(1 if fails else 0)
