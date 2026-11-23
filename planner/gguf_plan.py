@@ -1078,7 +1078,7 @@ def room_bytes(free, compute_mib, reserve_gb, block=0):
 
 
 def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False, plugin=True, measured=None,
-         free_source=None, mtp=False, keep_ub=False):
+         free_source=None, mtp=False, keep_ub=False, loop_n_head=0):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left. The only placement
     function of the launcher (planner map fix 1; planner/plan.py's formula no longer decides).
 
@@ -1144,7 +1144,16 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     if rule and fit_params:
         prefetch_fit_params(fit_params, path, ctx, [u for u in PLAN_UBS if u <= max(ub or 0, 2048)] + ([ub] if ub else []), kv_q8)
 
+    def loop_bias_mib(u):
+        # LAUNCHER-1284: a looped model's relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor, two alive at once (launcher loop_compute_mib; 2.8 GiB measured at 32k -ub 512
+        # on the laptop vs our 3 GiB estimate). The table and fit-params numbers are for a normal model; a measured load already contains it. loop_n_head 0 = not looped / not asked: 0.
+        return 2 * ctx * u * loop_n_head * 4 / MiB if loop_n_head else 0
+
     def cbm(u, guess):
+        v = cbm0(u, guess)
+        return v if v is None or mbuf.get(u, {}).get("compute_mib") else v + loop_bias_mib(u)
+
+    def cbm0(u, guess):
         if rule:              # MOE_CACHE_PLAN_RULE=1: the table only says whether u is a candidate (as before); the number is the rule's
             if not guess and compute_buffer_mib(ctx, u) is None:
                 return None
@@ -1220,7 +1229,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
          "room for the plugin's long-prompt GPU block (one expert layer plus the batch's results, rule of ours)" if plugin else "0: stock llama-server runs no plugin, so no long-prompt block")
     note("gpu_reserve_mib", reserve_gb * 1e9 / MiB, "constant", "kept free for other programs and growth (0.5 GB rule of ours, more when the desktop holds GPU memory, --gpu-margin)")
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
-            "compute_mib": comp, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
+            "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not mbuf.get(ub, {}).get("compute_mib")) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 
 
 def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):

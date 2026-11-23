@@ -3482,6 +3482,10 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             kw["plugin"] = getattr(a, "plan_plugin", True)          # the long-prompt GPU block only when the plugin runs (LAUNCHER-1177)
             kw["keep_ub"] = bool(getattr(a, "cuda_listing", False))        # CUDA llama-server: a stock cache keeps -ub 2048 (CACHE-1187); other backends keep the old 1024 rule
             kw["mtp"] = "draft-mtp" in extra
+            if loop_fit_on() and not (a.exact or a.cpu_only):          # LAUNCHER-1284: opt-in until measured (defaults stay as today): the planner counts a looped model's dense bias buffer
+                lm_ = loop_meta(model)
+                if lm_:
+                    kw["loop_n_head"] = lm_[5]
             kw["measured"] = measured_loads(a, ls, model, ctx, kv_q8, machine, kw["plugin"], kw["mtp"], ub_asked, kw["free_source"])
             a.plan_free_mib = (free / 2**20) if free else None
             a.plan_free_source = kw["free_source"]
@@ -4734,6 +4738,8 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     loop_cpu = [i for i in (cpu if cpu is not None else range(ls_, le_)) if ls_ <= i < le_]
     staged = sum(by.get(i, 0) for i in loop_cpu) or max([by.get(i, 0) for i in (cpu or []) if not ls_ <= i < le_] or [0])
     budget = tuned.get("compute_mib") if isinstance(tuned, dict) else None
+    if budget and isinstance(tuned, dict) and tuned.get("loop_bias_mib"):
+        budget -= tuned["loop_bias_mib"]          # the planner (LAUNCHER-1284) already added the bias for its own -ub; the estimate below adds it per candidate -ub
     ctx_n = int(ctx) if str(ctx or "").isdigit() else 0
     # n_head unknown (0) = nothing to size the bias from = no fit (loop-speed-2 critic); cap=False checks the budget only (the per-tensor cap says nothing about op-offload's staging)
     fits = (lambda u, st, cap=True: n_head > 0 and bool(budget and ctx_n) and (dense or bool(by)) and loop_compute_mib(ctx_n, u, n_head, st) <= budget and (not cap or loop_tensor_ok(ctx_n, u, n_head)))
@@ -4793,6 +4799,18 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     if opo and str(ub).isdigit():
         a.loop_min_batch = int(ub)
     return ub, ncmoe
+
+
+def plugin_no_op_offload_stage(a, env, user_extra, stock):
+    """Plugin long-prompt block ignored llama.cpp's --no-op-offload (docs/TECHNIQUES.md, LOOP-SPEED-2): the plugin runs the expert block of every batch of MOE_CACHE_GPU_MIN_TOKENS+ tokens
+    on the GPU itself. A --no-op-offload (or -nopo) YOU gave after `--` now also switches that block off (MOE_CACHE_GPU_MIN_TOKENS=0 = never, src/mc_state_gpu.h), so the flag means
+    the same with and without the plugin. Our own --no-op-offload (the looped-model rule) does not: that launch keeps its measured speed. Not with --hybrid (the block is its mechanism),
+    not for stock runs, and a MOE_CACHE_GPU_MIN_TOKENS you set wins. Plan-time only: the plugin side is unchanged. Returns env."""
+    if stock or a.hybrid or os.environ.get("MOE_CACHE_GPU_MIN_TOKENS") or not any(x in ("--no-op-offload", "-nopo") for x in user_extra):
+        return env
+    say("moe-cache: your --no-op-offload also turns off the plugin's long-prompt GPU block (MOE_CACHE_GPU_MIN_TOKENS=0; before, the plugin ignored the flag); "
+        "set MOE_CACHE_GPU_MIN_TOKENS yourself to keep the block")
+    return [(k, v) for k, v in env if k != "MOE_CACHE_GPU_MIN_TOKENS"] + [("MOE_CACHE_GPU_MIN_TOKENS", "0")]
 
 
 def cuda_only_listing(listing):
@@ -5944,13 +5962,16 @@ def _launch_plan(a, extra, argv, machine):
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     kv_q8, tuned, desk_kw, ub_asked = long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked)
     ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
-    ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=ctx, tuned=tuned, ls=ls, dense=dense)
     ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine, ctx)
+    # LAUNCHER-1285 (loop-speed-2): the looped-model stage runs on the ncmoe the GPU-cache stage resolved (a cache too small to keep becomes the planner's static N, which is a normal
+    # spilled placement and gets the use-count order); a real cache plan (999) stays untouched until measured
+    ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=ctx, tuned=tuned, ls=ls, dense=dense)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
     # DELIBERATE (owner decision 2026-11-08): the long-prompt default sets a.fast = "kv", so this 64-token threshold applies to every default launch of a big model at 32k+ context,
     # not only to --fast users. It is part of what the +77 % prompt speed (claim v038-longprompt-default) measured; do not drop it for the long-prompt default without a new measurement.
     if (a.hybrid or a.fast) and not os.environ.get("MOE_CACHE_GPU_MIN_TOKENS"):
         env.append(("MOE_CACHE_GPU_MIN_TOKENS", "64"))
+    env = plugin_no_op_offload_stage(a, env, user_extra, stock)
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
     cram = prompt_cache_stage(a, extra, env, ls, machine, win, dry)

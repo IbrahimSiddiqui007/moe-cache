@@ -191,5 +191,24 @@ check(ot and ot.startswith("blk\\.(10|11|"), f"dense, not looped: unchanged (the
 META.update({"inkling2_loop.loop.count": 1})
 check(mc.model_type("m.gguf")["loop"] is None and "looped: no" in mc.model_type("m.gguf")["line"], "model_type: loop.count 1 -> not looped")
 
+# LAUNCHER-1285: the looped-model stage runs after gpu_cache_stage (source-order guard) 
+src = open(os.path.join(HERE, "bin", "moe_cache.py")).read()
+check(src.index("ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned") < src.index("ub, ncmoe = inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user"), "LAUNCHER-1285: inkling_loop_stage is called after gpu_cache_stage")
+# LAUNCHER-1284: the stage's budget excludes the bias the planner already counted
+rename("inkling2_loop"); os.environ["MOE_CACHE_LOOP_FIT"] = "1"; mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
+extra = ["-ub", "4096"]
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned={"compute_mib": 4660 + 3072, "loop_bias_mib": 3072}, ls="ls")
+check(ub == "256", f"tuned with loop_bias_mib: budget = compute_mib - bias, same pick as without [got {ub}]")
+del os.environ["MOE_CACHE_LOOP_FIT"]
+# plugin long-prompt block and --no-op-offload (LOOP-SPEED-2)
+Ah = lambda **kw: types.SimpleNamespace(**{"hybrid": False, **kw})
+check(mc.plugin_no_op_offload_stage(Ah(), [], ["--no-op-offload"], False) == [("MOE_CACHE_GPU_MIN_TOKENS", "0")], "your --no-op-offload: plugin block off (MIN_TOKENS=0)")
+check(mc.plugin_no_op_offload_stage(Ah(), [("MOE_CACHE_GPU_MIN_TOKENS", "64")], ["-nopo"], False) == [("MOE_CACHE_GPU_MIN_TOKENS", "0")], "-nopo replaces the 64 set by --fast")
+check(mc.plugin_no_op_offload_stage(Ah(), [], ["-ub", "512"], False) == [], "no flag: env untouched (our own looped-model --no-op-offload never reaches user_extra)")
+check(mc.plugin_no_op_offload_stage(Ah(hybrid=True), [], ["--no-op-offload"], False) == [] and mc.plugin_no_op_offload_stage(Ah(), [], ["--no-op-offload"], True) == [], "hybrid and stock runs untouched")
+os.environ["MOE_CACHE_GPU_MIN_TOKENS"] = "32"
+check(mc.plugin_no_op_offload_stage(Ah(), [], ["--no-op-offload"], False) == [], "your own MOE_CACHE_GPU_MIN_TOKENS wins")
+del os.environ["MOE_CACHE_GPU_MIN_TOKENS"]
+
 print("inkling_loop_test: " + ("all passed" if not fails else f"{len(fails)} failed"))
 sys.exit(1 if fails else 0)
