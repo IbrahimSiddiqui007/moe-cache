@@ -336,9 +336,9 @@ function Install-MoeCache {
                  elseif ($onPath) { 'folder on your user PATH: was already there' }
                  else { 'folder not on your user PATH' }
     Say "  command: $shim   ($pathWords)"
-    Say ("  cache:   " + $(if ($ownCache) { (Join-Path $Root 'cache\moe-cache') + '   (this install keeps its own settings, key and chats)' } else { 'your user cache (%USERPROFILE%\.cache\moe-cache): settings, key and chats' }))
+    $userCache = Join-Path $(if ($env:XDG_CACHE_HOME) { $env:XDG_CACHE_HOME } else { Join-Path $env:USERPROFILE '.cache' }) 'moe-cache'      # the launcher reads XDG_CACHE_HOME first (bin/moe_cache.py CACHE_DIR)
+    Say ("  cache:   " + $(if ($ownCache) { (Join-Path $Root 'cache\moe-cache') + '   (this install keeps its own settings, key and chats)' } else { "your user cache ($userCache): settings, key and chats" }))
     if ($ownCache -and -not $old) {
-        $userCache = Join-Path $(if ($env:XDG_CACHE_HOME) { $env:XDG_CACHE_HOME } else { Join-Path $env:USERPROFILE '.cache' }) 'moe-cache'
         if ((Test-Path -LiteralPath (Join-Path $userCache 'api.key')) -or (Test-Path -LiteralPath (Join-Path $userCache 'ui.json'))) {
             Say "  note:    settings, key and chats you made with another kit are in $userCache; this install starts with its own empty cache. Copy what you want from there."
         }
