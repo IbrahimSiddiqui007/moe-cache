@@ -200,9 +200,9 @@ Invoke-CiStep "bench report tests (no server)" "tests" {
 }
 
 Invoke-CiStep "one-click start (moe-cache-ui.bat finds Python, DLL and llama-server; page answers)" "tests" {
-  $dll3 = Join-Path $Work "build\win-api3"
-  New-Item -ItemType Directory -Force $dll3 | Out-Null
-  Copy-Item $PluginDll (Join-Path $dll3 "ggml-moe-cache.dll") -Force
+  $dll4 = Join-Path $Work "build\win-api4"
+  New-Item -ItemType Directory -Force $dll4 | Out-Null
+  Copy-Item $PluginDll (Join-Path $dll4 "ggml-moe-cache.dll") -Force
   $env:LLAMA_SERVER = $LlamaServer
   [Environment]::SetEnvironmentVariable("MOE_CACHE_LIB", $null, "Process")
   $batOut = Join-Path $RunTemp "ui_bat.out"; $batErr = Join-Path $RunTemp "ui_bat.err"
@@ -221,7 +221,7 @@ Invoke-CiStep "one-click start (moe-cache-ui.bat finds Python, DLL and llama-ser
   taskkill /T /F /PID $p.Id | Out-Null
   Get-Content $batOut, $batErr
   if (-not $sys) { throw "the page did not come up" }
-  if (-not ($sys.plugin -like "*build\win-api3\ggml-moe-cache.dll")) { throw "the .bat did not find the DLL in build\win-api3" }
+  if (-not ($sys.plugin -like "*build\win-api4\ggml-moe-cache.dll")) { throw "the .bat did not find the DLL in build\win-api4" }
   if ($sys.llama_server -ne $env:LLAMA_SERVER) { throw "the page does not use LLAMA_SERVER" }
   # the CI step's --shortcut part is left to GitHub: it writes a Start-menu entry
 }

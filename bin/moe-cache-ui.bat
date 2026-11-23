@@ -3,8 +3,8 @@ rem moe-cache control page for Windows: double-click this file (or a Start-menu 
 rem machine and this user only: the address carries a per-run token).
 rem   moe-cache-ui.bat [--ui-port N] [--llama-server PATH] [--no-browser]     options go to "moe_cache.py ui"
 rem   moe-cache-ui.bat --shortcut                                            adds "moe-cache" to your Start menu (and nothing else)
-rem Finds: Python (MOE_CACHE_PYTHON, else the py launcher, else a real python.exe), the plugin DLL (MOE_CACHE_LIB, else ggml-moe-cache-api3.dll /
-rem ggml-moe-cache.dll next to this file or one folder up (the kit), else build\win-api3 or build\win), llama-server (LLAMA_SERVER, else on the PATH,
+rem Finds: Python (MOE_CACHE_PYTHON, else the py launcher, else a real python.exe), the plugin DLL (MOE_CACHE_LIB, else ggml-moe-cache-api4.dll / ggml-moe-cache-api3.dll /
+rem ggml-moe-cache.dll next to this file or one folder up (the kit), else build\win-api4, build\win-api3 or build\win), llama-server (LLAMA_SERVER, else on the PATH,
 rem else C:\llama\llama-server.exe). Set any of these variables yourself to override. Programs are started by their full path, from this folder.
 setlocal
 cd /d "%~dp0" || (echo Cannot change to the folder of this file. & pause & exit /b 1)
@@ -34,7 +34,7 @@ exit /b 1
 
 :have_python
 if defined MOE_CACHE_LIB goto have_lib
-for %%F in ("%HERE%ggml-moe-cache-api3.dll" "%HERE%..\ggml-moe-cache-api3.dll" "%HERE%ggml-moe-cache.dll" "%HERE%..\ggml-moe-cache.dll" "%HERE%..\build\win-api3\ggml-moe-cache.dll" "%HERE%..\build\win\ggml-moe-cache.dll") do (
+for %%F in ("%HERE%ggml-moe-cache-api4.dll" "%HERE%..\ggml-moe-cache-api4.dll" "%HERE%ggml-moe-cache-api3.dll" "%HERE%..\ggml-moe-cache-api3.dll" "%HERE%ggml-moe-cache.dll" "%HERE%..\ggml-moe-cache.dll" "%HERE%..\build\win-api4\ggml-moe-cache.dll" "%HERE%..\build\win-api3\ggml-moe-cache.dll" "%HERE%..\build\win\ggml-moe-cache.dll") do (
   if not defined MOE_CACHE_LIB if exist "%%~fF" set "MOE_CACHE_LIB=%%~fF"
 )
 :have_lib
