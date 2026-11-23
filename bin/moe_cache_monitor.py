@@ -223,7 +223,6 @@ class Monitor:
                      "ssd_waits": max(0, s.get("n_ssd_wait", 0) - p.get("n_ssd_wait", 0)),
                      "cpu": min(1.0, max(0, s.get("ns_cpu", 0) - p.get("ns_cpu", 0)) / dns_total) if dns_total > 0 else None,    # share of the cache's time spent in the CPU expert executor
                      "evict": max(0, s.get("evictions", 0) - p.get("evictions", 0)) / dt,
-                     "pf_used": max(0, s.get("pf_used", 0) - p.get("pf_used", 0)), "pf_wasted": max(0, s.get("pf_wasted", 0) - p.get("pf_wasted", 0)),
                      "gpu_up_gbs": max(0, s.get("gpu_up_bytes", 0) - p.get("gpu_up_bytes", 0)) / dt / 1e9}
                 a1, a0 = s.get("approx") or {}, p.get("approx") or {}
                 if a1:                  # picks the plugin changed per second (given up + replaced + dropped by "fewer experts")
@@ -258,7 +257,7 @@ class Monitor:
             if ap:
                 self.approx_live = {"mode": {1: "skip", 2: "subst"}.get(ap.get("route")), "considered": ap.get("considered", 0), "given_up": ap.get("skipped", 0), "replaced": ap.get("substituted", 0),
                                     "fewer": ap.get("fewer", 0), "fewer_considered": ap.get("fewer_considered", 0), "fewer_dropped": ap.get("fewer_dropped", 0), "live": True, "t": round(t, 1)}
-            self.snapshot_extra = {k: s.get(k) for k in ("policy", "evictions", "resident_bytes", "budget", "gpu_segments", "fallbacks", "exec_ops", "exec_fused", "pf_issued", "pf_used", "pf_wasted") if k in s}
+            self.snapshot_extra = {k: s.get(k) for k in ("policy", "evictions", "resident_bytes", "budget", "gpu_segments", "fallbacks", "exec_ops", "exec_fused") if k in s}
             if s.get("ex"):
                 self.snapshot_extra["threads"] = s["ex"].get("threads")
 

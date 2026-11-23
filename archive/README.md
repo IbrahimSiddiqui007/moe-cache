@@ -130,3 +130,5 @@ Restore: `git apply archive/plugin/sched_tuning.patch`. The launcher still accep
 
 ## Notes on 0001
 `ggml_vk_wait_for_fence` waits for the last 20 % of a graph by polling `getFenceStatus` with 1000 `pause` instructions between polls. The patch made the count an env value (N blocks of 10 pauses, unset = 100 = stock). Only the poll interval changes, so output cannot change. Tested at N = 10.
+
+| plugin/lookahead_avx512_removal_CLEANUP-1198.patch | `MOE_CACHE_LOOKAHEAD*`, `MOE_CACHE_AVX512` (restore: `git apply -R archive/plugin/lookahead_avx512_removal_CLEANUP-1198.patch`) | lookahead prefetch -25 / -12 / -74 % decode on three models; AVX-512 IQ kernels 0.60-0.77x of llama.cpp on a Zen 4 (Intel AVX-512 never measured); both off by default, removed 2026-11-23 |

@@ -124,8 +124,7 @@ struct node_t {
     uint32_t last_tok = 0;         // classlru: decode token of the last use of any kind (age for the victim choice)
     uint8_t  cls = 0;              // classlru: which class list the node sits in (always 0 with the plain LRU policy)
     bool     resident = false;
-    bool     loading = false;      // a lookahead read is still filling this expert
-    bool     prefetched = false;   // loaded ahead of time and not used yet
+    bool     loading = false;      // a background read (rebalance) is still filling this expert
     bool     mapped = false;       // not resident, but its range maps the model file (cache smaller than one op, see map_from_file)
 };
 
@@ -289,55 +288,6 @@ std::vector<int> mask_cpus(const char * m) {
     }
     return out;
 }
-
-// router dot product: eight independent sums so the compiler can vectorise without -ffast-math; AVX2 version picked at run time.
-// Used only to guess the next layer's experts (lookahead prefetch), never for the model's output.
-static inline __attribute__((always_inline)) float dot_f32_body(const float * a, const float * b, size_t n) {
-    float acc[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-    size_t i = 0;
-    for (; i + 8 <= n; i += 8) {
-        for (int k = 0; k < 8; k++) {
-            acc[k] += a[i + k] * b[i + k];
-        }
-    }
-    float sum = 0.0f;
-    for (; i < n; i++) {
-        sum += a[i] * b[i];
-    }
-    for (int k = 0; k < 8; k++) {
-        sum += acc[k];
-    }
-    return sum;
-}
-// ThreadSanitizer builds use it too (I9): target_clones makes an ifunc resolver, which the loader runs while it relocates a preloaded plugin,
-// before any constructor, so before libtsan is set up; the resolver is instrumented and its __tsan_func_entry crashed (segfault, empty log)
-#if defined(__SANITIZE_THREAD__)
-#define MC_TSAN 1
-#elif defined(__has_feature)
-#if __has_feature(thread_sanitizer)
-#define MC_TSAN 1
-#endif
-#endif
-#if (defined(_WIN32) || defined(MC_TSAN)) && defined(__x86_64__)
-// mingw has no ifunc, so no target_clones: the same two versions, picked once with the CPU's feature bits
-__attribute__((target("avx2,fma"))) float dot_f32_avx2(const float * a, const float * b, size_t n) {
-    return dot_f32_body(a, b, n);
-}
-float dot_f32_default(const float * a, const float * b, size_t n) {
-    return dot_f32_body(a, b, n);
-}
-float dot_f32(const float * a, const float * b, size_t n) {
-    static const bool avx2 = [] { __builtin_cpu_init(); return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"); }();
-    return avx2 ? dot_f32_avx2(a, b, n) : dot_f32_default(a, b, n);
-}
-#else
-#if defined(__linux__) && defined(__x86_64__)
-__attribute__((target_clones("avx2,fma", "default")))
-#endif
-float dot_f32(const float * a, const float * b, size_t n) {
-    return dot_f32_body(a, b, n);
-}
-#endif
 
 struct io_job_t {
     char * dst;

@@ -72,6 +72,8 @@ def pick_address(addrs, want=None):
 def check_bind(host, addrs, allow_public=False):
     """May a server listen on `host`? None = yes. Loopback and private addresses: yes. A public address, or 0.0.0.0 / :: on a PC that has a public address:
     only with allow_public."""
+    if is_loopback_host(host):          # "localhost" too (SECURITY-1231 critic: LLAMA_ARG_HOST=localhost must not stop the launcher)
+        return None
     kind = classify(host)
     if kind == "bad":
         return f"'{host}' is not an IP address"

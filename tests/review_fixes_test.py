@@ -34,6 +34,7 @@ for bad in ("inf", "nan", "-1"):
         check(True, f"--max-ram {bad} refused")
 mc._TL.max_ram = "inf"
 os.environ.pop("MOE_CACHE_MAX_RAM_GB", None)
+os.environ.pop("LLAMA_ARG_HOST", None)       # SECURITY-1231: the launcher reads it now
 mc.mem_cap.warned = True
 m_inf = mc.mem_cap()
 mc._TL.max_ram = None

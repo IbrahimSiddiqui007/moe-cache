@@ -113,10 +113,6 @@
             }
         }
         evict_age_sum += epoch - nodes[s].epoch;   // how many groups ago this expert was last used
-        if (nodes[s].prefetched) {
-            nodes[s].prefetched = false;
-            pf_wasted++;
-        }
         unlink(s);
         nodes[s].resident = false;
         nodes[s].mapped = false;       // the pages were given back (guard mode: made inaccessible); a later fallback maps them again
@@ -203,23 +199,11 @@
         if (track_crf && cur_decode) {
             const int dl = tensors[tidx[0]]->layer;        // layers ascend within a decode token: a lower layer than the last one starts the next token
             if (dl >= 0) {
-                if (dl < last_dec_layer) { tok++; }
+                if (mclru::starts_new_decode_token(dl, last_dec_layer, loop_start, loop_end, loop_count, loop_pass)) { tok++; }     // a loop pass is not a new token (INKLING-1250 fix 2)
                 last_dec_layer = dl;
             }
         }
-        std::vector<int> wait_list;       // experts a lookahead read is still filling
-        if (lookahead && cur_decode) {
-            auto pf = pred_flags.find(tensors[tidx[0]]->layer);
-            if (pf != pred_flags.end()) {
-                for (size_t e = 0; e < cnt.size() && e < pf->second.size(); e++) {
-                    if (cnt[e]) {
-                        pf_pred_total++;
-                        pf_pred_hit += pf->second[e] ? 1 : 0;
-                    }
-                }
-                pred_flags.erase(pf);
-            }
-        }
+        std::vector<int> wait_list;       // experts a background read (rebalance) is still filling
         groups++;
         (cur_decode ? g_saw_dec : g_saw_pre) = true;
         if (auto_mode && (groups % (async ? 4 : 32)) == 1) {
@@ -311,11 +295,6 @@
                     hits++;
                     if (cur_decode) { hits_dec++; }
                     if (cur_decode ? rb_armed_dec : rb_armed_pre) { (cur_decode ? rb_dec_hits : rb_pre_hits)++; }
-                    if (n.prefetched) {
-                        n.prefetched = false;
-                        pf_used++;
-                        if (n.loading) { pf_late++; }
-                    }
                     if (n.loading) { wait_list.push_back(s); }
                     if (!cur_scan) {          // a long prompt uses (nearly) everything: it does not make an expert "recently used"
                         touch_use(s, true);

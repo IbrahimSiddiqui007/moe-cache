@@ -1950,7 +1950,7 @@ function monPanels() {
   monKv("moncount", [["MTP accepted / drafted", m.generated ? `${m.accepted} / ${m.generated} (${pct(m.rate)})` : ""],
     ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up${a.replaced ? ", " + a.replaced + " replaced" : ""} of ${a.considered} looked at (${a.live ? "live" : "at last stop"})` : ""],
     ["fewer experts", a.fewer ? `${a.fewer}: ${a.fewer_dropped} dropped of ${a.fewer_considered || "?"} looked at` : ""],
-    ["evictions", ex.evictions], ["prefetch used / issued / wasted", ex.pf_issued != null ? `${ex.pf_used} / ${ex.pf_issued} / ${ex.pf_wasted}` : ""], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
+    ["evictions", ex.evictions], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
     ["cache resident / budget", ex.resident_bytes != null ? fmtGiB(ex.resident_bytes) + " / " + fmtGiB(ex.budget) : ""], ["requests running / queued", (d.metrics || {}).requests_processing != null ? `${d.metrics.requests_processing} / ${d.metrics.requests_deferred || 0}` : ""]]);
   const rq = (d.requests || []).slice().reverse();
   $("monreq").innerHTML = '<tr><th>time</th><th class="num">prompt tok</th><th class="num">prompt t/s</th><th class="num">decoded</th><th class="num">decode t/s</th><th class="num">MTP</th></tr>' +

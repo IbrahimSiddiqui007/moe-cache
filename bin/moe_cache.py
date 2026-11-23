@@ -1212,6 +1212,16 @@ def arg_after(args, *names):
     return v
 
 
+def bind_host(extra):
+    """SECURITY-1231: the address llama-server will listen on: --host after `--` (the command line wins in llama-server), else LLAMA_ARG_HOST from the environment, else "" (its own default 127.0.0.1)."""
+    return arg_after(extra, "--host") or os.environ.get("LLAMA_ARG_HOST", "").strip()
+
+
+def bind_host_source(extra):
+    """Where bind_host() took its value from, for the messages (R19: say the source)."""
+    return "--host" if arg_after(extra, "--host") else "LLAMA_ARG_HOST"
+
+
 def adopt_user_flags(extra):
     """Flags the launcher also sets, when the user gives them after `--`: llama-server takes the user's (the last one wins), so the plan, the health
     checks and the VRAM maths must use the same value. -> ({"port": int, "ctx": int, "ncmoe": str} for the ones found as plain numbers, extra without
@@ -3551,7 +3561,7 @@ def lan_stage(a, extra):
     127.0.0.1; the address told to the user is the PC's private one), and any explicit --host is checked: a public address is refused without --allow-public. The
     address rules live in bin/moe_cache_lan.py. extra gets "--host 0.0.0.0" for --lan. Returns the address to tell the user (None without --lan)."""
     lan_addr = None
-    if a.lan or arg_after(extra, "--host"):
+    if a.lan or bind_host(extra):
         import moe_cache_lan as lan
         addrs = lan.local_addresses()
         if a.lan:
@@ -3561,9 +3571,9 @@ def lan_stage(a, extra):
             if err:
                 raise SystemExit("--lan: " + err)
             extra += ["--host", "0.0.0.0"]
-        err = lan.check_bind(arg_after(extra, "--host"), addrs, a.allow_public) if arg_after(extra, "--host") else None
+        err = lan.check_bind(bind_host(extra), addrs, a.allow_public) if bind_host(extra) else None
         if err:
-            raise SystemExit("--host: " + err if not a.lan else "--lan: " + err)
+            raise SystemExit(bind_host_source(extra) + ": " + err if not a.lan else "--lan: " + err)
     return lan_addr
 
 
@@ -3571,10 +3581,10 @@ def api_key_stage(a, extra, lan_addr=None):
     """ENGINE-029, stage "API key": a key given on our command line or after `--` goes to llama-server through the environment (LLAMA_API_KEY), never its argument list; agent mode, --project, --lan and any other non-loopback --host always get the stable per-user key; plain chat servers get none, but a CORS allow-list. Returns (api_key or None, the environment settings for it)."""
     api_key = take_api_key_from_args(extra) or a.api_key
     import moe_cache_lan as lan
-    host_open = bool(arg_after(extra, "--host")) and not lan.is_loopback_host(arg_after(extra, "--host"))        # ANY non-loopback bind gets a key, --lan or not
+    host_open = bool(bind_host(extra)) and not lan.is_loopback_host(bind_host(extra))        # ANY non-loopback bind gets a key, --lan or not
     if not api_key and (a.agent or a.project or a.lan or host_open):
         api_key = stored_key(create=True)
-        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else '--host ' + arg_after(extra, '--host') + ': other computers can reach it' if host_open else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
+        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else bind_host_source(extra) + ' ' + bind_host(extra) + ': other computers can reach it' if host_open else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
             "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
     if a.lan:
         for line in lan.risk_lines(f"http://{lan_addr}:{a.port}", KEY_FILE if api_key == stored_key() else None):
@@ -5900,8 +5910,8 @@ def _launch_plan(a, extra, argv, machine):
     extra += [] if a.exact else template_stage(a, extra, model, dry)
     extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact, dense=dense)
     extra += sampling_args(a.no_sampling_defaults or a.exact, a.agent, model, extra)
-    host = arg_after(extra, "--host") or ""
-    if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
+    host = bind_host(extra)
+    if not (host == "" or __import__("moe_cache_lan").is_loopback_host(host)) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
             "Add --api-key KEY after the -- or bind to 127.0.0.1.", err=True)
     pname = a.profile or ""

@@ -3,7 +3,7 @@
     // with the highest decayed use count that are not resident into free room, or into the room of the resident experts with the lowest count
     // (rb_choose in mc_rebalance.h decides, with a margin so nothing swaps back and forth). Only which experts are resident changes, never what is
     // computed. One expert (its gate, up and down tensors) is made resident and read at a time; when a graph starts the thread stops after that
-    // expert: a graph that needs the expert being read waits on its "loading" flag like for any lookahead read, and the experts the thread read are
+    // expert: a graph that needs the expert being read waits on its "loading" flag like for any background read, and the experts the thread read are
     // ordinary cache entries. Called with no lock held unless said.
 
     // be_compute entry / exit (the RAII guard in mc_compute.inl): a graph is running, the rebalance must not start another expert

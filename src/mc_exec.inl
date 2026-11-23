@@ -97,8 +97,8 @@ ggml_vec_dot_t fast_iq3_dot() {
         if (!tt || !tt->vec_dot) {
             return (ggml_vec_dot_t) nullptr;
         }
-        std::vector<fastk512::block_iq3_xxs> w(8);
-        std::vector<fastk512::block_q8_K> a(8);
+        std::vector<fastk::block_iq3_xxs> w(8);
+        std::vector<fastk::block_q8_K> a(8);
         uint32_t r = 54321;
         auto rnd = [&]() { r = r * 1664525u + 1013904223u; return r >> 8; };
         for (int trial = 0; trial < 64; trial++) {
@@ -222,7 +222,7 @@ bool exec_view_op(ggml_op op) {
 
 // true when every expert op of the graph is a single-token decode step that the executor can reproduce exactly
 bool exec_eligible(state_t & s, ggml_cgraph * cg) {
-    if (!s.exec_on || (s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
+    if (!s.exec_on || s.repack_tag || s.gpu_min_tokens == 1) {
         return false;
     }
     const int n = ggml_graph_n_nodes(cg);
@@ -720,9 +720,6 @@ int exec_fuse_partner(state_t & s, ggml_cgraph * cg, int i, int n_nodes) {
     return -1;
 }
 
-// set by the AVX-512 kernel block further down (C linkage: independent of the namespace the kernels live in)
-extern "C" { int (*moe_cache_iq512_probe)(void) = nullptr; }
-
 // One line that says what is really active, and why not when something is off (several speed-ups depend on how the plugin was loaded).
 void print_capabilities(state_t & s) {
     std::string o = "moe-cache: active:";
@@ -731,8 +728,8 @@ void print_capabilities(state_t & s) {
     o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
     if (!s.exec_on) {
         o += " executor=off(MOE_CACHE_EXEC=0)";
-    } else if ((s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
-        o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
+    } else if (s.repack_tag || s.gpu_min_tokens == 1) {
+        o += std::string(" executor=off(") + (s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
     } else {
         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") +
              (s.exec_chunk != 128 ? ", " + std::to_string(s.exec_chunk) + " rows per chunk" : "") + ")";
@@ -742,7 +739,6 @@ void print_capabilities(state_t & s) {
                                                                 : upstream_q2_0_enabled() ? "executor(column sums, exact to llama.cpp's #30447)" : "off(llama.cpp's own)")
                                                                : preload ? "on(interposed)" : "executor only(not preloaded)");
     o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0 or MOE_CACHE_IQ3_KERNEL=0, no AVX2, or not Intel: MOE_CACHE_IQ3_KERNEL=1 forces it on)");
-    o += std::string(" iq_avx512=") + (mcenv::env_on("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
 #endif
 #ifdef _WIN32
     cpu_traits(GGML_TYPE_F32);   // resolves the lookup once

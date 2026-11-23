@@ -68,7 +68,7 @@
             }
             return -1;
         }
-        // every tensor of a layer is indexed with the same expert ids (lookahead, warm start, siblings check them against the layer's first
+        // every tensor of a layer is indexed with the same expert ids (warm start, siblings check them against the layer's first
         // tensor only): a layer whose expert tensors disagree on the expert count, or an absurd count, is left to plain memory
         {
             int layer = -1;

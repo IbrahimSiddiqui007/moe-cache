@@ -4,7 +4,11 @@
 // (tests/kernel_variants.cpp: 0 mismatches in 5,120 dots; 1.14x on an i7-13620H with AVX-VNNI, 1.12x without).
 // Used only on Intel CPUs: gathers are slow on AMD Zen 2/3, where the library function stays.
 #pragma once
-#include "fast_iq_avx512.h"   // block layouts and lookup tables
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <immintrin.h>
+#include "iq_tables.h"   // block layouts and lookup tables
 
 namespace fastk3 {
 
@@ -26,8 +30,8 @@ inline const uint64_t * signs_table() {   // 8 sign bytes (+1 / -1) per 7-bit in
 }
 
 #define FASTK3_IQ3_BODY(VNNI) \
-    const fastk512::block_iq3_xxs * x = (const fastk512::block_iq3_xxs *) vx; \
-    const fastk512::block_q8_K    * y = (const fastk512::block_q8_K *) vy; \
+    const fastk::block_iq3_xxs * x = (const fastk::block_iq3_xxs *) vx; \
+    const fastk::block_q8_K    * y = (const fastk::block_q8_K *) vy; \
     const uint64_t * SIGNS = signs_table(); \
     const int nb = n / 256; \
     const __m128i shifts = _mm_setr_epi32(0, 7, 14, 21), m127 = _mm_set1_epi32(127); \
