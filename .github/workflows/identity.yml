@@ -44,7 +44,7 @@ jobs:
           # release b12207 = ggml 0.29.0, the current pin since 2026-11-09 (the build the Windows kit and the Linux tarball bundle; upstream's own moe-cache cache, PRs 30966 / 31233 / 31888, is in it)
           - { name: "ggml-0.29-b12207-api3", sha: "998200491327347eed85f007e4de7a1a7c871453", api: "3", tested: "yes" }
           # DRAFT: master after #32807 (ggml 1.0.0, API 4), the Inkling 2 pin; tested only after the API-4 plugin passes this workflow
-          - { name: "ggml-1.0-b12651-api4", sha: "f5e6915c28f10330885fcb9243a93ae98d3115ab", api: "4", tested: "no" }
+          - { name: "ggml-1.0-b12651-api4", sha: "f5e6915c28f10330885fcb9243a93ae98d3115ab", api: "4", tested: "yes" }
           - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
