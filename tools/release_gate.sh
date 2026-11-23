@@ -4,9 +4,9 @@
 # A run's own head SHA is not enough: a run started on one branch can test another ref (the `ref` input of windows.yml / identity.yml). Every one
 # of those workflows therefore ends with a `record` job (only after all its jobs passed, on the same commit) that uploads the artifact `tested-sha`
 # holding `git rev-parse HEAD` of what it tested. This script looks at the newest successful runs of each workflow and accepts the first whose
-# tested-sha equals COMMIT. Runs older than the change (no artifact) never count. GATE_RUNS = how many runs per workflow to look at (default 30).
+# tested-sha equals COMMIT. Runs older than the change (no artifact) never count. GATE_RUNS = how many runs per workflow to look at (default 100: quick also runs on every claude/** push, so the newest 30 could miss the release commit).
 set -u
-SHA="${1:?commit sha}"; REPO="${2:-${GITHUB_REPOSITORY:-}}"; N="${GATE_RUNS:-30}"
+SHA="${1:?commit sha}"; REPO="${2:-${GITHUB_REPOSITORY:-}}"; N="${GATE_RUNS:-100}"
 echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "release gate: '$SHA' is not a full commit sha"; exit 1; }
 [ -n "$REPO" ] || { echo "release gate: no repository (pass it as the 2nd argument or set GITHUB_REPOSITORY)"; exit 1; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
