@@ -31,7 +31,7 @@ It needs Python 3.8 or newer (`winget install Python.Python.3.12`, or python.org
 moe-cache launch
 ```
 
-A new install into another folder (`-Root DIR`; on Linux `--prefix DIR`) keeps its own settings, API key and chats in `DIR\cache\moe-cache` (`DIR/cache/moe-cache`) and does not share them with other kits; an install made before this keeps using your user cache.
+A new install into another folder (`-Root DIR`; on Linux `--prefix DIR`) keeps its own settings, API key and chats in `DIR\cache\moe-cache` (`DIR/cache/moe-cache`) and does not share them with other kits; an install made before this keeps using your user cache. Two kits with their own caches still share one autostart entry (Startup link / systemd unit) and one default port: turn on-demand autostart on in only one of them.
 
 Undo (removes exactly what it added: the kit folder, the command, the PATH entry if it added it; your models and settings stay): `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall`, or without the file `& ([scriptblock]::Create((irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1))) -Uninstall`. Other flags: `-DryRun` (print the plan), `-Version X.Y.Z`, `-Root DIR`, `-NoPath`, `-Force`.
 
