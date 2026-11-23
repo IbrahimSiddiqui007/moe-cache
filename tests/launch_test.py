@@ -123,6 +123,14 @@ check(rc == 0 and "--agent" in f.started[0] and f.connected == [["opencode", "--
 f = Fake(agents=("opencode", "claude", "hermes"))
 rc = run(f, "--yes", "--model", MODEL, "--agent")
 check([c[0] for c in f.connected] == ["hermes", "opencode", "claude"], f"bare --agent: every agent found ({[c[0] for c in f.connected]})")
+class FakeBadConnect(Fake):       # audit row 28: a connect that fails with a write error (not SystemExit) is a message, not a traceback
+    def connect(self, argv): raise PermissionError("config is read-only")
+f = FakeBadConnect(agents=("opencode",))
+try:
+    rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode"); err = None
+except Exception as e:
+    rc, err = None, e
+check(err is None and rc == 0 and "could not connect opencode: config is read-only" in f.text(), f"a connect that raises OSError: said, the launch goes on ({err!r}, rc {rc})")
 f = Fake(agents=())
 rc = run(f, "--yes", "--model", MODEL, "--agent", "claude")
 check(rc == 0 and f.connected == [] and "not installed" in f.text(), "--agent NAME that is not installed: said, skipped")

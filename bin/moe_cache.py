@@ -5765,7 +5765,7 @@ def _launch_plan(a, extra, argv, machine):
     ncmoe0, ub0, kv_q80 = ncmoe, ub, kv_q8
     cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"),
                                           size=size, avail=avail, vram_user=vram_user,
-                                          fits=lambda c_cmd, c_env: commit_fits(a, c_cmd, c_env, argv, model, ctx, arg_after(c_cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(c_cmd, "-ub", "--ubatch-size") or ub,
+                                          fits=lambda c_cmd, c_env: commit_fits(a, c_cmd, c_env, list(argv) + user_extra, model, ctx, arg_after(c_cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(c_cmd, "-ub", "--ubatch-size") or ub,
                                                                                  kv_quantized(c_cmd), gpu, machine, mm_bytes))
     env[:] = env_t                          # the same list object the plan keeps
     if tune_info and tune_info.get("changed"):
