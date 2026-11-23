@@ -1924,7 +1924,8 @@ function monTiles() {
   const d = M.data, cap = d.cap, last = M.samples[M.samples.length - 1] || {}, ram = last.rss, tot = d.totals || {}, t = [];
   const tile = (v, l, cls, tip) => t.push(`<div class="mtile ${cls || ""}" title="${esc(tip || "")}"><b>${esc(v)}</b><span>${esc(l)}</span></div>`);
   const busy = last.busy;
-  tile(nz(last.dec) ? last.dec.toFixed(1) : "–", "decode tok/s");
+  const lastDec = (d.requests || []).slice().reverse().find(r => nz(r.decode_tps));   // idle sample: show the last answer's speed, as the prompt tile does
+  tile(nz(last.dec) ? last.dec.toFixed(1) : lastDec ? lastDec.decode_tps.toFixed(1) + " (last)" : "–", "decode tok/s");
   tile(nz(last.pre) ? last.pre.toFixed(0) : (M.data.requests || []).length ? (M.data.requests.slice(-1)[0].prefill_tps || 0).toFixed(0) + " (last)" : "–", "prompt tok/s");
   tile(d.ctx && nz(d.ctx.depth) ? d.ctx.depth + (d.ctx.max ? " / " + d.ctx.max : "") : "–", "context tokens", d.ctx && d.ctx.max && d.ctx.depth > d.ctx.max * 0.9 ? "warn" : "");
   tile(pct(lastOf("hit")), "hit rate (now)"); tile(pct(tot.hits_total), "hit rate (run)");
