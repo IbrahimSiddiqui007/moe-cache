@@ -26,4 +26,9 @@ for f in files:
 for b in bad:
     print("  FAIL " + b)
 print(("  ok   " if not bad else "  FAIL ") + f"{len(files)} workflow files: step names are valid YAML")
+# audit rows 17 + 30 (source-text guards, cheap): quick runs on claude/** pushes (R13: merge after CI is green); a tag is checked against the launcher's VERSION and the plugin banner
+q = open(os.path.join(os.path.dirname(files[0]), "quick.yml"), encoding="utf-8").read(); rl = open(os.path.join(os.path.dirname(files[0]), "release.yml"), encoding="utf-8").read()
+for ok, what in (("claude/**" in q, "quick.yml runs on claude/** pushes"), ("bin/moe_cache.py VERSION is" in rl and "banner does not say" in rl, "release.yml checks the tag against VERSION and the plugin banner")):
+    print(("  ok   " if ok else "  FAIL ") + what)
+    if not ok: bad.append(what)
 sys.exit(1 if bad else 0)

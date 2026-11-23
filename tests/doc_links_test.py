@@ -5,6 +5,22 @@ import os, subprocess, sys
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 r = subprocess.run([sys.executable, os.path.join(HERE, "tools", "check_doc_links.py")], capture_output=True, text=True)
 print(r.stdout.strip())
+m = __import__("re").search(r"link check: (\d+) files", r.stdout)
+if not m or int(m.group(1)) < 10:      # audit row 16: an empty file list used to print "0 files, 0 broken" and pass
+    print("FAIL: the link check saw fewer than 10 Markdown files"); sys.exit(1)
 n = len(open(os.path.join(HERE, "README.md"), encoding="utf-8").read().split("\n"))
-print(f"README.md: {n} lines (limit 200)")
-sys.exit(0 if r.returncode == 0 and n < 200 else 1)
+print(f"README.md: {n} lines (limit: under 200)")
+# audit row 16: outside a git checkout the check walks the folder (a copy of the tool in a temp tree with one good and one broken link), and an empty tree is an error
+import shutil, tempfile
+T = tempfile.mkdtemp(prefix="moe-doclinks-")
+os.makedirs(os.path.join(T, "tools")); shutil.copy(os.path.join(HERE, "tools", "check_doc_links.py"), os.path.join(T, "tools"))
+open(os.path.join(T, "A.md"), "w").write("[ok](B.md) [bad](nope.md)\n"); open(os.path.join(T, "B.md"), "w").write("x\n")
+r2 = subprocess.run([sys.executable, os.path.join(T, "tools", "check_doc_links.py")], capture_output=True, text=True, env=dict(os.environ, GIT_DIR=os.path.join(T, "no-such")))
+ok2 = r2.returncode == 1 and "nope.md" in r2.stdout and "2 files" in r2.stdout
+print(("  ok   " if ok2 else "  FAIL ") + f"no git: the folder is walked and the broken link is found ({r2.returncode}, {r2.stdout.strip()[:80]})")
+shutil.rmtree(T, ignore_errors=True)
+# a release kit has no .git and ships only part of the docs: its links into benchmarks/ and archive/ are not there, so outside a checkout only "files were seen" counts
+in_checkout = os.path.exists(os.path.join(HERE, ".git"))
+if not in_checkout and r.returncode != 0:
+    print("  note: no git checkout (a release kit): broken links to folders that are not shipped are not an error here")
+sys.exit(0 if (r.returncode == 0 or not in_checkout) and n < 200 and ok2 else 1)

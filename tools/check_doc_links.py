@@ -10,7 +10,14 @@ LINK = re.compile(r'\]\(([^)\s]+)(?:\s+"[^"]*")?\)|href="([^"]+)"')
 
 
 def md_files():
-    out = subprocess.run(["git", "ls-files", "*.md"], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")
+    """git's list; outside a git checkout (a release export, a tarball, a git that refuses the folder) a walk of the folder. An empty list is an error, never "0 broken"."""
+    r = subprocess.run(["git", "ls-files", "*.md"], cwd=ROOT, capture_output=True, text=True)
+    out = r.stdout.split("\n") if r.returncode == 0 else []
+    if not [f for f in out if f]:
+        out = []
+        for d, dirs, files in os.walk(ROOT):
+            dirs[:] = [x for x in dirs if x not in (".git", "node_modules", "dist", "build")]
+            out += [os.path.relpath(os.path.join(d, f), ROOT).replace(os.sep, "/") for f in files if f.endswith(".md")]
     return [f for f in out if f and not f.startswith(("third_party/", "benchmarks/runs/"))]
 
 
