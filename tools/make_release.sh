@@ -24,7 +24,7 @@ for API in 2 3; do
   ./build.sh --portable
   N=moe-cache-v$V$SUF-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
   cp -r bin planner ui tests tools profiles docs LICENSE README.md CHANGELOG.md models.json build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; tools/release_copy_src.sh dist/$N/src
-  { git rev-parse --short=9 HEAD; } > dist/$N/BUILD_COMMIT 2>/dev/null || true     # the kit has no .git: the launcher's --version and the check header read this (LAUNCHER-1281)
+  { echo "$(git rev-parse --short=9 HEAD)$([ -n "$(git status --porcelain --untracked-files=no)" ] && echo -dirty)"; } > dist/$N/BUILD_COMMIT 2>/dev/null || true     # the kit has no .git: the launcher's --version and the check header read this (LAUNCHER-1281)
   rm -rf dist/$N/docs/internal dist/$N/tools/make_release.sh dist/$N/tools/release_copy_src.sh dist/$N/tools/bundle_llama_linux.sh dist/$N/tools/bundle_llama_patched.sh dist/$N/tools/ci
   # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12207 = ggml 0.29 = API 3), unmodified, sha256-checked
   # against the release asset, in llama/ (the launcher finds it); the API-2 tarball (llama.cpp 7fe450e19) has no official build to bundle: it needs your own.

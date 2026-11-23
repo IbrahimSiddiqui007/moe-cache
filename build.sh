@@ -14,7 +14,7 @@ HDR=third_party/ggml; OUT="${BUILD_DIR:-build}"
 # GGML_API must be 2, 3 or 4 (or unset = 2): any other value (GGML_API=4, a typo) used to build silently against the API 2 headers
 case "${GGML_API:-2}" in 2) ;; 3) HDR=third_party/ggml-v3 ;; 4) HDR=third_party/ggml-v4; MOE_CACHE_CXXFLAGS="-DMC_API_TAG=4 ${MOE_CACHE_CXXFLAGS:-}" ;; *) echo "build.sh: GGML_API must be 2, 3 or 4 (got '$GGML_API'); unset means 2" >&2; exit 1 ;; esac
 # the git commit goes into the plugin's start-up line (log text only). A source tree without .git (a release) uses its BUILD_COMMIT file; none = "unknown" (LAUNCHER-1281)
-MC_COMMIT="$(git rev-parse --short=9 HEAD 2>/dev/null || true)"
+MC_COMMIT=""; if [ -e .git ]; then MC_COMMIT="$(git rev-parse --short=9 HEAD 2>/dev/null || true)"; fi     # git only for a checkout of its own: a kit unpacked inside another repo must not name that repo's commit
 if [ -n "$MC_COMMIT" ] && [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then MC_COMMIT="$MC_COMMIT-dirty"; fi
 [ -n "$MC_COMMIT" ] || MC_COMMIT="$(head -c 40 BUILD_COMMIT 2>/dev/null | tr -cd 'a-f0-9-dirty')"
 case "$MC_COMMIT" in *[!a-z0-9-]*|"") MC_COMMIT=unknown ;; esac
