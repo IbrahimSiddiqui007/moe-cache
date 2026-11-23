@@ -19,7 +19,7 @@ META = {"general.architecture": "inkling2_loop", "inkling2_loop.block_count": 24
 gguf_plan.read_meta = lambda p: dict(META)
 MiB = 1048576
 gguf_plan.model_layout = lambda p: {"expert_bytes_by_layer": {i: (668 if i in (20, 21) else 547) * MiB for i in range(24)}}   # Inkling-2-Mini UD-IQ4_XS sizes
-mc.ls_build = lambda ls: None
+mc.ls_build = lambda ls: None; mc._LS_BUILD.clear()
 mc.model_parts = lambda m: [m]
 mc.say = lambda *a, **k: None
 A = lambda **kw: types.SimpleNamespace(**{"exact": False, "cpu_only": False, "n_cpu_moe": None, "ub": "auto", **kw})
@@ -66,13 +66,13 @@ check(mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "12", None, False) == 
 rename("inkling2_loop")
 os.environ["MOE_CACHE_LOOP_FIT"] = "1"   # opt-in until PC item P1
 T64 = {"compute_mib": 4660}            # tune() at 64k, IQ4_XS, 15.3 GiB free, long-prompt mode: -ub 4096, 13 CPU layers (checked 2026-11-23)
-mc.ls_build = lambda ls: 12651
+mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
 extra = ["-ub", "4096", "-b", "4096"]
 ub, nc = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
 check("--no-op-offload" not in extra and ub == "256" and extra[1] == "256", f"b12651 at 64k: op-offload on, -ub 256 (3072 bias + 690 + 547 staged = 4309 <= 4660) [got ub {ub}]")
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=131072, tuned={"compute_mib": 7958}, ls="ls")
-check("--no-op-offload" not in extra and ub == "256", f"b12651 at 128k: -ub 256 fits (6144 + 960 + 547 = 7651 <= 7958), 512 does not [got {ub}]")
+check("--no-op-offload" not in extra and ub == "128", f"b12651 at 128k: -ub 256 fits the budget (7651 <= 7958) but its bias tensor (131072 x 256 x 24 x 4 B = 3 GiB) is over the 2 GiB per-tensor cap -> -ub 128 [got {ub}]")
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=262144, tuned={"compute_mib": 7958}, ls="ls")
 check("--no-op-offload" in extra and ub == "128", f"b12651 at 256k with the same budget: even -ub 128 + staging (6144 + 1403 + 547) is over: op-offload off, -ub 128 [got {ub}]")
@@ -82,22 +82,22 @@ check("--no-op-offload" in extra and ub == "128", "no planner budget: op-offload
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned={"compute_mib": 900}, ls="ls")
 check("--no-op-offload" in extra and ub == "128", "budget too small for staging at -ub 128: op-offload off")
-mc.ls_build = lambda ls: 12207
+mc.ls_build = lambda ls: 12207; mc._LS_BUILD.clear()
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
 check("--no-op-offload" in extra and ub == "256", f"b12207 (no PR 32807): op-offload off; -ub still sized to the budget without staging [got {ub}]")
-mc.ls_build = lambda ls: 12651
+mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
 os.environ["MOE_CACHE_INKLING_OP_OFFLOAD"] = "0"
 extra = ["-ub", "4096"]
 mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
 check("--no-op-offload" in extra, "MOE_CACHE_INKLING_OP_OFFLOAD=0 forces it off")
 os.environ["MOE_CACHE_INKLING_OP_OFFLOAD"] = "1"
-mc.ls_build = lambda ls: None
+mc.ls_build = lambda ls: None; mc._LS_BUILD.clear()
 extra = ["-ub", "4096"]
 mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
 check("--no-op-offload" not in extra, "MOE_CACHE_INKLING_OP_OFFLOAD=1 forces it on (unknown build)")
 del os.environ["MOE_CACHE_INKLING_OP_OFFLOAD"]
-mc.ls_build = lambda ls: 12651
+mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
 extra = ["-ub", "4096", "--no-op-offload"]
 mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=T64, ls="ls")
 check(extra.count("--no-op-offload") == 1, "your --no-op-offload stands, once")
@@ -115,7 +115,7 @@ check(ub == "256" and "--no-op-offload" in extra, f"cache plan (999) at 64k on b
 extra = ["-ub", "2048"]
 ub, nc = mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "", None, False, ctx=65536, tuned=T64, ls="ls", dense=True)
 check(ub == "256" and "--no-op-offload" not in extra and "-ot" not in extra, f"dense looped on b12651: no expert placement, op-offload on, -ub fit without staging [got {ub}]")
-mc.ls_build = lambda ls: None
+mc.ls_build = lambda ls: None; mc._LS_BUILD.clear()
 extra = ["-ub", "2048"]
 mc.inkling_loop_stage(A(), extra, "m.gguf", "2048", "", None, False, ctx=65536, tuned=T64, ls="ls", dense=True)
 check("--no-op-offload" in extra, "dense looped, unknown build: op-offload off")
