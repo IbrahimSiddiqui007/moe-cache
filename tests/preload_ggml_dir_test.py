@@ -34,6 +34,9 @@ with tempfile.TemporaryDirectory() as t:
         os.environ["LD_LIBRARY_PATH"] = "/opt/a"
         d = dict(mc.load_env("llama-server", "/x/lib.so", "preload")[0])
         check(d.get("LD_LIBRARY_PATH") == os.path.realpath(t) + ":/opt/a", "user's LD_LIBRARY_PATH kept after it")
+        mc.ldd = lambda p: "\tlibggml-base.so.0 => /usr/lib/libggml-base.so.0 (0x2)\n"
+        d = dict(mc.load_env("llama-server", "/x/lib.so", "preload")[0])
+        check("LD_LIBRARY_PATH" not in d or "/usr/lib" not in d["LD_LIBRARY_PATH"].split(":")[:1], "server ggml in a system dir: no LD_LIBRARY_PATH added")
         if old is None:
             os.environ.pop("LD_LIBRARY_PATH", None)
         else:
