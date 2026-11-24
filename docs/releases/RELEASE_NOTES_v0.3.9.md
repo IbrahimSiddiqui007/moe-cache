@@ -50,9 +50,9 @@ The laptop checks named in the table below (auto-tune, the GPU expert cache, the
 | Control page / benchmarks | **Small control-page and bench-driver fixes**: the page reads the status before the body, copy says "Copied" only when it copied, a slow poll does not start a second one, the server list escapes hostile fields; the conversation bench without `/tokenize` sizes turns from the server's own prompt counts (its depths are not comparable with older runs that used the fixed guess); the plan module is loaded once under a lock. | none |
 | Tools | `tools/plan_check.py` compares an arm's flags, load mode, `-np`, `-ub`, KV and CPU layers with the launcher's plan before a run; reference stock figures live in `benchmarks/reference.csv` (test PC, previous build; not v0.3.9 numbers); the laptop A B B A conversation driver `tools/conversation_bench_pair.sh`; `quality_gate.py --window`, `--batch` and a floor arm; a hard long-reasoning task set (`tools/hard_tasks_*`). No effect on a normal start. | Tooling, no speed claim |
 
-**Looped models (Inkling 2), op-offload.** For a looped model the launcher adds `--no-op-offload` by default: the staging copy of the shared loop-layer experts is 4 GB at Q2 and does not fit an 8 GB card at IQ4_XS. Set `MOE_CACHE_INKLING_OP_OFFLOAD` to any value (for example `=1`) to keep op-offload on. No speed figure is claimed for looped models in this release.
+**Looped models (Inkling 2), op-offload.** For a looped model the launcher adds `--no-op-offload` by default: the staging copy of the shared loop-layer experts is 4 GB at Q2 and does not fit an 8 GB card at IQ4_XS. `MOE_CACHE_INKLING_OP_OFFLOAD=1` keeps op-offload on (`=0`, `false`, `no` or `off` leave it off). No speed figure is claimed for looped models in this release.
 <!-- LOOP-SPEED-IF-MERGED -->
-<!-- only if the loop-speed branch merges: add its sentence here -->
+The opt-in `MOE_CACHE_LOOP_FIT=1` sizes op-offload (llama.cpp b12642 or newer, which the bundled b12651 is) and `-ub` to the memory budget and also decides the nothing-on-the-CPU and dense looped cases; it is off by default, unit-tested, not measured on a PC, and no speed figure is claimed.
 <!-- /LOOP-SPEED-IF-MERGED -->
 
 ## Known limits
