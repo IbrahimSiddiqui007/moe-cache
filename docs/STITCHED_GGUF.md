@@ -36,7 +36,7 @@ Nothing in the launcher uses a stitched file automatically. Tested only on small
 
 ## Plan for the real measurement (needs the maintainer's OK; not done)
 Why: the streamed layers dominate the bytes read from the SSD; Q2_0 experts are smaller than IQ3_XXS ones, so fewer bytes stream per token and per prompt block
-(ledger guess: streamed bytes -12 %, prompt +5-8 %, decode +4-6 %). Whether the quality loss is acceptable is the open question.
+(an estimate, not measured). Whether the quality loss is acceptable is the open question.
 
 1. **Files** (the maintainer approves the downloads and the disk: two quant files of the same Flash-Next revision, then the stitched file, about the size of the IQ3_XXS file).
    Stitch with the `--n-cpu-moe` the launcher plans for 64k on the PC; keep the manifest with the results.

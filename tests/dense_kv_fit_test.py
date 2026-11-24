@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory() as tmp:
         d = run(need)
         o = out(d)
         check("q4_0" not in cmd(d) and "-ctk q8_0 -ctv q8_0" in cmd(d) and "-c 8192" in cmd(d) and "still spills" in o and "system RAM" in o and "--kv-4bit would store" in o
-              and "GiB less KV cache" in o and "quality cost" in o and "owner 2026-11-20" in o,
+              and "GiB less KV cache" in o and "quality cost" in o,
               f"default, {what}: q8_0/q8_0 stays, the context stays, the line says part runs from RAM and what --kv-4bit would cost and gain")
     check("-ctk q8_0 -ctv q4_0" in cmd(run((q8_need + mx_need) / 2, ["--kv-4bit"])) and "-ctk q4_0 -ctv q4_0" in cmd(run((mx_need + q4_need) / 2, ["--kv-4bit"])), "--kv-4bit brings both steps back")
     sv_on = run((q8_need + mx_need) / 2, ["--kv-4bit"]); check("-ctk q8_0 -ctv q8_0" in cmd(run(q8_need + 0.01)) and "q4_0" not in cmd(run(q8_need + 0.01, ["--kv-4bit"])), "--kv-4bit changes nothing where q8_0/q8_0 fits")
@@ -230,8 +230,8 @@ with tempfile.TemporaryDirectory() as tmp:
     spilled = lambda r: "-np 1" in cmd(r) and "-ub 256" in cmd(r) and cmd(r).count("-ub ") == 1
     try:
         d128 = sp(c128, q4_128 / 2)
-        check(spilled(d128) and "default at 128k+" in out(d128) and "spills" in out(d128) and "LAUNCHER-1225" in out(d128) and "+41.7 % prompt" in out(d128),
-              "spill rule default, dense 128k plan that spills: -np 1 and -ub 256 (one -ub), the source line names the default, the ledger row and the measured figures")
+        check(spilled(d128) and "default at 128k+" in out(d128) and "spills" in out(d128) and "+41.7" not in out(d128) and "LAUNCHER-" not in out(d128),
+              "spill rule default, dense 128k plan that spills: -np 1 and -ub 256 (one -ub), the source line names the default, and no figure or ledger code")
         d64 = sp(c64, q4_64 / 2)
         check(not spilled(d64) and "dense spill rule" not in out(d64), "spill rule default, dense 64k plan that spills: plan unchanged, no line (64k lost 49 % prompt, item 606_r)")
         f128 = sp(c128, q4_128 * 3)

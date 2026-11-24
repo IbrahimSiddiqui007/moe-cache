@@ -2623,12 +2623,12 @@ def exit_reason(rc, ready):
 
 SERVER_HELP = """\
 --fast     DEPRECATED alias (still works; forces the mode on): approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
-           also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/results-archive/RESULTS.md R11, RESULTS 53).
-           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
+           also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/results-archive/RESULTS.md).
+           Faster only in a laptop test with memory far below the model; no win on the PC. About 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
-           llama.cpp's (EXACTNESS.md). It also turns off the model-card sampling defaults and the chat-template fix (LAUNCHER-1244; --no-sampling-defaults / --chat-template-file after -- are the single switches). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
---retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; one more expert layer on the GPU per load, 2 while far from a known fit limit; not for a model bigger than the memory the server may use; a first load over 60 s stops it), for at most 180 s in
+           llama.cpp's (EXACTNESS.md). It also turns off the model-card sampling defaults and the chat-template fix (--no-sampling-defaults / --chat-template-file after -- are the single switches). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
+--retune   auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; one more expert layer on the GPU per load, 2 while far from a known fit limit; not for a model bigger than the memory the server may use; a first load over 60 s stops it), for at most 180 s in
            all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %, and its second run, the confirm run, must win too) and stores
            it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
 --plan-file PATH  write the launch plan as JSON there: every setting the launcher decided, its value, where it came from (probe / measured / constant / user / llama) and a plain reason. A real start writes it to <cache>/plans/port-PORT.json and prints a short summary; --plan-json shows the same under "settings"
@@ -2668,8 +2668,8 @@ SERVER_HELP = """\
            The cap is kept by planning (cache budget, layer plan), never by stopping a running server (owner's rule)
 --vram GiB GPU memory to plan with (default: what the GPU reports free)
 --n-cpu-moe N  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
---no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
---always-plugin  use the plugin even when the model fits in the memory the server may use (by default stock llama-server runs then: faster, RESULTS 44)
+--no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default)
+--always-plugin  use the plugin even when the model fits in the memory the server may use (by default stock llama-server runs then)
 --stock    run stock llama-server without the plugin whatever the model's size (to compare stock and moe-cache on the same model)
 --allow-sleep  let the machine sleep while the server runs (by default it is kept awake without changing a power setting: Windows power request,
            Linux systemd-inhibit; MOE_CACHE_ALLOW_SLEEP=1 does the same)
@@ -2679,12 +2679,11 @@ SERVER_HELP = """\
            turns is llama-server's own: each slot keeps its conversation, and models with recurrent layers (Qwen3-Next, Qwen3.5/3.6) roll back to a
            checkpoint made at the last user message and just before the end of each prompt (at most 8 per slot here; 1 GiB kept free for them and for restored conversations).
            moe_cache.py connect hermes|opencode [--write] sets the agent up for a running server
-           Warm sessions (ideas I29, I34): every idle conversation of 2k+ tokens (with its checkpoints) is saved to disk 20 s after it changes,
-           one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
-           7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
+           Warm sessions: every idle conversation of 2k+ tokens (with its checkpoints) is saved to disk 20 s after it changes,
+           one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (a session that finds the preamble cached starts with only the new tokens). --no-warm to turn it off
 --cpu-only    run on the CPU only: llama-server gets --device none and -ngl 0 (also chosen by itself when --list-devices shows no GPU)
---no-ffn-ram  dense model bigger than the GPU: by default attention, the KV cache and most weights stay on the GPU and the FFN weights of the last layers stay in RAM (-ot), which keeps long chats usable (Qwen3-14B on an 8 GB card at 32k tokens: 3.8 tok/s against 1.0 with a plain layer split); this brings llama.cpp's --fit layer split back
---cpu-gpu-split [auto|FRACTION]  dense model with FFN weights in RAM (see --no-ffn-ram), CUDA, patched llama.cpp with patch 0091: the GPU computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM); auto follows the measured wait, a number (0.05-0.6) fixes the GPU's share. Opt-in until the PC run decides. Loads the model without mmap and without repacking (needed to page-lock it); laptop RTX 4060 + Qwen3-14B: quiet +6.7 / -2.6 % (below the +10 % bar), one busy core +19 to +39 %
+--no-ffn-ram  dense model bigger than the GPU: by default attention, the KV cache and most weights stay on the GPU and the FFN weights of the last layers stay in RAM (-ot), which keeps long chats usable (Qwen3-14B on an 8 GB card at 32k tokens: a plain layer split is slower there); this brings llama.cpp's --fit layer split back
+--cpu-gpu-split [auto|FRACTION]  dense model with FFN weights in RAM (see --no-ffn-ram), CUDA, patched llama.cpp with patch 0091: the GPU computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM); auto follows the measured wait, a number (0.05-0.6) fixes the GPU's share. Opt-in until the PC run decides. Loads the model without mmap and without repacking (needed to page-lock it); laptop RTX 4060 + Qwen3-14B: no clear gain when the machine is quiet, a gain only with a busy CPU core (speed figures follow in v0.3.9.1)
 --no-commit-check  Windows: do not refuse a start whose estimated commit (GPU memory counts as commit on some drivers) leaves under max(6 GB, 12.5 % of the commit limit) free, and do not shrink the layout for it. The run-time guard stays (MOE_CACHE_COMMIT_GUARD=warn|off changes that)
 --no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
@@ -4051,7 +4050,7 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
         # the plugin plan (6 layers on the CPU, then the long-prompt mode) 92.5 / 1859. The executor would have to run the CPU layers ncmoe_p / ncmoe times faster than stock to
         # break even on decode; the best it was ever measured is +29 % (v0.3.8 laptop band, not reproduced on the release code), so a plan that moves more layers than that runs stock
         say(f"moe-cache: the model nearly fits the GPU: stock llama-server keeps {ncmoe} expert layers on the CPU, the plugin would keep {ncmoe_p} (room for its long-prompt block), "
-            f"more than its expert executor can make up (+{PLUGIN_EXECUTOR_BEST_GAIN - 1:.0%} at best, measured once): plain llama-server runs it (--always-plugin keeps the plugin)")
+            f"more than its expert executor can make up (a launcher threshold, not a speed claim): plain llama-server runs it (--always-plugin keeps the plugin)")
         return None
     return ("moe-cache: the model fits in memory but some layers keep their experts on the CPU: the plugin's expert executor runs those layers (on our test laptop with one model it was faster "
             "than stock llama-server, but a later re-run on the release code did not reproduce that, so on your machine it can be slower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
@@ -4373,7 +4372,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
                 if not (k8v4_on and mixed["fits"]) and not q4_on:
                     say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache; it still spills {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}), so part of the model runs from system RAM; --exact keeps f16. "
                         f"--kv-4bit would store the KV cache as K q8_0 / V q4_0 ({pair[1]['kv_gib'] - mixed['kv_gib']:.1f} GiB less KV cache, " + ("fits" if mixed["fits"] else f"still {mixed['over_gib']:.1f} GiB over") + ") or q4_0 / q4_0 "
-                        f"({pair[1]['kv_gib'] - q4['kv_gib']:.1f} GiB less, " + ("fits" if q4["fits"] else f"still {q4['over_gib']:.1f} GiB over") + f"), at a quality cost: {KV_4BIT_COST} (off by default, owner 2026-11-20)")
+                        f"({pair[1]['kv_gib'] - q4['kv_gib']:.1f} GiB less, " + ("fits" if q4["fits"] else f"still {q4['over_gib']:.1f} GiB over") + f"), at a quality cost: {KV_4BIT_COST} (off by default)")
                     a.dense_kv_types = None
                 elif k8v4_on and mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
@@ -4476,14 +4475,14 @@ def fast_env_stage(a, env, stock, model, machine):
             say("moe-cache: --fast=fewer: --fast, and on the CPU-held layers the 2 lowest-ranked experts of every token are never computed (top-10 -> 8 on Flash-Next); "
                 "output no longer identical to stock, quality limits in docs/QUALITY_GATE.md (level fewer)")
         else:
-            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (faster, output no longer identical to stock)")
+            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (output no longer identical to stock; faster only in a laptop test with memory far below the model, no win on the PC)")
     elif not stock:
         # suggest --fast only where it pays: the model is much bigger than the memory it may use
         try:
             size = sum(os.path.getsize(p) for p in model_parts(model))
             lim = float(a.ram) * 1e9 if a.ram else machine.mem_total()
             if lim and size > 2 * lim:
-                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts to go faster (changes some tokens; off by default)")
+                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts (changes some tokens; faster only in a laptop test with memory far below the model, no win on the PC; off by default)")
         except Exception:
             pass
 
@@ -4535,7 +4534,7 @@ def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False, model=None):
             if mask and not any(x in ("-tb", "--threads-batch", "-Cb", "--cpu-mask-batch") for x in extra):
                 pinargs += ["-Cb", mask, "--cpu-strict-batch", "1", "-tb", str(bin(int(mask, 16)).count("1"))]       # prompt batches: one thread per performance core (8k chat, 14B: prompt 107 -> 143 tok/s, decode 9.6 -> 10.1; 12 batch threads no better)
             say(f"moe-cache: hybrid CPU, dense model: {dm[1]} decode threads on both hardware threads of all performance cores but two (-C {dm[0]}), the GPU driver keeps the other two; "
-                "+30-70 % decode against one thread per core when part of the model runs on the CPU (laptop, Qwen3-14B); prompt batches keep one thread per performance core; --no-pin to disable")
+                "one thread per hardware thread helps decode when part of the model runs on the CPU (laptop test); prompt batches keep one thread per performance core; --no-pin to disable")
         elif mask:
             pinargs = ["-C", mask, "--cpu-strict", "1"]
             say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
@@ -4936,7 +4935,7 @@ def stock_env_stage(a, env, stock, ncmoe, size, avail, method, dense=False):
             say(a.api_stock, err=True)
         else:
             say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
-                "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
+                "which is usually the better choice when everything fits. --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH", "LD_LIBRARY_PATH"))]
         method = "none (stock)"
         if not dense and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH") and (ncmoe != "0" or getattr(a, "loop_min_batch", None)):      # MoE only (DECODE-1168): measured with CPU expert layers; a dense layer split never had it measured
@@ -5626,7 +5625,7 @@ def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
         # R19 (critic of 347bbf3): measured only on Windows (AMD Vulkan, where a plan that does not fit spills into shared memory); elsewhere off until measured
         say(f"moe-cache: dense spill rule: off on this machine (measured only on Windows; MOE_CACHE_DENSE_SPILL_RULE=1 turns it on)", err=True)
         return cmd, ub
-    why = "MOE_CACHE_DENSE_SPILL_RULE=1, forced on" if forced else f"default at {DENSE_SPILL_DEFAULT_CTX // 1024}k+, LAUNCHER-1225; MOE_CACHE_DENSE_SPILL_RULE=0 turns it off"
+    why = "MOE_CACHE_DENSE_SPILL_RULE=1, forced on" if forced else f"default at {DENSE_SPILL_DEFAULT_CTX // 1024}k+; MOE_CACHE_DENSE_SPILL_RULE=0 turns it off"
     if a.ub != "auto" or any(x in ("-np", "--parallel", "-ub", "--ubatch-size") or x.startswith(("--parallel=", "--ubatch-size=")) for x in user_argv):
         say(f"moe-cache: dense spill rule ({why}): your own -np / -ub win: not applied", err=True)
         return cmd, ub
@@ -5643,7 +5642,7 @@ def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
     new = set_cmd_flag(new, "-np", "1", ("--parallel",))
     a.spill_locked = True             # the auto-tune leaves -ub / -np alone (autotune_stage)
     say(f"moe-cache: dense spill rule ({why}): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k: -np 1 (one request at a time; frees llama.cpp's per-slot buffers) and "
-        f"-ub {DENSE_SPILL_UB} (half the compute buffer); measured on our test PC, 27B UD-IQ4_XS 128k: +41.7 % prompt, +23.5 % decode (forecast, items 607 + 614)")
+        f"-ub {DENSE_SPILL_UB} (half the compute buffer); rule tried on our test PC (27B UD-IQ4_XS, 128k); no speed figure is claimed")
     return new, str(DENSE_SPILL_UB)
 
 

@@ -51,8 +51,12 @@ blob = os.path.join(TMP, "sha256-0123")
 gguf_header(blob, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 41), ("qwen35moe.expert_count", 256), ("general.file_type", 15)])
 check(ui.header_quant(blob) == "Q4_K_M", f"quant from general.file_type ({ui.header_quant(blob)})")
 m = ui.measured(blob, 21.7e9)
-check(len(m) == 4 and "22.6" in m[1] and "RESULTS 44" in m[1] and m[1].startswith("laptop,"), "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M)")
-check(m[3].startswith("PC, 32 GB RAM") and "RESULTS 60" in m[3], f"measured: the PC's row too ({m[3]})")
+check(m == [] and not ui.catalogue.SHOW_MEASURED_SPEED, "v0.3.9 shows no measured speed table (SHOW_MEASURED_SPEED False)")
+ui.catalogue.SHOW_MEASURED_SPEED = True
+m = ui.measured(blob, 21.7e9)
+check(len(m) == 4 and "22.6" in m[1] and m[1].startswith("laptop,"), "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M), switch on")
+check(m[3].startswith("PC, 32 GB RAM"), f"measured: the PC's row too ({m[3]})")
+
 fnx = os.path.join(TMP, "fnx-blob")
 gguf_header(fnx, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512), ("general.file_type", 15)])
 mf = ui.measured(fnx, 68.0e9)
@@ -64,6 +68,7 @@ check(any("moe-cache 21.94" in r for r in ui.measured(fnx, 67.5e9)), "measured: 
 m122 = os.path.join(TMP, "q122-blob")
 gguf_header(m122, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 48), ("qwen35moe.expert_count", 256)])
 check(any("stock 15.95 tok/s, moe-cache 19.73" in r and "RESULTS 61" in r for r in ui.measured(m122, 36.6e9)), "measured: the 122B row is RESULTS 61's re-measure (+24 %)")
+ui.catalogue.SHOW_MEASURED_SPEED = False
 check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the same family")
 
 # ---- the plan and its reasons (planner mocked) ----
@@ -94,9 +99,9 @@ check(p["summary"].startswith("Stock llama-server: the model") and "keeps stock 
 _partial[0] = True
 p = ui.plan_model(small["path"], ram="2")
 check(p["kind"] == "cache" and "fits in RAM" in p["verdict"] and "stay on the CPU" in p["verdict"], f"fits in RAM, experts on the CPU: runs with moe-cache ({p['verdict']})")
-check(any("+10 to +29" not in r and "did not reproduce" in r and "our test laptop" in r and "1.06x prompt, 1.07x decode" in r for r in p["reasons"]) and not any("+10 to +29" in r for r in p["reasons"] + [p["summary"]]),
+check(any("+10 to +29" not in r and "did not reproduce" in r and "our test laptop" in r and "1.06x" not in r and "%" not in r for r in p["reasons"]) and not any("+10 to +29" in r for r in p["reasons"] + [p["summary"]]),
       "partial offload: reasons carry the honest evidence (no +10 to +29 % claim, labelled our test laptop / PC)")
-check("fits in" in p["summary"] and "expert executor" in p["summary"] and "1.07x decode" in p["summary"] and "likely be faster" not in p["summary"], f"partial offload: summary ({p['summary']})")
+check("fits in" in p["summary"] and "expert executor" in p["summary"] and "1.07x" not in p["summary"] and "likely be faster" not in p["summary"], f"partial offload: summary ({p['summary']})")
 p = ui.plan_model(small["path"], ram="2", engine="stock")
 check(p["kind"] == "stock", f"--stock still gives stock when the plugin would run ({p['verdict']})")
 TUNE["n_cpu_moe"] = 0
@@ -1415,7 +1420,7 @@ _mh = re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0)
 check("long-prompt mode from 32k" in _mh and "q8_0 KV" in _mh and "MTP" in _mh and "not byte-identical to plain llama.cpp" in _mh and "Exact (--exact): same output as plain llama.cpp" in _mh
       and "same output as stock llama.cpp (default)" not in html, "Mode help: Default and Exact wording")
 check('data-v="default">Default</button><button data-v="exact">Exact</button>' in html and 'mode: "default"' in html, "Mode buttons: Default first, S.mode starts as default")
-check("about 1 token in 40-50 comes out different" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Fast says what it changes")
+check("1 token in 40-50 comes out different" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0) and "no win on the PC" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0) and "10 % faster" not in html, "Mode help: Fast says what it changes, no speed figure")
 
 # the card: run the page's own loadPick() under node with a stub DOM and look at the HTML it builds
 node = shutil.which("node")

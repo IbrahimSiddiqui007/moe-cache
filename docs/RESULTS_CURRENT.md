@@ -22,14 +22,14 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 
 ### Where it does not help
 
-- **Models that fit in RAM.** If all experts fit on the card the launcher runs plain llama.cpp; if some expert layers stay on the CPU it runs the plugin by default since v0.3.8 (`--stock` opts out; measured on one laptop with an 8 GB card: not faster than stock, no figure quoted; an earlier figure was not reproduced); Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden)). Forced through moe-cache on the 16 GB PC, a model that fits in RAM was about the same as stock in our earlier test (no figure quoted in this release), and earlier laptop runs showed stock as fast or faster; no steady gain, so the default stays.
+- **Models that fit in RAM.** If all experts fit on the card the launcher runs plain llama.cpp; if some expert layers stay on the CPU it runs the plugin by default since v0.3.8 (`--stock` opts out; measured on one laptop with an 8 GB card: not faster than stock, no figure quoted; an earlier figure was not reproduced). Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden). Forced through moe-cache on the 16 GB PC, a model that fits in RAM was about the same as stock in our earlier test (no figure quoted in this release), and earlier laptop runs showed stock as fast or faster; no steady gain, so the default stays.
 - **Short answers at shallow depth.** The gain in a conversation comes from reading prompts and from keeping the hot experts in RAM; a short chat on a model that already fits in RAM does not gain.
 - **CPU kernels.** Any gain comes from which experts are in RAM and how they are read, not from faster math: llama.cpp's own CPU kernels run on both sides.
 - **Small samples.** One or two runs per arm on one PC; speed depends on RAM speed, SSD and GPU.
 
 ### Output quality
 
-The plugin does not change the math: with the same settings its answers are the same as stock\'s (the identity tests of the older card page). The default long-prompt mode is the exception: its q8_0 KV cache means answers are close but not byte-identical to stock; quality figures are in [EXACTNESS](EXACTNESS.md). `--exact` turns it off.
+The plugin does not change the math: with the same settings its answers are the same as stock's (the identity tests of the older card page). The default long-prompt mode is the exception: its q8_0 KV cache means answers are close but not byte-identical to stock; quality figures are in [EXACTNESS](EXACTNESS.md). `--exact` turns it off.
 
 ### Method
 

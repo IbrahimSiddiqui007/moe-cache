@@ -7,13 +7,13 @@ import argparse, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as pk  # noqa: E402
+import moe_cache_catalogue as cat  # noqa: E402
 
 DEFAULT_CTX = {"agents": 65536, "chat": 32768, "docs": 65536}
 ORDER = {"fits": 0, "tight": 1, "no": 2}
 
 
-# v0.3.9 ships no speed figures; set True in 0.3.9.1
-SHOW_MEASURED_SPEED = False
+SHOW_MEASURED_SPEED = cat.SHOW_MEASURED_SPEED     # v0.3.9 ships no speed figures: the one switch is in moe_cache_catalogue.py
 
 
 def headline(k, spec):
@@ -25,7 +25,7 @@ def headline(k, spec):
         return None
     r, m = dec[0]
     if not SHOW_MEASURED_SPEED:
-        return {"text": "speed figures follow in v0.3.9.1", "value": r["value"], "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": r["source"], "note": r.get("note")}
+        return {"text": "speed figures follow in v0.3.9.1", "value": None, "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": None, "note": None}
     text = f"{r['value']:g} tok/s decode" + (f" at context {r['ctx']}" if r.get("ctx") else "") + f" ({m['name'].split(':')[0]}, {r['source']}, {r['date']})" + (f"; {r['note']}" if r.get("covers_fit") is False and r.get("note") else "")
     return {"text": text, "value": r["value"], "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": r["source"], "note": r.get("note")}
 

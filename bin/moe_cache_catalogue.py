@@ -7,6 +7,7 @@ import json, os
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATH = os.environ.get("MOE_CACHE_MODELS_JSON") or os.path.join(HERE, "models.json")      # the variable is for tests
 USES = ("agents", "chat", "docs")
+SHOW_MEASURED_SPEED = False     # v0.3.9 ships no speed figures (numbers follow in v0.3.9.1): set True then; models.json keeps the records. The ONE copy: launch, models, ui and tools/gen_models_md.py read it
 METRICS = {"decode_tps": "tok/s decode", "prompt_tps": "tok/s prompt", "tasks_correct": "tasks right (of 202)", "agent_session_s": "s agent session"}
 
 

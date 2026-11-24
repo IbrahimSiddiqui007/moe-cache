@@ -114,33 +114,23 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
   IQ2_XS): the plugin finished the sessions sooner than stock and the first token came sooner; two agents at once also finished sooner. The
   122B row replaces RESULTS 59's earlier pair: that pair ran during a slowdown of the whole PC (T2b).
-  These decode figures are from the 2026-10-27/28 kits at a short context; later kits are faster. Their stock-vs-plugin ratios are recorded in RESULTS.md.
   If your model fits in RAM and its experts all fit on the card, stock llama.cpp is the better choice (the launcher picks it by itself; with expert layers on the CPU it runs the plugin by default, `--stock` opts out; the 16 GB PC gained little forced through the plugin). One desktop only; Linux numbers are in the README.
 - **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC, plugin with launcher defaults, cold). Tasks = 202
   exact-answer tasks; no quality difference between any two files is proven (all paired sign tests p > 0.05):
 
-  | File | Size | Plugin decode (tok/s) | Prompt tok/s, 3k / 34k tokens | Tasks /202 | Use it |
-  |---|---|---|---|---|---|
-  | **IQ3_XXS** | 75.8 GB | speed figures follow in v0.3.9.1 | - | **193** | **the default** (0.3.2 to 0.3.6, and again since v0.3.8): 3-bit, most tasks right, reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
-  | Q2_0 | 66.4 GB | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 | 191 | **the faster option** (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8; in a real 65k conversation (fixed driver, RAM at 6000 MT/s) moe-cache reads new prompt tokens faster than stock and decodes about as fast as stock; fastest of the 2026-10-28 set, and smaller. In the decode pair Q2_0 ran from D: and IQ2_XS from C:, so part of the decode gain may be the drive (the 34k pair had both on D:) |
-  | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | speed figures follow in v0.3.9.1 | - | 189 | coding agents: half the experts (256 of 512); a quicker OpenCode session than IQ2_XS, one run. General knowledge not checked beyond the task set |
-  | IQ2_XS | 68.0 GB | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 | 187 | superseded by Q2_0. The other IQ2_XS numbers on this page were measured on IQ2_XS |
-  | IQ3_S | 83.6 GB | speed figures follow in v0.3.9.1 | - | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |
+  | File | Size | Tasks /202 | Use it |
+  |---|---|---|---|
+  | **IQ3_XXS** | 75.8 GB | **193** | **the default** (0.3.2 to 0.3.6, and again since v0.3.8): 3-bit, most tasks right, reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
+  | Q2_0 | 66.4 GB | 191 | **the faster option** (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8; in a real 65k conversation (fixed driver, RAM at 6000 MT/s) moe-cache read new prompt tokens faster than stock and decoded about as fast as stock (v0.3.7/0.3.8 builds; re-measured in v0.3.9.1); fastest of the 2026-10-28 set, and smaller. In the decode pair Q2_0 ran from D: and IQ2_XS from C:, so part of the decode gain may be the drive (the 34k pair had both on D:) |
+  | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 189 | coding agents: half the experts (256 of 512); a quicker OpenCode session than IQ2_XS, one run. General knowledge not checked beyond the task set |
+  | IQ2_XS | 68.0 GB | 187 | superseded by Q2_0. The other IQ2_XS numbers on this page were measured on IQ2_XS |
+  | IQ3_S | 83.6 GB | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |
 
-  Stock vs plugin on Q2_0 (D:, cold, two runs each, not interleaved): the plugin is faster in decode and in prompt reading (figures follow in v0.3.9.1). Stock decodes Q2_0 much faster than IQ2_XS, so the decode gain is smaller
+  Stock vs plugin on Q2_0 (D:, cold, two runs each, not interleaved): the plugin was faster in decode and in prompt reading (v0.3.7/0.3.8 builds; re-measured in v0.3.9.1). Stock decodes Q2_0 much faster than IQ2_XS, so the decode gain is smaller
   than on IQ2_XS; the prompt gain is what agent sessions wait on.
   The Q2_0 numbers above were measured before the plugin's exact Q2_0 executor kernel came to Windows; with it the PC's Q2_0 decode is unchanged
   (RESULTS 63 addendum).
-- **Long context (Windows PC, Flash-Next Q2_0 on D:, cold file cache, current defaults).** Since v0.3.5 the launcher uses `-ub 2048` above 32k context (gpt-oss keeps 1024) and the planner keeps 39 CPU layers at 40960-65536, 41 at 131072. Prompt speed, new default against v0.3.4 (patched server; clean PC):
-
-  | Context, prompt | v0.3.4 prompt tok/s | v0.3.5 prompt tok/s | Decode v0.3.4 / v0.3.5 |
-  |---|---|---|---|
-  | 40960, 34k | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 |
-  | 65536, 64k | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 |
-  | 131072, 128k | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 |
-  | 262144, 222k tokens (2026-11-03, official server; v0.3.4 not measured) | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 | speed figures follow in v0.3.9.1 |
-
-  The overnight run of 2026-11-03 on the official llama-server (no patch) measured faster prompts at 34k, 64k and 128k, and slightly slower decode at 34k and 64k, against v0.3.4. The first 64k measurement (2026-10-28, agent mode, one cold run, v0.3.2 kit, faster than stock) is superseded; RESULTS 64 keeps it with the Qwen3.5-122B and Qwen3.6 rows.
+- **Long context (Windows PC).** Per-depth prompt and decode tables of the v0.3.4 / v0.3.5 kits are kept in [results-archive/RESULTS_CURRENT_v0.3.8.md](results-archive/RESULTS_CURRENT_v0.3.8.md); they are not v0.3.9 numbers. Since v0.3.5 the launcher uses `-ub 2048` above 32k context (gpt-oss keeps 1024) and the planner keeps 39 CPU layers at 40960-65536, 41 at 131072.
 - **Other models (Windows PC, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
   so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): 190/202 tasks (Flash-Next Q2_0 191, not proven); speed figures follow in v0.3.9.1 (the fastest OpenCode session we measured). moe-cache forced on it is slower
   in decode and in prompt reading: the plugin is for models bigger than memory. DeepSeek V4-Flash: not tested.

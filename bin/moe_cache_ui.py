@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as picker  # noqa: E402
+import moe_cache_catalogue as catalogue  # noqa: E402
 import moe_cache_download as dl  # noqa: E402
 import moe_cache_lan as lan  # noqa: E402
 import moe_cache_concurrent as cc  # noqa: E402
@@ -453,9 +454,8 @@ def peek_servers(ports=None, own=None, extra=()):
 # PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
 LAPTOP, PC = "laptop", "PC"
 # README "Where it does not help", first bullet (v0.3.8): the evidence for running the plugin on a model that fits in RAM with some expert layers on the CPU
-PARTIAL_FIT_EVIDENCE = ("Evidence: our test laptop (8 GB card, one model) was faster with the plugin in early paired runs, but a later re-run on the release code did not reproduce that "
-                        "(decode about 4 % lower, prompt about 19 % lower); our test PC (16 GB), Qwen3.6-35B in a 65k conversation, was about the same as stock: 1.06x prompt, 1.07x decode "
-                        "(one model, one PC, 2026-11-08). So on your machine it can be slower. --stock or MOE_CACHE_STOCK_WHEN_FITS=1 runs plain llama-server instead.")
+PARTIAL_FIT_EVIDENCE = ("Evidence: our test laptop (8 GB card, one model) was faster with the plugin in early paired runs, but a later re-run on the release code did not reproduce that; "
+                        "our test PC (16 GB), Qwen3.6-35B in a 65k conversation, was about the same as stock (one model, one PC). So on your machine it can be slower. --stock or MOE_CACHE_STOCK_WHEN_FITS=1 runs plain llama-server instead.")
 MEASURED = {
     ("qwen35moe-41x256", 21.7): [(LAPTOP, 24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44 (plugin forced); the launcher now runs the plugin when expert layers stay on the CPU"),
                                  (LAPTOP, 12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (LAPTOP, 12, "no GPU", 3.1, 9.9, "RESULTS 5"),
@@ -478,6 +478,8 @@ MEASURED = {
 
 def measured(path, size):
     """Lines like 'laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
+    if not catalogue.SHOW_MEASURED_SPEED:       # v0.3.9 ships no speed figures (the table above stays as a record for v0.3.9.1)
+        return []
     try:
         mc.planner_path()
         from gguf_plan import model_key
@@ -519,7 +521,7 @@ def summary(out, mode="default", engine="auto"):
         held = f" keeps {min(100, 100 * cache / cpu):.0f} % of the experts that run on the CPU in RAM and" if cpu and cache is not None else ""
         if avail and size + HEADROOM <= avail:
             return f"moe-cache, as you chose: the model ({gb(size)}) fits in {room}, so stock would likely be faster."
-        tail = {"fast": " --fast skips a few rarely used experts that are not in RAM (a little faster, some tokens differ).",
+        tail = {"fast": " --fast skips a few rarely used experts that are not in RAM (some tokens differ; faster only in a laptop test, no win on the PC).",
                 "hybrid": " --hybrid also runs the most used experts on the GPU (experimental, answers differ)."}.get(mode, " The answers are the same as stock's (Exact)." if mode == "exact" else " Default settings: answers are not byte-identical to plain llama.cpp's (Exact keeps them identical).")
         return (f"moe-cache: the model ({gb(size)}) is {x} {room}. Stock llama-server would keep re-reading it from the disk; "
                 f"the cache{held} reads the rest only when needed." + tail)
@@ -628,7 +630,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="default", agent=False,
         why = "you chose --always-plugin" if mode in ("default", "exact") else mode + " needs the plugin"
         out.update(kind="cache", verdict=f"runs with {name} (fits in RAM, but {why})" if stock_fits else f"runs with {name} (bigger than free RAM)")
         if mode == "fast":
-            R.append("--fast skips low-ranked experts that are not in RAM: about +10 %, about 1 token in 40-50 differs from stock")
+            R.append("--fast skips low-ranked experts that are not in RAM: about 1 token in 40-50 differs from stock; faster only in a laptop test with memory far below the model, no win on the PC")
         elif mode == "hybrid":
             R.append("--hybrid computes the most used experts on the GPU from a bank, the rest on the CPU (output differs from stock)")
         elif mode == "exact":
@@ -646,7 +648,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="default", agent=False,
                  + ("" if pct >= 100 else "; the rest are read from the SSD when needed"))
         lim = float(ram) * 1e9 if ram else mc.mem_total()
         if mode in ("default", "exact") and lim and size > 2 * lim:
-            R.append(f"the model is {size / lim:.1f}x the memory: --fast would add about +10 % (changes some tokens; off by default)")
+            R.append(f"the model is {size / lim:.1f}x the memory: --fast skips rarely needed experts (changes some tokens; faster only in a laptop test with memory far below the model, no win on the PC; off by default)")
     R.extend(amd_reasons)
     for w in (tuned or {}).get("why", []):
         if not no_vram:

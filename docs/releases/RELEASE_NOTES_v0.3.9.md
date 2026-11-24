@@ -10,7 +10,7 @@ llama.cpp pin: b12651 (commit `f5e6915c2`, ggml 1.0.0, backend API 4), moved fro
 
 **No speed figure and no speed comparison against plain llama.cpp in this release.** The speed measurements are redone on the bundled b12651 build. Speed numbers for this release follow in v0.3.9.1. Until then no stock-against-moe-cache line is claimed for the default model, Q2_0 or Qwen3.6-35B, for the long-prompt default, for the Windows dense-spill rule or for the new bundled build against the previous kit.
 
-The laptop checks named in the table below (auto-tune, the GPU expert cache, the live RAM follow, the dense quality test) are one machine and few runs each; most v0.3.9 launcher changes are built and not measured yet. Older per-depth records on the earlier head kit are in `docs/RESULTS_CURRENT.md`; they are not v0.3.9 numbers.
+The laptop checks named in the table below (auto-tune, the GPU expert cache, the live RAM follow, the dense quality test) are one machine and few runs each; most v0.3.9 launcher changes are built and not measured yet. Older per-depth records on the earlier head kit are in `docs/results-archive/RESULTS_CURRENT_v0.3.8.md`; they are not v0.3.9 numbers.
 
 ## What changed
 

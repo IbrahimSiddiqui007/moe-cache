@@ -1,6 +1,6 @@
 # FAQ: running Mixture-of-Experts models bigger than your RAM with llama.cpp
 
-Short answers to the questions people ask most. Setup is in [INSTALL](INSTALL.md), models in [MODELS](MODELS.md), measured speeds in [RESULTS_CURRENT](RESULTS_CURRENT.md).
+Short answers to the questions people ask most. Setup is in [INSTALL](INSTALL.md), models in [MODELS](MODELS.md), this release's results in [RESULTS_CURRENT](RESULTS_CURRENT.md) (speed figures follow in v0.3.9.1; older per-depth records in [results-archive](results-archive/RESULTS_CURRENT_v0.3.8.md)).
 
 ### How do I run a MoE model that is bigger than my RAM?
 

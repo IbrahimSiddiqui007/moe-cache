@@ -22,8 +22,8 @@ USES = {"agents": "agents and coding (Hermes, OpenCode) at 64k-256k context", "c
 USE_SHORT = {"agents": "coding agents", "chat": "chat", "docs": "long documents"}      # for the fit reasons
 BOLT_BUILD = 11966          # Nemotron needs llama.cpp b11966 or newer (tokenizer fix #30960, RESULTS 65)
 DSV4_BUILD = 11870          # DeepSeek-V4.1-Flash needs llama.cpp b11870 or newer (the release of 25 Oct with "model: DSV4.1 flash (#31086)"; the card says so)
-PC = "our test PC, 32 GB RAM + 16 GB GPU (Windows desktop, RESULTS 59-67; not your speed)"
-LAPTOP = "our test laptop, 31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop, RESULTS 44-45; not your speed)"
+PC = "our test PC, 32 GB RAM + 16 GB GPU (Windows desktop; not your speed)"
+LAPTOP = "our test laptop, 31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop; not your speed)"
 NOTHING_FITS_BELOW_CAP_GB = 11     # GUI-1155: the smallest server memory any candidate was ever run with (12 GB RAM laptop, RESULTS 53): below it nothing is recommended
 
 # The candidates are in models.json (bin/moe_cache_catalogue.py); MODELS is the picker's view of them: name, size = bytes of all shards, pattern finds a
@@ -40,8 +40,8 @@ SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flas
 Q2_FAST = "reads prompts and decodes faster than IQ3_XXS in a 65k conversation (speed figures follow in v0.3.9.1)"
 Q2_LESS = ("a little less exact (same top token as the 3-bit IQ3_S file, not full precision: 73.3 % against 76.5 % for IQ3_XXS; one run 2026-11-05, record not published), "
            "191/202 tasks against 193")
-SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file (owner 2026-11-07): 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); slower than Q2_0 at long context",
-                "flash-next-q2_0": f"the faster option (owner 2026-11-07): 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
+SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); slower than Q2_0 at long context",
+                "flash-next-q2_0": f"the faster option 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
 
 
 # ---- this machine ----

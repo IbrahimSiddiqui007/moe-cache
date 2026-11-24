@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "bin"))
 import moe_cache_catalogue as cat  # noqa: E402
 
-SHOW_MEASURED_SPEED = False     # v0.3.9 ships no speed figures (numbers follow in v0.3.9.1): set True then; models.json keeps the records
+SHOW_MEASURED_SPEED = cat.SHOW_MEASURED_SPEED     # the one switch is in bin/moe_cache_catalogue.py
 DOC = os.path.join(HERE, "docs", "MODELS.md")
 BEGIN = "<!-- models:begin (generated from models.json by tools/gen_models_md.py: edit the JSON, then run the tool; CI checks it) -->"
 END = "<!-- models:end -->"

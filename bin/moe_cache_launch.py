@@ -15,6 +15,7 @@ import argparse, json, os, re, shutil, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as pk  # noqa: E402
+import moe_cache_catalogue as cat  # noqa: E402
 import moe_cache_fetch as fx  # noqa: E402
 
 AGENTS = ("hermes", "opencode", "claude")
@@ -271,7 +272,7 @@ def this_pc_lines(spec, ls):
     return out
 
 
-SHOW_MEASURED_SPEED = False     # v0.3.9 ships no speed figures (numbers follow in v0.3.9.1): set True then; models.json keeps the records
+SHOW_MEASURED_SPEED = cat.SHOW_MEASURED_SPEED     # v0.3.9 ships no speed figures: the one switch is in moe_cache_catalogue.py
 
 
 def speed_text(r):

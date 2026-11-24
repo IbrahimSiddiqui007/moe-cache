@@ -59,7 +59,7 @@ check(recs[("32 GB / 8 GB", "chat")]["untested"] and "IQ2_XS" in recs[("32 GB / 
 # owner 2026-11-07: IQ3_XXS is the default Flash-Next file again, Q2_0 is the faster option (v0.3.8)
 check(recs[(pc, "chat")]["id"] == "flash-next-iq3_xxs" and recs[(pc, "chat")]["alternatives"][0]["id"] == "flash-next-q2_0" and "faster option" in recs[(pc, "chat")]["alternatives"][0]["why"],
       "PC chat: IQ3_XXS first, Q2_0 named as the faster option")
-check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next file (owner 2026-11-07)") and pk.SIBLINGS_WHY["flash-next-q2_0"].startswith("the faster option (owner 2026-11-07)"),
+check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next file") and pk.SIBLINGS_WHY["flash-next-q2_0"].startswith("the faster option") and not any("owner 20" in v for v in pk.SIBLINGS_WHY.values()),
       "the sibling texts say which file is the default and which is the faster option")
 check(not any("86.9" in v or "50.7" in v for v in pk.SIBLINGS_WHY.values()), "no unrecorded 2026-11-05 percentages in the sibling texts")
 check(recs[("64 GB / 16 GB", "chat")]["id"] == "flash-next-iq3_xxs" and not recs[("64 GB / 16 GB", "chat")]["untested"], "64/16 chat: IQ3_XXS with the 16 GB GPU numbers")

@@ -23,7 +23,7 @@
 | `MOE_CACHE_GGUF` | model file (split models: the first part) |
 | `MOE_CACHE_PROFILE` / `MOE_CACHE_WARM` | learn expert usage here and warm-start from it / warm start only |
 | `MOE_CACHE_STATS=1` | print hit rate, reads and evictions at exit |
-| `MOE_CACHE_EXEC_FUSE=0` | turn off the fused gate+up executor job (on by default since 0.3.2: decode faster in every PC pair, same text; RESULTS 73) |
+| `MOE_CACHE_EXEC_FUSE=0` | turn off the fused gate+up executor job (on by default since 0.3.2: decode about the same or slightly faster, same text; RESULTS 73) |
 | `MOE_CACHE_IDLE_REBALANCE=0` | turn off the idle cache refill (on since 0.3.3: refills the RAM cache while an agent pauses; every PC pair won) |
 | `MOE_CACHE_POLICY=classlru` | frequency-aware cache replacement instead of LRU (opt-in; on the miss-heavy 122B decode faster in every pair, on Flash-Next within noise; RESULTS 73) |
 | `MOE_CACHE_STATS_SIGNAL=1` | print one `moe-cache-stats {json}` line of the running counters on request: Linux `kill -USR1 <pid>`, Windows set the named event `Local\moe-cache-stats-<pid>` |
@@ -68,7 +68,7 @@ Rule of 2026-11-09: there is no opt-in for a speed-up that changes tokens but ke
 | Mode | Switch | Status | Measured reason |
 |---|---|---|---|
 | q8_0 KV cache from 128k context | `--fast=kv` (default from 128k) | won | faster prompts at 256k on a 16 GB card; gate level `kv` passed, KL 0.0045-0.015 |
-| Long-prompt mode from 32k context | `--long-prompt` (default from 32k) | won | Flash-Next IQ3_XXS, 65k, A C C A: prompts faster, answers faster; meaning kept 10 of 10 at 55k |
+| Long-prompt mode from 32k context | `--long-prompt` (default from 32k) | won | Flash-Next IQ3_XXS, 65k, A C C A: prompts faster, answers about the same; meaning kept 10 of 10 at 55k |
 | MTP draft head (agent mode, MoE model has the head; a dense model only with `--mtp`: slower there) | `--mtp` | won | Qwen3.6 on the PC: decode faster; prompt processing slower |
 | Dense model: K q8_0 / V q4_0 KV cache when q8_0 / q8_0 would not fit the GPU (instead of a shorter context) | `--kv-4bit` (off by default since 2026-11-20) | lost (off) | failed the absolute gate level `kv` at 8k-token windows with no floor arm (laptop, 27B UD-Q3_K_XL, one run): KL 0.109, same top token 94.6 %, partly the model's own noise (q8_0 / q8_0 on the same text: 0.063); floor-corrected on Qwen3-30B-A3B (laptop, one run each, forecast): +0.003 to +0.006 KL over the floor at 8k and 32k, which passes; not measured with a floor on the 27B, nothing at 64k. Kept by owner decision; approximate Owner 2026-11-20: off by default (quality cost); opt in with `--kv-4bit`; when q8_0 / q8_0 would spill, the next step is layers to system RAM. |
 | Dense model: q4_0 / q4_0 KV cache when K q8_0 / V q4_0 would not fit either | `--kv-4bit` (off by default since 2026-11-20) | lost (off) | failed the absolute gate level `kv` at 8k-token windows with no floor arm (laptop, 27B UD-Q3_K_XL, one run): KL 0.173, same top token 92.9 %, partly the model's own noise; floor-corrected on Qwen3-30B-A3B (laptop, one run each, forecast): +0.022 to +0.040 KL over the floor, over the 0.015 limit in all four cells, so a real cost, the biggest KV cost we ship. PC, 27B 64k: decode faster than with q8_0 spilling (one run). Kept by owner decision; approximate Owner 2026-11-20: off by default (quality cost); opt in with `--kv-4bit`; when q8_0 / q8_0 would spill, the next step is layers to system RAM. |
