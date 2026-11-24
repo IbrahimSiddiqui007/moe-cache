@@ -1,6 +1,6 @@
 # Which model and which file: Qwen, GLM, gpt-oss and more on 32 GB RAM and a 16 GB graphics card
 
-`python bin/moe_cache.py pick` applies these rules for your machine; `python bin/moe_cache.py models` lists the catalogue below for your PC (fits / tight / no, size, downloaded or not, measured speed; `--all` adds the ones that do not fit, `--json` for scripts).
+`python bin/moe_cache.py pick` applies these rules for your machine; `python bin/moe_cache.py models` lists the catalogue below for your PC (fits / tight / no, size, downloaded or not; `--all` adds the ones that do not fit, `--json` for scripts).
 
 ## The catalogue
 

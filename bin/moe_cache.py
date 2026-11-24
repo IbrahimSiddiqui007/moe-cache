@@ -4,7 +4,7 @@
   moe_cache.py launch  [--yes] [--model M] [--agent [NAME]]               guided start in plain words: check this PC, pick a model, start the server, connect an agent
   moe_cache.py server  MODEL.gguf [options] [-- extra llama-server args]   run llama-server with the expert-cache plugin
   moe_cache.py pick    [--use agents|chat|docs] [--apply]                  recommend a model for this machine (RAM, VRAM, disk, CPU) and use; --apply uses it
-  moe_cache.py models  [--use agents|chat|docs] [--ctx N] [--all] [--json]  the model catalogue for this PC: fits / tight / no, size, downloaded or not, measured speed
+  moe_cache.py models  [--use agents|chat|docs] [--ctx N] [--all] [--json]  the model catalogue for this PC: fits / tight / no, size, downloaded or not
   moe_cache.py doctor  [MODEL.gguf] [--llama-server PATH] [--ram GB]       the same as check (preflight: GPU, driver, RAM, disk, llama-server; what to fix)
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py update --check                                            is a newer moe-cache or llama.cpp out? (downloads nothing)

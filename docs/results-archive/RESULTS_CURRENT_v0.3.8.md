@@ -2,17 +2,17 @@
 
 > **Earlier build.** Speeds on this page were measured on our test PC with the previous llama.cpp build (b12064). v0.3.8 ships llama.cpp b12207 and has not been re-measured yet; treat these numbers as from the earlier build.
 
-Moved out of the README on 2026-11-06 so the README stays short. The block between the `card` markers is generated from [benchmark_card.html](benchmark_card.html) (`python3 tools/card_markdown.py --write`; the quick tests check it). Older results: [results-archive/RESULTS.md](results-archive/RESULTS.md) (Windows desktop, every measurement, newest first) and [results-archive/RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) (Linux laptop).
+Moved out of the README on 2026-11-06 so the README stays short. The block between the `card` markers is generated from [benchmark_card.html](benchmark_card_v0.3.8.html) (`python3 tools/card_markdown.py --write`; the quick tests check it). Older results: [results-archive/RESULTS.md](RESULTS.md) (Windows desktop, every measurement, newest first) and [results-archive/RESULTS_OLD_LAPTOP.md](RESULTS_OLD_LAPTOP.md) (Linux laptop).
 
 ## What changed since v0.3.7
 
-The headline numbers below are the 2026-11-08 night chain, measured with the fixed conversation driver (real answers, 256 tokens, sizes by the server's token count) on a PC whose RAM has run at 6000 MT/s since 2026-11-07; the v0.3.7 conversation numbers (records of 2026-11-05) came from the old driver, whose decode figures rest on short answers, and are withdrawn. The long-prompt mode (`-ub 4096`, q8_0 KV cache) is now the default from 32k context; the comparison against the previous default is in the card's last table (claim `v038-longprompt-default`). Every number in the card has a claim in [benchmarks/claims/](../benchmarks/claims/) and a record in [benchmarks/runs/](../benchmarks/runs/).
+The headline numbers below are the 2026-11-08 night chain, measured with the fixed conversation driver (real answers, 256 tokens, sizes by the server's token count) on a PC whose RAM has run at 6000 MT/s since 2026-11-07; the v0.3.7 conversation numbers (records of 2026-11-05) came from the old driver, whose decode figures rest on short answers, and are withdrawn. The long-prompt mode (`-ub 4096`, q8_0 KV cache) is now the default from 32k context; the comparison against the previous default is in the card's last table (claim `v038-longprompt-default`). Every number in the card has a claim in [benchmarks/claims/](../../benchmarks/claims/) and a record in [benchmarks/runs/](../../benchmarks/runs/).
 
 <!-- card:begin -->
 
 **Benchmark card · v0.3.8 · measured 2026-11-08 · Windows desktop**
 
-moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC, in a real 65,000-token conversation (code pastes, logs and follow-ups, sent turn by turn with the whole history), it reads new prompt tokens and decodes faster than stock llama-server on the models that are bigger than the RAM (a model that fits in RAM is about the same). Older measurements (8k chats, long prompts, agent sessions, other models) are on [the older card page](results-archive/benchmark_card_older.html).
+moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC, in a real 65,000-token conversation (code pastes, logs and follow-ups, sent turn by turn with the whole history), it reads new prompt tokens and decodes faster than stock llama-server on the models that are bigger than the RAM (a model that fits in RAM is about the same). Older measurements (8k chats, long prompts, agent sessions, other models) are on [the older card page](benchmark_card_older.html).
 
 | Machine | |
 |---|---|
@@ -100,7 +100,7 @@ Test details for each row (the card draws the decode table as bars; same numbers
 
 ### Output quality
 
-The plugin does not change the math: with the same settings its answers are the same as stock's (the identity tests of the older card page). The default long-prompt mode is the exception: its q8_0 KV cache means answers are close but not byte-identical to stock (KL 0.014–0.015, same top token in 94–95 % of positions, meaning kept in 10 of 10 checks at 55k; a forecast, no claim id: KL and top-token figures from 4k and 8k contexts on our test PC, IQ3_XXS, b12064); `--exact` gives stock-identical answers. Earlier checks on other models and kits are on the [older card page](results-archive/benchmark_card_older.html). A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token while the meaning stays; [docs/EXACTNESS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/EXACTNESS.md) lists exactly what is checked.
+The plugin does not change the math: with the same settings its answers are the same as stock's (the identity tests of the older card page). The default long-prompt mode is the exception: its q8_0 KV cache means answers are close but not byte-identical to stock (KL 0.014–0.015, same top token in 94–95 % of positions, meaning kept in 10 of 10 checks at 55k; a forecast, no claim id: KL and top-token figures from 4k and 8k contexts on our test PC, IQ3_XXS, b12064); `--exact` gives stock-identical answers. Earlier checks on other models and kits are on the [older card page](benchmark_card_older.html). A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token while the meaning stays; [docs/EXACTNESS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/EXACTNESS.md) lists exactly what is checked.
 
 ### Method
 
@@ -139,17 +139,17 @@ powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target C:\mo
 <!-- card:end -->
 
 
-On Linux (older laptop runs, v0.2.x) moe-cache was clearly faster than stock on models bigger than the RAM: [docs/results-archive/RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md).
+On Linux (older laptop runs, v0.2.x) moe-cache was clearly faster than stock on models bigger than the RAM: [docs/results-archive/RESULTS_OLD_LAPTOP.md](RESULTS_OLD_LAPTOP.md).
 
-**What to expect by memory budget** (decode tok/s, `--ram` = the memory the cache is sized to (a sizing hint, **not a RAM cap**: on Windows the default path sets no memory limit, so the server can use more than the number you give; on Linux the launcher sets none either; see [docs/WINDOWS.md](WINDOWS.md)); only numbers we measured, one cold run each, "not measured" where we have none):
+**What to expect by memory budget** (decode tok/s, `--ram` = the memory the cache is sized to (a sizing hint, **not a RAM cap**: on Windows the default path sets no memory limit, so the server can use more than the number you give; on Linux the launcher sets none either; see [docs/WINDOWS.md](../WINDOWS.md)); only numbers we measured, one cold run each, "not measured" where we have none):
 
 | `--ram` | Windows desktop, Flash-Next IQ2_XS (68 GB), 16 GB GPU | Linux laptop, Qwen3-Next-80B (48.5 GB), about 2.6 GB GPU use |
 |---|---|---|
-| 24 GB | **21.81** (RESULTS §60) | **10.6**, stock 2.3 ([RESULTS_OLD_LAPTOP §6](results-archive/RESULTS_OLD_LAPTOP.md); v0.1 build) |
-| 20 GB | **21.00** (RESULTS §60) | **9.3**, stock 1.3 ([RESULTS_OLD_LAPTOP §6](results-archive/RESULTS_OLD_LAPTOP.md); v0.1 build) |
+| 24 GB | **21.81** (RESULTS §60) | **10.6**, stock 2.3 ([RESULTS_OLD_LAPTOP §6](RESULTS_OLD_LAPTOP.md); v0.1 build) |
+| 20 GB | **21.00** (RESULTS §60) | **9.3**, stock 1.3 ([RESULTS_OLD_LAPTOP §6](RESULTS_OLD_LAPTOP.md); v0.1 build) |
 | 16 GB | **20.03**, 92 % of the 24 GB speed (RESULTS §60, after the 2026-10-27 job-limit fix) | not measured |
 | 12 GB, 8 GB, 32 GB or more | not measured | not measured |
 
 The two columns are different machines and models, so compare down a column, not across. A model that fits in RAM is not in this table (see "Where it does not help").
 
-Everything, with methods and caveats: [docs/results-archive/RESULTS.md](results-archive/RESULTS.md) (Windows desktop), [docs/results-archive/RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) (Linux laptop), the [benchmark card page](benchmark_card.html). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](SHARE_YOUR_NUMBERS.md)).
+Everything, with methods and caveats: [docs/results-archive/RESULTS.md](RESULTS.md) (Windows desktop), [docs/results-archive/RESULTS_OLD_LAPTOP.md](RESULTS_OLD_LAPTOP.md) (Linux laptop), the [benchmark card page](benchmark_card_v0.3.8.html). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](../SHARE_YOUR_NUMBERS.md)).

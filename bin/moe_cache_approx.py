@@ -31,15 +31,15 @@ MODES = {
             "verified": ["flash-next", "qwen3.6", "qwen3.8", "granite"]},
     "spec-exact": {"class": "S", "gate": "kv", "switch": "--mtp  (the model's own draft head, checked by the model)", "changes_answers": True,
                    "plain": "the model guesses 2 tokens ahead with its own draft head and checks them; only when the model has that head. The text can differ slightly (batch rounding)",
-                   "measured": "Qwen3.6 on the PC 45.6 -> 70.3 tok/s; GLM-5.3 code text differed slightly",
+                   "measured": "Qwen3.6 on the PC: faster decode; GLM-5.3 code text differed slightly (speed figures follow in v0.3.9.1)",
                    "verified": ["*"]},
     "fast1": {"class": "E", "gate": "fast", "switch": "--fast  (+ q8_0 KV cache)", "changes_answers": True,
               "plain": "experts that are rarely picked and not in RAM are skipped, and the KV cache is stored in 8 bit; about 1 token in 40-50 comes out different",
-              "measured": "about +10 %; KL 0.0053 (RESULTS 31) to 0.025 with top-1 93.6 % (25.3)",
+              "measured": "KL 0.0053 (RESULTS 31) to 0.025 with top-1 93.6 % (25.3); speed figures follow in v0.3.9.1",
               "verified": ["flash-next", "qwen3.6", "granite"]},
     "fast2": {"class": "E", "gate": "fewer", "switch": "--fast=2  (+ q8_0 KV cache)", "changes_answers": True,
               "plain": "up to 4 low-ranked experts per token that are not in RAM are skipped; about 1 token in 28 comes out different. For memory much smaller than the model",
-              "measured": "Flash-Next at 12 GB +43 %; KL 0.022; gate level 'fewer' (0.060) is the contract limit for this mode",
+              "measured": "Flash-Next at 12 GB: faster (figure follows in v0.3.9.1); KL 0.022; gate level 'fewer' (0.060) is the contract limit for this mode",
               "verified": ["flash-next", "granite"]},
 }
 

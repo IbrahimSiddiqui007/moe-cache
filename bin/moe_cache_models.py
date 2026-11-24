@@ -64,7 +64,7 @@ def lines(spec, use, ctx, rs, hidden):
 
 
 def models(argv, spec=None):
-    ap = argparse.ArgumentParser(prog="moe_cache.py models", description="the model catalogue for this PC: fits / tight / no, size, downloaded or not, measured speed")
+    ap = argparse.ArgumentParser(prog="moe_cache.py models", description="the model catalogue for this PC: fits / tight / no, size, downloaded or not")
     ap.add_argument("--use", choices=list(pk.USES), default="agents", help="what the verdicts are for (default agents: coding agents)")
     ap.add_argument("--ctx", type=int, help="context in tokens (default: 65536 for agents and docs, 32768 for chat)")
     ap.add_argument("--all", action="store_true", help="also the models that do not fit this PC")
