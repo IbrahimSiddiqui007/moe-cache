@@ -1245,7 +1245,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not mbuf.get(ub, {}).get("compute_mib")) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 
 
-def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
+def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072, fit_params=None):
     """Exact mode keeps llama-server's f16 KV cache (identity with stock). At long contexts (>= 128k) q8_0 KV, which --fast uses, can free enough
     VRAM for more expert layers on the GPU: one plain line saying so when it gains 2+ layers or lets the context fit at all; None otherwise
     (idea N28; the owner keeps exact mode exact, so this only advises)."""
@@ -1255,7 +1255,7 @@ def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return None
-    kw = {"reserve_gb": reserve_gb, "want_cache": False}
+    kw = {"reserve_gb": reserve_gb, "want_cache": False, "fit_params": fit_params}   # LAUNCHER-1236: the same compute-buffer rule as the plan
     if ub:
         kw["ub"] = ub
     a, b = tune(path, ctx, free=free, kv_q8=False, **kw), tune(path, ctx, free=free, kv_q8=True, **kw)

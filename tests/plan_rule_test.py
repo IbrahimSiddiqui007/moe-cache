@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MOE_CACHE_PLAN_RULE helpers and the GPU memory log parsers (no model, no GPU): the rule's reserve never falls when -ub or the context grows,
 llama-fit-params output and Windows GPU Process Memory counters are parsed, the log is off unless its switch is set."""
-import os, sys
+import os, re, sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "planner"))
@@ -44,6 +44,15 @@ os.environ["MOE_CACHE_PLAN_RULE"] = "1"
 check(gp.plan_rule_active(None) is True, "MOE_CACHE_PLAN_RULE=1 turns the rule on even without llama-fit-params")
 os.environ.pop("MOE_CACHE_PLAN_RULE", None)
 check("2.5 %" in gp.plan_table_lines([], 8192)[-1], "plan_table_lines footer names the decode cost per layer (2.5 %)")
+
+# LAUNCHER-1236 follow-up: every tune() call takes the plan's fit_params, so the stock-vs-plugin choice, the fast-kv hint and the retunes
+# use the same compute-buffer rule as the plan (rule off -> None -> the table, as before)
+import inspect
+check("fit_params" in inspect.signature(gp.fast_kv_hint).parameters, "fast_kv_hint takes fit_params")
+src = open(os.path.join(HERE, "bin", "moe_cache.py")).read().splitlines()
+tune_stmts = ["\n".join(src[i:i + 3]) for i, l in enumerate(src) if re.search(r"\btune\(model, ctx", l)]
+with_fp = sum(1 for s in tune_stmts if "fit_params" in s)
+check(with_fp >= 4, f"tune(model, ctx calls carrying fit_params: {with_fp} (the two plugin_for_partial_offload calls and the two oom retunes; the main plan ones pass it via **kw/**fkw)")
 
 # AUD-031 / AUD-038: plan.py takes --vram-gib 0 as a value (not "not given": a fake nvidia-smi that reports 24 GB free must be ignored) and a header with
 # head_count 0 ends with a message instead of a ZeroDivisionError traceback; gguf_plan.kv_bytes answers None for it

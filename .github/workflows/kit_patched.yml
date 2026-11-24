@@ -47,6 +47,7 @@ jobs:
           z=dist/moe-cache-v0.0.0-ci-windows-x64.zip
           unzip -p "$z" "moe-cache-v0.0.0-ci-windows-x64/llama/PATCHES-moe-cache.txt" | tr -d '\r' | grep -Fx "llama.cpp b12651 + moe-cache patches $(cd patches/llama.cpp && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -) built in, all off" || { echo "FAIL: the kit's llama has no patched-build note"; exit 1; }
           unzip -l "$z" | grep -E 'llama/(llama-server\.exe|ggml-vulkan\.dll)' | wc -l | grep -qx 2 || { echo "FAIL: llama-server.exe / ggml-vulkan.dll missing"; exit 1; }
+          unzip -l "$z" | grep -q 'llama/llama-fit-params\.exe' || { echo "FAIL: llama-fit-params.exe missing from the kit"; exit 1; }
           unzip -l "$z" | grep -q 'ggml-moe-cache-api4.dll' || { echo "FAIL: no api4 DLL in the kit"; exit 1; }
           sha256sum "$z"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
