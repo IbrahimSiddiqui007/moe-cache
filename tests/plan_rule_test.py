@@ -32,6 +32,18 @@ check(gp.parse_gpu_process_counters(cl, 42) == (1024.0, 2.0) and gp.parse_gpu_pr
 check(gp.start_gpu_mem_log(1, print, False, {}) is None, "GPU memory log is off unless MOE_CACHE_GPU_MEM_LOG is set")
 os.environ.pop("MOE_CACHE_PLAN_RULE", None)
 check(not gp.plan_rule_on(), "plan rule is off by default")
+check(gp.plan_rule_active("/x/llama-fit-params") is False, "plan_rule_active: off by default even when llama-fit-params is found (LAUNCHER-1236)")
+_saved_default = gp.PLAN_RULE_DEFAULT_ON
+gp.PLAN_RULE_DEFAULT_ON = True
+check(gp.plan_rule_active("/x/f") is True, "plan_rule_active: default on with llama-fit-params when PLAN_RULE_DEFAULT_ON")
+check(gp.plan_rule_active(None) is False, "plan_rule_active: default on without llama-fit-params stays off")
+os.environ["MOE_CACHE_PLAN_RULE"] = "0"
+check(gp.plan_rule_active("/x/f") is False, "MOE_CACHE_PLAN_RULE=0 forces the old table even with the default on")
+gp.PLAN_RULE_DEFAULT_ON = _saved_default
+os.environ["MOE_CACHE_PLAN_RULE"] = "1"
+check(gp.plan_rule_active(None) is True, "MOE_CACHE_PLAN_RULE=1 turns the rule on even without llama-fit-params")
+os.environ.pop("MOE_CACHE_PLAN_RULE", None)
+check("2.5 %" in gp.plan_table_lines([], 8192)[-1], "plan_table_lines footer names the decode cost per layer (2.5 %)")
 
 # AUD-031 / AUD-038: plan.py takes --vram-gib 0 as a value (not "not given": a fake nvidia-smi that reports 24 GB free must be ignored) and a header with
 # head_count 0 ends with a message instead of a ZeroDivisionError traceback; gguf_plan.kv_bytes answers None for it

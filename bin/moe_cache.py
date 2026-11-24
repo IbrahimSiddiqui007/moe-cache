@@ -3468,10 +3468,11 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             free, kw, desk_kw, use_room = inp["free"], inp["kw"], inp["desk_kw"], inp["use_room"]
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
-            from gguf_plan import plan_rule_on
-            if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
-                from gguf_plan import find_fit_params, plan_table, plan_table_lines
-                kw["fit_params"] = find_fit_params(ls)
+            from gguf_plan import plan_rule_active, find_fit_params
+            fp = find_fit_params(ls)
+            if plan_rule_active(fp):          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
+                from gguf_plan import plan_table, plan_table_lines
+                kw["fit_params"] = fp
                 say("moe-cache: plan rule: compute-buffer reserve " + ("measured with " + kw["fit_params"] if kw["fit_params"] else "from the formula (no llama-fit-params found)"))
                 if a.dry_run and free:
                     for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):

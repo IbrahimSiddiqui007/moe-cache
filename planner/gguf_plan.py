@@ -819,6 +819,16 @@ def plan_rule_on():
     return os.environ.get("MOE_CACHE_PLAN_RULE") not in (None, "", "0")
 
 
+PLAN_RULE_DEFAULT_ON = False   # when True the plan rule (measured compute buffer via llama-fit-params) is used by default when llama-fit-params is found; MOE_CACHE_PLAN_RULE=0 forces the old table; PC pair decides, LAUNCHER-1236
+
+
+def plan_rule_active(fit_params=None):
+    """LAUNCHER-1236: whether the plan rule decides the reserve: MOE_CACHE_PLAN_RULE=0 forces the old table, =1 turns it on, else the default (and llama-fit-params must be found)."""
+    if os.environ.get("MOE_CACHE_PLAN_RULE") == "0":
+        return False
+    return plan_rule_on() or bool(PLAN_RULE_DEFAULT_ON and fit_params)
+
+
 def formula_buffer_mib(ctx, ub):
     """Compute buffer (MiB) by formula, non-decreasing in ctx and ub: least squares through the 11 measured Flash-Next points (a + b ub + c ub ctx + d ctx,
     ctx in units of 64k) times 1.3, which is the largest ratio of a measured value to the fit. Not model specific: llama-fit-params is the real answer."""
@@ -1021,9 +1031,12 @@ def rule_block_mib(path, lay, ub):
     return (lay["expert_bytes_per_layer"] + (35 + 256) * 1048576 + per_tok * ub) / 1048576 if lay["expert_bytes_per_layer"] else 0.0
 
 
+DECODE_PCT_PER_LAYER = 2.5    # decode speed lost per expert layer moved to the CPU; display-only, read by plan_table(); a guess until PC pair d1 (ncmoe 3 vs 7) decides, PC records suggest ~4
+
+
 def plan_table(path, ctx=8192, free=None, kv_q8=False, reserve_gb=0.5, fit_params=None, ubs=PLAN_UBS):
     """One row per micro-batch candidate under the rule, for the launcher's --dry-run: reserve, block room, layers on the GPU and what that costs.
-    decode_pct: decode speed against the candidate with the most GPU layers at ~2.5 % per layer (scout round 2: 1.5-4 %, a GUESS until the 2 x 2 test).
+    decode_pct: decode speed against the candidate with the most GPU layers, DECODE_PCT_PER_LAYER % per layer (scout round 2: 1.5-4 %, a GUESS until PC pair d1 (ncmoe 3 vs 7) decides).
     prompt_gain: the table's measured prompt speed-up against 512 (6k-token prompt), None above 2048 where nothing is measured."""
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
@@ -1042,7 +1055,7 @@ def plan_table(path, ctx=8192, free=None, kv_q8=False, reserve_gb=0.5, fit_param
                      "n_cpu_moe": lay["n_layers"] - gl, "prompt_gain": _PROMPT_GAIN.get(u)})
     top = max(r["gpu_layers"] for r in rows)
     for r in rows:
-        r["decode_pct"] = round(100 - 2.5 * (top - r["gpu_layers"]), 1)
+        r["decode_pct"] = round(100 - DECODE_PCT_PER_LAYER * (top - r["gpu_layers"]), 1)
     return rows
 
 
@@ -1053,7 +1066,7 @@ def plan_table_lines(rows, ctx):
         pg = f"{r['prompt_gain']:.2f}x" if r["prompt_gain"] else "not measured"
         out.append(f"moe-cache:   {r['ub']:>4}  {r['reserve_mib']:>11}  {r['old_reserve_mib']:>5}  {r['source']:<16}  {r['block_mib']:>9}  {r['gpu_layers']:>10}  {r['n_cpu_moe']:>11}  "
                    f"{r['decode_pct']:>19.1f} %  {pg}")
-    out.append("moe-cache:   decode column: ~2.5 % per layer moved to the CPU (a guess, 1.5-4 %); the prompt column is the table's 6k-token figure, long prompts differ")
+    out.append(f"moe-cache:   decode column: ~{DECODE_PCT_PER_LAYER} % per layer moved to the CPU (a guess, 1.5-4 %); the prompt column is the table's 6k-token figure, long prompts differ")
     return out
 
 
@@ -1140,7 +1153,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             note("mtp_draft_mib", draft / MiB, "constant", "MTP's draft context on the GPU (one model on our PC); no load with MTP on was recorded here")
     free = free - gap - draft
 
-    rule = plan_rule_on()
+    rule = plan_rule_active(fit_params)
     if rule and fit_params:
         prefetch_fit_params(fit_params, path, ctx, [u for u in PLAN_UBS if u <= max(ub or 0, 2048)] + ([ub] if ub else []), kv_q8)
 
