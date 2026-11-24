@@ -365,7 +365,7 @@
         }
         if (cache_on && plat::view_drop_stats().calls.load() > 0) {      // CACHE-972: the file-view drop (Linux: MOE_CACHE_LINUX_VIEW_DROP=pageout or the default cold hint)
             const char * m = getenv("MOE_CACHE_LINUX_VIEW_DROP");
-            fprintf(stderr, "moe-cache: file-view drops: %llu calls, %.2f GiB given back (mode %s, %llu madvise calls refused by the kernel)\n", (unsigned long long) plat::view_drop_stats().calls.load(),
+            fprintf(stderr, "moe-cache: file-view drops: %llu calls, %.2f GiB of views asked to drop (mode %s, %llu madvise calls refused by the kernel)\n", (unsigned long long) plat::view_drop_stats().calls.load(),
                     plat::view_drop_stats().bytes.load() / 1073741824.0, m && strcmp(m, "pageout") == 0 ? "pageout" : "cold", (unsigned long long) plat::view_drop_stats().failed.load());
         }
         if (cache_on && !stats && auto_mode) {      // LAUNCHER-1281: always printed (not only with MOE_CACHE_STATS), so a growth run on the file-view path (LAUNCHER-1279) can be read from the plain log
