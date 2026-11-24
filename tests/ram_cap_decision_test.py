@@ -88,15 +88,29 @@ K = mc.live_keep_decision
 check(abs(K(31.1 * GIB) - 4.0) < 1e-9 and abs(K(64 * GIB) - 8.0) < 1e-9, "live keep = the start reserve: 4 GiB at 31 GiB, 8 GiB at 64 GiB")
 check(K(31.1 * GIB, stock=True) is None and K(31.1 * GIB, exact=True) is None and K(31.1 * GIB, env_keep="6") is None and K(31.1 * GIB, off="0") is None and K(None) is None,
       "live keep off: stock, --exact, the user's own value, MOE_CACHE_LIVE_FOLLOW=0, no RAM figure")
+check(K(31.1 * GIB, windows=True) is None and K(31.1 * GIB, windows=True, off="0") is None and abs(K(31.1 * GIB, windows=True, off="1") - 4.0) < 1e-9
+      and abs(K(31.1 * GIB, windows=False) - 4.0) < 1e-9 and K(31.1 * GIB, windows=True, off="1", stock=True) is None,
+      "0.3.9: Windows live follow is OFF by default, MOE_CACHE_LIVE_FOLLOW=1 turns it on, Linux unchanged")
 import contextlib, io
 class M2(M):
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib)], "preload"
     def mem_cap(self): return TOT - 4 * GIB
-os.environ.pop("MOE_CACHE_AVAIL_KEEP_GIB", None)
+os.environ.pop("MOE_CACHE_AVAIL_KEEP_GIB", None); os.environ.pop("MOE_CACHE_LIVE_FOLLOW", None)
 out = io.StringIO()
 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
     envd = dict(mc.memory_env_stage(a, "llama-server", "lib.so", "m.gguf", "p", False, "off", M2(17.4 * GIB, True))[3])
-check(envd.get("MOE_CACHE_AVAIL_KEEP_GIB") == "4.000" and "live RAM follow" in out.getvalue(), "memory_env_stage passes MOE_CACHE_AVAIL_KEEP_GIB and prints the plan line")
+os.environ.pop("MOE_CACHE_LIVE_FOLLOW", None)
+check("MOE_CACHE_AVAIL_KEEP_GIB" not in envd and "live RAM follow: off (default on Windows" in out.getvalue(), "Windows default: no MOE_CACHE_AVAIL_KEEP_GIB, the plan line says off and names the switch")
+os.environ["MOE_CACHE_LIVE_FOLLOW"] = "1"
+out = io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+    envd = dict(mc.memory_env_stage(a, "llama-server", "lib.so", "m.gguf", "p", False, "off", M2(17.4 * GIB, True))[3])
+check(envd.get("MOE_CACHE_AVAIL_KEEP_GIB") == "4.000" and "live RAM follow" in out.getvalue(), "Windows with MOE_CACHE_LIVE_FOLLOW=1: MOE_CACHE_AVAIL_KEEP_GIB is passed and the plan line is printed")
+os.environ.pop("MOE_CACHE_LIVE_FOLLOW", None)
+out = io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+    envl = dict(mc.memory_env_stage(a, "llama-server", "lib.so", "m.gguf", "p", False, "off", M2(17.4 * GIB, False))[3])
+check(envl.get("MOE_CACHE_AVAIL_KEEP_GIB") == "4.000", "Linux default unchanged: MOE_CACHE_AVAIL_KEEP_GIB is set")
 ax2, _, _ = mc.parse_server(["m.gguf", "--no-pin", "--exact"])
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     envx = dict(mc.memory_env_stage(ax2, "llama-server", "lib.so", "m.gguf", "p", False, "off", M2(17.4 * GIB, True))[3])

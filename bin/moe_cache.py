@@ -4208,10 +4208,13 @@ def ram_cap_decision(avail, total, *, windows, ram_flag=None, env_ram=None, stoc
     return {"gib": gib, "avail": avail, "keep": keep, "stream": stream, "source": source, "why": why}
 
 
-def live_keep_decision(total, *, stock=False, exact=False, env_keep=None, off=None):
+def live_keep_decision(total, *, stock=False, exact=False, env_keep=None, off=None, windows=False):
     """RAM-LIVE: GiB of the system's available RAM the plugin keeps free WHILE it runs (it gives experts back under it and takes them back slowly above it); None when it is
-    off: stock (no plugin), --exact (as before), the user's own MOE_CACHE_AVAIL_KEEP_GIB (it passes through untouched), MOE_CACHE_LIVE_FOLLOW=0, no RAM figure. Pure."""
+    off: stock (no plugin), --exact (as before), the user's own MOE_CACHE_AVAIL_KEEP_GIB (it passes through untouched), MOE_CACHE_LIVE_FOLLOW=0, no RAM figure.
+    0.3.9 (owner 2026-11-24, RELEASE-1287): on Windows it is OFF by default (as in v0.3.8) and only MOE_CACHE_LIVE_FOLLOW=1 (or on / yes) turns it on; Linux is unchanged. Pure."""
     if stock or exact or env_keep or not total or off in ("0", "off", "no"):
+        return None
+    if windows and off not in ("1", "on", "yes"):
         return None
     return ram_keep_bytes(total) / 2**30
 
@@ -4273,9 +4276,12 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
             say("moe-cache: warning: very little RAM is available for the expert cache (under 2 GiB): the server will be slow; close programs, or pass --ram GB to give it more", err=True)
     try:
         lk = live_keep_decision(machine.mem_total(), stock=stock, exact=getattr(a, "exact", False), env_keep=os.environ.get("MOE_CACHE_AVAIL_KEEP_GIB"),
-                                off=os.environ.get("MOE_CACHE_LIVE_FOLLOW"))
+                                off=os.environ.get("MOE_CACHE_LIVE_FOLLOW"), windows=bool(getattr(machine, "windows", False)))
     except Exception:
         lk = None
+    if (not lk and getattr(machine, "windows", False) and not stock and not getattr(a, "exact", False) and not os.environ.get("MOE_CACHE_AVAIL_KEEP_GIB")
+            and os.environ.get("MOE_CACHE_LIVE_FOLLOW") not in ("0", "off", "no")):       # R19: the plan says where the pick comes from
+        say("moe-cache: live RAM follow: off (default on Windows; the cache keeps the size it was planned with); MOE_CACHE_LIVE_FOLLOW=1 turns it on")
     if lk:
         env.append(("MOE_CACHE_AVAIL_KEEP_GIB", f"{lk:.3f}"))
         if live_follow_off_path(machine, stock):
@@ -4283,7 +4289,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
                 "MOE_CACHE_LINUX_VIEW=0 uses private memory, where the cache follows the system's available RAM; the plugin's own line says which applies")
         else:
             say(f"moe-cache: live RAM follow: while the server runs the cache gives experts back when the system's available RAM falls under {lk:.1f} GiB and takes them back slowly above it "
-                "(about 1 GiB over the line, 256 MiB a second); it can only give back the cache's own memory; MOE_CACHE_LIVE_FOLLOW=0 turns it off")
+                "(about 1 GiB over the line, 256 MiB a second); it can only give back the cache's own memory; MOE_CACHE_LIVE_FOLLOW=0 turns it off" + ("" if not getattr(machine, "windows", False) else " (switched on here by MOE_CACHE_LIVE_FOLLOW=1)"))
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
