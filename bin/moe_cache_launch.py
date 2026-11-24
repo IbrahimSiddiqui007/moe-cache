@@ -5,6 +5,7 @@ agents found on the PC. Every step reuses what exists (pick, check's facts, serv
 
   moe-cache launch                         asks; Enter takes the suggestion at each question
   moe-cache launch --yes --model PATH      no questions: start that model (chat); never downloads
+  moe-cache launch claude|opencode|codex    start that agent against the running server; the key only in its environment, no config file
   moe-cache launch --yes --agent opencode  agent mode with the recommended model if it is on this PC, then connect OpenCode
 
 Standard library only. The decisions are plain functions of the answers and of `Deps` (the machine facts, pick's recommendation, running things),
@@ -68,6 +69,13 @@ class Deps:
 
     def which(self, name):
         return shutil.which(name)
+
+    def run_agent(self, cmd, env):
+        """Runs the agent in the foreground with `env` added to a copy of our environment; returns its exit code. Nothing is written anywhere."""
+        try:
+            return subprocess.call(cmd, env=dict(os.environ, **env))
+        except KeyboardInterrupt:
+            return 130
 
     def download(self, rec):
         """Runs the download of recommendation `rec` (hf, then the link step if the model has one). Returns 0 or an error text."""
@@ -330,7 +338,39 @@ def parse(argv):
     return a
 
 
+def launch_agent(argv, deps):
+    """AGENTS-865: `moe-cache launch claude|opencode|codex [--url URL] [--api-key KEY] [-- agent arguments]`: start the agent against the running server with the
+    API key ONLY in the child's environment. No config file is written, no `connect --write`; the agent's own settings stay as they are."""
+    say = deps.say
+    ap = argparse.ArgumentParser(prog="moe_cache.py launch " + argv[0], allow_abbrev=False,
+                                 description="start the agent against the running server; the API key goes only into the agent's environment, no config file is written. Arguments after -- go to the agent.")
+    ap.add_argument("--url", default=None, help="the server (default: the launcher's default, http://127.0.0.1:8080)")
+    ap.add_argument("--api-key", default=None, help="the server's API key (default: LLAMA_API_KEY, or the stored key for a server this launcher started)")
+    a, rest = ap.parse_known_args(argv[1:])
+    if rest and rest[0] == "--":
+        rest = rest[1:]
+    agent = argv[0]
+    if not deps.which(agent):
+        say(f"{agent} is not on PATH; install it first (nothing was changed).")
+        return 1
+    url = a.url or mc.default_agent_url()
+    key = mc.key_for(url, a.api_key or mc.ambient_key(url), mc.launcher_owns(url))
+    name, ctx = mc.server_info(url, key)
+    if not name:
+        say(f"no llama-server answers at {url} (or it refuses the key). Start one with `{command_word()} launch --agent` or `{command_word()} server --agent`; nothing was changed.")
+        return 1
+    ctx = ctx or 65536
+    names = [name] + [n for n in mc.server_models(url, key) if n != name]
+    args, env = mc.agent_run_spec(agent, url, names, ctx, key)
+    if ctx < 64000:
+        say(f"moe-cache: warning: the server's context is {ctx}; coding agents want 64k or more (restart with --agent)")
+    say(f"starting {agent} against {name} at {url} (context {ctx}); no config file is written" + ("; the API key is in its environment only" if key else ""))
+    return deps.run_agent([agent] + args + rest, env)
+
+
 def launch(argv, deps=None):
+    if argv and argv[0] in mc.RUN_AGENTS:
+        return launch_agent(argv, deps or Deps())
     a = parse(argv)
     deps = deps or Deps()
     say = deps.say
@@ -529,15 +569,15 @@ def launch(argv, deps=None):
         if a.agent and a.agent != "all" and a.agent not in found:
             say(f"     {a.agent} is not installed on this PC; skipped.")
         for x in want:
+            if x == "claude":     # AGENTS-865: no settings.local.json with the key in the project folder; `launch claude` puts it in the child's environment only
+                continue
             try:
                 deps.connect([x, "--url", url, "--write"])
             except (SystemExit, Exception) as e:       # audit row 28: a write error (read-only config, bad JSON) is a message, not a traceback after the server is up
                 say(f"     could not connect {x}: {e}")
-        if "claude" in want:       # AUD-083: Claude Code 2.1.317 ignored ANTHROPIC_BASE_URL from settings.local.json (went to Anthropic, 401); the exported lines work
-            say("     Claude Code: start it from a shell where these are set (the settings file alone was not enough in the version we tested, docs/AGENTS.md):\n"
-                f"       bash/zsh:    export ANTHROPIC_BASE_URL={url} ANTHROPIC_AUTH_TOKEN=none\n"
-                f"       PowerShell:  $env:ANTHROPIC_BASE_URL=\"{url}\"; $env:ANTHROPIC_AUTH_TOKEN=\"none\"\n"
-                f"     (`{cw} connect claude --url {url}` prints the exact lines for your key)")
+        if "claude" in want:
+            say(f"     Claude Code: nothing was written (its settings file would hold the API key). In another terminal start it with:  {cw} launch claude --url {url}\n"
+                "     (the key goes only into Claude Code's own environment)")
         if not want:
             say(f"     not connected. Later:  {cw} connect NAME --write")
 
