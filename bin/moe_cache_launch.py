@@ -350,7 +350,8 @@ def launch_agent(argv, deps):
     if rest and rest[0] == "--":
         rest = rest[1:]
     agent = argv[0]
-    if not deps.which(agent):
+    exe = deps.which(agent)       # the full path: on Windows npm agents are .cmd shims that a bare name does not find
+    if not exe:
         say(f"{agent} is not on PATH; install it first (nothing was changed).")
         return 1
     url = a.url or mc.default_agent_url()
@@ -365,7 +366,7 @@ def launch_agent(argv, deps):
     if ctx < 64000:
         say(f"moe-cache: warning: the server's context is {ctx}; coding agents want 64k or more (restart with --agent)")
     say(f"starting {agent} against {name} at {url} (context {ctx}); no config file is written" + ("; the API key is in its environment only" if key else ""))
-    return deps.run_agent([agent] + args + rest, env)
+    return deps.run_agent([exe] + args + rest, env)
 
 
 def launch(argv, deps=None):

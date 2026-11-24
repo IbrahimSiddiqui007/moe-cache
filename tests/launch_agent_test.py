@@ -107,4 +107,17 @@ check(rc == 1 and "not on PATH" in out, "agent not installed: message, exit 1")
 mc.server_info = lambda url, key=None: (None, None)
 rc, out = run("claude")
 check(rc == 1 and "no llama-server answers" in out, "no server: message, exit 1")
+
+# Windows npm shims (.cmd): the agent is started by the path `which` found, not by the bare name
+seen = []
+real_call = ml.subprocess.call
+ml.subprocess.call = lambda cmd, env=None: (seen.append(cmd[0]), 0)[1]
+class FakeDeps:
+    say = staticmethod(lambda *a: None)
+    which = staticmethod(lambda n: "C:\\npm\\" + n + ".cmd")
+    run_agent = staticmethod(lambda cmd, env: (seen.append(cmd[0]), 0)[1])
+mc.server_info = lambda url, key=None: ("fake-moe", 65536)
+rc = ml.launch_agent(["opencode"], FakeDeps)
+check(rc == 0 and seen == ["C:\\npm\\opencode.cmd"], f"agent is run by the which() path, not the bare name ({seen})")
+ml.subprocess.call = real_call
 print("FAILED: " + "; ".join(fails) if fails else "all ok"); sys.exit(1 if fails else 0)
