@@ -80,7 +80,9 @@ foreach ($kind in $kinds) {
   if (-not $ready) { Log "run $k ($kind): the server did not become ready (see $se)"; Stop-Tree $p; exit 1 }
   if ($kind -eq "mc") {
     $cm = @(Get-Content $so, $se -ErrorAction SilentlyContinue | Where-Object { $_ -match "moe-cache: cache mode" })
-    if ($cm.Count -eq 0) { Log "run $k (mc): no 'moe-cache: cache mode' line in the server log (plugin not active): stop"; Stop-Tree $p; exit 1 }
+    # 2026-11-24 (030c): a plugin-off arm (MOE_CACHE_DISABLE=1) never prints the cache-mode line; it runs and is logged as plugin off
+    if ($env:MOE_CACHE_DISABLE -eq "1") { Log "run $k (mc): MOE_CACHE_DISABLE=1, plugin off on purpose (no cache-mode check)" }
+    elseif ($cm.Count -eq 0) { Log "run $k (mc): no 'moe-cache: cache mode' line in the server log (plugin not active): stop"; Stop-Tree $p; exit 1 }
   }
   Start-Sleep 15
   $quiet = 0; $g0 = Get-Date; $load = 0
