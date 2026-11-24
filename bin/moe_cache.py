@@ -6513,6 +6513,39 @@ def claude_env(url, model, api_key):
     return env
 
 
+RUN_AGENTS = ("claude", "opencode", "codex")
+RUN_KEY_VAR = "MOE_CACHE_API_KEY"
+
+
+def agent_run_spec(agent, url, names, ctx, api_key):
+    """AGENTS-865: (extra command-line arguments, environment variables) that start `agent` against the server at `url` with NO config file written: everything
+    lives in the child's environment (and in `-c` overrides that hold no key), so the key never reaches a file or a command line. names = the served model names, first = the default.
+      claude   : claude_env (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ...)
+      opencode : OPENCODE_CONFIG_CONTENT = the same provider entry `connect opencode --write` would put in opencode.json (OpenCode merges this variable over its files)
+      codex    : -c overrides for the moe-cache provider; the key is named by env_key and read from MOE_CACHE_API_KEY
+    From the agents' own docs, same shapes as the --write paths; not run against the real agents by this code's tests (they use a fake agent)."""
+    name = names[0]
+    base = url.rstrip("/") + "/v1"
+    if agent == "claude":
+        return [], claude_env(url, name, api_key)
+    if agent == "opencode":
+        entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache",
+                 "options": dict({"baseURL": base}, **({"apiKey": api_key} if api_key else {}), **({"headerTimeout": opencode_header_timeout(ctx)} if opencode_header_timeout(ctx) else {})),
+                 "models": {n: {"name": n, "tool_call": True, "limit": {"context": ctx, "output": agent_output(ctx)}} for n in names}}
+        cfg = {"$schema": "https://opencode.ai/config.json", "provider": {"moe-cache": entry}, "model": f"moe-cache/{name}"}
+        return [], {"OPENCODE_CONFIG_CONTENT": json.dumps(cfg)}
+    if agent == "codex":
+        q = json.dumps
+        args = ["-c", f"model={q(name)}", "-c", 'model_provider="moe-cache"', "-c", f"model_context_window={agent_window(ctx)}", "-c", 'web_search="disabled"',
+                "-c", 'model_providers.moe-cache.name="moe-cache"', "-c", f"model_providers.moe-cache.base_url={q(base)}", "-c", 'model_providers.moe-cache.wire_api="responses"']
+        env = {}
+        if api_key:
+            args += ["-c", f"model_providers.moe-cache.env_key={q(RUN_KEY_VAR)}"]
+            env[RUN_KEY_VAR] = api_key
+        return args, env
+    raise ValueError(agent)
+
+
 def claude_snippets(env, ctx, hide_key=False):
     shown = {k: (KEY_HINT if hide_key and k == "ANTHROPIC_AUTH_TOKEN" and v != "none" else v) for k, v in env.items()}
     return "\n".join(["  Claude Code, bash / zsh (this terminal only):"] + [f"    export {k}={json.dumps(v)}" for k, v in shown.items()]

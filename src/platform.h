@@ -4,6 +4,7 @@
 // A reserved range has no memory behind it. "commit" gives pages to the range, "decommit" gives the physical pages back.
 // On Linux commit is a no-op (pages appear when touched) and decommit is madvise(DONTNEED).
 #pragma once
+#include <atomic>
 #include <cerrno>
 #include "mc_ramguard.h"
 #ifndef _WIN32
@@ -566,6 +567,8 @@ inline bool file_view_load(const char * p, size_t n) {
     return true;
 #endif
 }
+struct view_drop_stats_t { std::atomic<uint64_t> calls{0}, bytes{0}, failed{0}; };
+inline view_drop_stats_t & view_drop_stats() { static view_drop_stats_t v; return v; }
 // take whole pages of a file view out of the working set: they move to the standby list (still in RAM until the system needs the memory)
 inline void file_view_drop(const void * p, size_t n) {
 #ifdef _WIN32
@@ -577,7 +580,11 @@ inline void file_view_drop(const void * p, size_t n) {
     // inactive list before the unmap). MOE_CACHE_LINUX_VIEW_DROP=pageout drops them from the page cache at once instead
     if (n) {
         static const bool pageout = getenv("MOE_CACHE_LINUX_VIEW_DROP") && strcmp(getenv("MOE_CACHE_LINUX_VIEW_DROP"), "pageout") == 0;
-        madvise((void *) p, n, pageout ? MADV_PAGEOUT : MADV_COLD);
+        view_drop_stats().calls++;      // CACHE-972: counted, so a log says whether the page-out ever ran and whether the kernel took it
+        view_drop_stats().bytes += n;
+        if (madvise((void *) p, n, pageout ? MADV_PAGEOUT : MADV_COLD) != 0) {
+            view_drop_stats().failed++;
+        }
         madvise((void *) p, n, MADV_DONTNEED);
     }
 #else
