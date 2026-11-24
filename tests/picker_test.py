@@ -56,11 +56,11 @@ check(any(a["id"] == "flash-next-q2_0" and "faster" in a["why"] for a in recs[(p
 check(recs[("32 GB / 8 GB", "agents")]["untested"] and recs[("32 GB / 8 GB", "agents")]["measured"] == "untested on this class of machine",
       "32/8 agents (Bolt, measured only with a 16 GB GPU): 'untested on this class of machine'")
 check(recs[("32 GB / 8 GB", "chat")]["untested"] and "IQ2_XS" in recs[("32 GB / 8 GB", "chat")]["why"][0], "32/8 chat: untested, names the sibling file that was measured")
-# owner 2026-11-07: IQ3_XXS is the default Flash-Next file again, Q2_0 is the faster option (v0.3.8)
-check(recs[(pc, "chat")]["id"] == "flash-next-iq3_xxs" and recs[(pc, "chat")]["alternatives"][0]["id"] == "flash-next-q2_0" and "faster option" in recs[(pc, "chat")]["alternatives"][0]["why"],
-      "PC chat: IQ3_XXS first, Q2_0 named as the faster option")
-check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next file") and pk.SIBLINGS_WHY["flash-next-q2_0"].startswith("the faster option") and not any("owner 20" in v for v in pk.SIBLINGS_WHY.values()),
-      "the sibling texts say which file is the default and which is the faster option")
+# owner 2026-11-07: IQ3_XXS is the default Flash-Next file again, Q2_0 is the smaller option (v0.3.8)
+check(recs[(pc, "chat")]["id"] == "flash-next-iq3_xxs" and recs[(pc, "chat")]["alternatives"][0]["id"] == "flash-next-q2_0" and "smaller option" in recs[(pc, "chat")]["alternatives"][0]["why"],
+      "PC chat: IQ3_XXS first, Q2_0 named as the smaller option")
+check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next file") and pk.SIBLINGS_WHY["flash-next-q2_0"].startswith("the smaller option") and not any("owner 20" in v for v in pk.SIBLINGS_WHY.values()),
+      "the sibling texts say which file is the default and which is the smaller option")
 check(not any("86.9" in v or "50.7" in v for v in pk.SIBLINGS_WHY.values()), "no unrecorded 2026-11-05 percentages in the sibling texts")
 check(recs[("64 GB / 16 GB", "chat")]["id"] == "flash-next-iq3_xxs" and not recs[("64 GB / 16 GB", "chat")]["untested"], "64/16 chat: IQ3_XXS with the 16 GB GPU numbers")
 check(not recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["untested"] and "measured" in recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["measured"],

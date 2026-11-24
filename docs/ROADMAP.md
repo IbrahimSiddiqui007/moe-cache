@@ -32,7 +32,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 
 | v1.0 requirement | State |
 |---|---|
-| Linux + Windows | Linux tested. Windows: identity 4/4 on real hardware (MSI Claw bugs fixed; Windows 11 desktop Ryzen 9 7950X + RX 9070 XT, RESULTS 54) and in CI. Clean cold speed runs on the desktop (RESULTS 59-61): faster than stock on every model measured (speed figures follow in v0.3.9.1). **Open: MSI Claw round 3, NVIDIA and Intel GPUs on Windows.** |
+| Linux + Windows | Linux tested. Windows: identity 4/4 on real hardware (MSI Claw bugs fixed; Windows 11 desktop Ryzen 9 7950X + RX 9070 XT, RESULTS 54) and in CI. Clean cold speed runs on the desktop (RESULTS 59-61): speed figures follow in v0.3.9.1. **Open: MSI Claw round 3, NVIDIA and Intel GPUs on Windows.** |
 | NVIDIA, AMD and Intel GPUs each tested | NVIDIA (CUDA, Vulkan), Intel iGPU (Vulkan), AMD iGPU (Vega 8, Linux) and AMD discrete (RX 9070 XT: a user on Linux, issue #1; the developer on Windows, RESULTS 54) tested. |
 | Compatibility list checked automatically per model | list exists (docs/COMPATIBILITY.md); an automatic per-model check is not built yet (the old `bench/run_matrix.py` lives in the unmaintained [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) repository); not run by CI (needs models). |
 | Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; llama.cpp 7fe450e19 (API 2) and 23b0202a1 (API 3) are supported, each with its own plugin build. **Open: re-run the full identity matrix on 23b0202a1 (5 models done), run GLM-5.3-Flash on it (needs a model file), automate both builds in CI.** |

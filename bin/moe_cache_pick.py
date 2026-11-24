@@ -37,11 +37,11 @@ SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flas
 # Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: faster with moe-cache, figures follow in v0.3.9.1; the decode numbers of
 # those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record not published;
 # IQ3_S is itself a 3-bit file: no Flash-Next file was measured against full precision)
-Q2_FAST = "reads prompts and decodes faster than IQ3_XXS in a 65k conversation (speed figures follow in v0.3.9.1)"
+Q2_FAST = "can be faster than IQ3_XXS; measured numbers follow in v0.3.9.1"
 Q2_LESS = ("a little less exact (same top token as the 3-bit IQ3_S file, not full precision: 73.3 % against 76.5 % for IQ3_XXS; one run 2026-11-05, record not published), "
            "191/202 tasks against 193")
 SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); slower than Q2_0 at long context",
-                "flash-next-q2_0": f"the faster option 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
+                "flash-next-q2_0": f"the smaller option, 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
 
 
 # ---- this machine ----
@@ -470,14 +470,14 @@ def recommend(spec, use, model=None):
     elif use == "chat":
         R += [("glm-5.3", fits("glm-5.3"), 32768, None, "fits in your RAM: the biggest candidate, stock llama.cpp"),
               # IQ3_XXS is the default Flash-Next file again (owner 2026-11-07: most people use it, and the measured quality loss of Q2_0 is small but the name puts people off);
-              # Q2_0 is the faster option (earlier default: IQ3_XXS 2026-10-30, Q2_0 2026-11-05)
+              # Q2_0 is the smaller option (earlier default: IQ3_XXS 2026-10-30, Q2_0 2026-11-05)
               ("flash-next-iq3_xxs", cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs"), 32768,
                f"{PC}: 193/202 tasks (the most); speed figures follow in v0.3.9.1",
                "the default Flash-Next file: 3-bit, reads best and the most tasks right (top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0, measured 2026-11-05, record pending); "
-               "bigger than your RAM, moe-cache keeps the hot experts in RAM. Q2_0 is the faster option (9 GB smaller, " + Q2_FAST + ")"),
+               "bigger than your RAM, moe-cache keeps the hot experts in RAM. Q2_0 is the smaller option (9 GB smaller, " + Q2_FAST + ")"),
               ("flash-next-q2_0", cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0"), 32768,
                f"{PC}: 191/202 tasks (2026-10-28); speed figures follow in v0.3.9.1",
-               "the faster option: 9 GB smaller than IQ3_XXS, " + Q2_FAST + "; " + Q2_LESS),
+               "the smaller option: 9 GB smaller than IQ3_XXS, " + Q2_FAST + "; " + Q2_LESS),
               ("flash-next-q2_0", cap >= 24 and vram >= 6 and drive_ok("flash-next-q2_0"), 32768, None,
                f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size (speed figure follows in v0.3.9.1)"),
               ("qwen3.5-122b", cap >= 24 and vram >= 6 and drive_ok("qwen3.5-122b"), 32768,
@@ -601,7 +601,7 @@ def recommend(spec, use, model=None):
     if use == "agents" and k != "flash-next-iq3_xxs" and cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs") and placeable("flash-next-iq3_xxs"):
         alts.append({"id": "flash-next-iq3_xxs", "name": MODELS["flash-next-iq3_xxs"]["name"],
                      "why": f"the default Flash-Next file (3-bit, 193/202 tasks), moe-cache; long context measured with Q2_0 on {PC}: "
-                            "speed figures follow in v0.3.9.1 (2026-10-28); Q2_0 is the faster option (" + Q2_FAST + ")",
+                            "speed figures follow in v0.3.9.1 (2026-10-28); Q2_0 is the smaller option (" + Q2_FAST + ")",
                      "fit": fit(spec, "flash-next-iq3_xxs", 65536, use, local)})
     if nothing:
         msg = (f"Nothing fits this machine well: the server may use {cap:.0f} GB of RAM and {vram:.0f} GiB of VRAM, and the smallest model we ever ran ({m['name']}, "

@@ -99,11 +99,11 @@ The `--fast` levels (all optional; each one changes the output a little on purpo
 |---|---|---|
 | (none) | the default: long-prompt mode from 32k context when the card has room, q8_0 KV cache from 128k, MTP in agent mode where the (MoE) model has it (dense models: only with `--mtp`); not byte-identical to plain llama.cpp | the default (the control page's **Default** mode passes no flag); `--exact` gives plain llama.cpp's tokens (f16 KV, no long-prompt mode, no MTP) |
 | `--fast=kv` | only the q8_0 KV cache (half the KV memory), every expert is computed | KL 0.005-0.012 against stock |
-| `--fast` | also skips a low-ranked expert that is not in RAM instead of reading it from the SSD | faster when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock |
+| `--fast` | also skips a low-ranked expert that is not in RAM instead of reading it from the SSD | meant for models much bigger than RAM; speed figures follow in v0.3.9.1; about 1 top token in 40-50 differs from stock |
 | `--fast=fewer` | `--fast`, and the 2 lowest-ranked experts of every token are never computed on the CPU-held layers | opt-in, new |
-| `--fast=2` | up to 4 low-ranked picks may be skipped (at least half are kept), for memory much smaller than the model | Flash-Next at 12 GB: faster than `--fast`; KL 0.022; no gain at 24 GB |
+| `--fast=2` | up to 4 low-ranked picks may be skipped (at least half are kept), for memory much smaller than the model | for Flash-Next at 12 GB; KL 0.022; speed figures follow in v0.3.9.1 |
 
-## 4. Make it faster for you (optional)
+## 4. Tuning for your machine (optional)
 
 The first run learns which experts your prompts use and saves a profile in `~/.cache/moe-cache/`. Later runs warm-start from it.
 To prepare a profile before you start (or use your own prompts):
@@ -119,7 +119,7 @@ Run `python3 bin/moe_cache.py bench-report MODEL.gguf` (or press **Share my numb
 ## What speed to expect
 
 Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (llama.cpp's own GPU expert cache, `--moe-cache-mib`, is optional there; it was slower on our Vulkan PC, RESULTS 59): moe-cache adds nothing there on the 16 GB PC. Since v0.3.8 the launcher runs a model that fits in RAM but keeps expert layers on the CPU through the plugin (`--stock` opts out): laptop with an 8 GB card, release code, paired 40k-token chat: not faster (decode and prompt a little lower; an earlier figure was not reproduced); 16 GB PC forced through the plugin: pair pending on this kit; Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden).
-If it does not fit, we measured it faster than stock on Linux and on the Windows PC; speed figures follow in v0.3.9.1 ([RESULTS.md](results-archive/RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) for Linux; the README has a short table). Example: a 48 GB model in a 20 GB memory limit ran far faster than stock.
+If it does not fit, moe-cache can be faster than stock; measured numbers follow in v0.3.9.1 ([RESULTS.md](results-archive/RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) for Linux; the README has a short table).
 
 ## Which llama-server do I use?
 
