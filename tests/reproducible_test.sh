@@ -20,4 +20,8 @@ for d in a b; do tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$
 [ "$(sha256sum < "$T/a.tgz")" = "$(sha256sum < "$T/b.tgz")" ] && echo "  ok   tar.gz: same bytes for different file times" || { echo "  FAIL tar.gz differs"; exit 1; }
 tar -tvzf "$T/a.tgz" | awk '{print $2}' | grep -qv '^0/0$' && { echo "  FAIL tar keeps a user name"; exit 1; } || echo "  ok   tar.gz: owner 0/0 only"
 grep -q 'tools/reproducible_zip.py' tools/make_windows_kit.sh && grep -q -- '--numeric-owner' tools/make_release.sh && grep -q -- 'gzip -n' tools/make_release.sh && grep -q -- '--no-insert-timestamp' build.sh tools/make_windows_kit.sh && echo "  ok   the release scripts use these recipes" || { echo "  FAIL scripts do not use the recipes"; exit 1; }
+# the inner (export) run has no .git: it must get the commit label and the date from the outer run, and refuse without them (0.3.9 draft: empty BUILD_COMMIT, mtime -2^63)
+out="$(env -u MOE_CACHE_BUILD_COMMIT -u SOURCE_DATE_EPOCH MOE_CACHE_RELEASE_EXPORT=1 bash tools/make_release.sh 0.0.1 2>&1)" && { echo "  FAIL inner make_release ran without MOE_CACHE_BUILD_COMMIT"; exit 1; }
+echo "$out" | grep -q "FAIL: MOE_CACHE_BUILD_COMMIT not set" && echo "  ok   inner make_release refuses without the commit label" || { echo "  FAIL inner make_release: unexpected output: $out"; exit 1; }
+grep -q 'MOE_CACHE_BUILD_COMMIT="$(git rev-parse' tools/make_release.sh && grep -q 'SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log' tools/make_release.sh && echo "  ok   outer make_release hands down the commit label and date" || { echo "  FAIL outer make_release does not hand down the label/date"; exit 1; }
 echo "reproducible_test: all passed"
