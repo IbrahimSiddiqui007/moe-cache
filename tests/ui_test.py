@@ -890,7 +890,7 @@ if ui.WINDOWS:
         st, j = preq("/api/busy")
         if j["programs"]:
             break
-    check([p["name"] for p in j["programs"]] == ["EACefSubProcess", "game"] and "23 % faster" in j["programs"][0]["note"] and "not measured" in j["programs"][1]["note"],
+    check([p["name"] for p in j["programs"]] == ["EACefSubProcess", "game"] and "decode and long prompts were faster" in j["programs"][0]["note"] and "not measured" in j["programs"][1]["note"],
           "/api/busy: programs using the GPU, each with what closing it is worth (measured only for the EA app)")
 _pg = open(ui.PAGE, encoding="utf-8").read()
 check('id="busyres"' in _pg and "loadBusy" in _pg and "setInterval(loadBusy" in _pg, "the page has the 'Other programs' list and refreshes it")
