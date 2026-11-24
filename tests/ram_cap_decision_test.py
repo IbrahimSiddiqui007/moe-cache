@@ -95,7 +95,7 @@ import contextlib, io
 class M2(M):
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib)], "preload"
     def mem_cap(self): return TOT - 4 * GIB
-os.environ.pop("MOE_CACHE_AVAIL_KEEP_GIB", None)
+os.environ.pop("MOE_CACHE_AVAIL_KEEP_GIB", None); os.environ.pop("MOE_CACHE_LIVE_FOLLOW", None)
 out = io.StringIO()
 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
     envd = dict(mc.memory_env_stage(a, "llama-server", "lib.so", "m.gguf", "p", False, "off", M2(17.4 * GIB, True))[3])
