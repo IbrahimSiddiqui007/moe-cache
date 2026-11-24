@@ -644,7 +644,7 @@ check("--approx" in _ap and _ap[_ap.index("--approx") + 1] == "careful" and "--e
 check('id="approx"' in _html and "NOT identical" in _html and "approx: $(\"approx\").value" in _html, "QUALITY-970: the control page has the tier choice and says plainly that answers are not identical")
 check("--no-long-prompt" in ui.server_args({"model": "m.gguf", "no_long_prompt": True}) and "--no-long-prompt" not in ui.server_args({"model": "m.gguf"}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
       "Long-prompt mode is the default: --no-long-prompt on the Start command only when unticked (2026-11-08), no --long-prompt")
-check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "reads long prompts about 77 % faster" in _html,
+check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "reads long prompts faster" in _html,
       "the page has the Long-prompt mode toggle, ticked by default, with its one-line explanation, sent with Start and with the plan request, restored from the last start")
 check("--leave-room" in ui.server_args({"model": "m.gguf", "leave_room": True}) and "--leave-room" not in ui.server_args({"model": "m.gguf"}),
       "Leave room for me: --leave-room on the Start command (owner 2026-10-30)")
@@ -1278,7 +1278,7 @@ _dense_real = ui.mc.is_dense_model
 check(_dense_real(small["path"]) is True, "the synthetic test model is dense (header: no expert layers)")
 # LAUNCHER-1133: a dense model: MTP off by default, also in agent mode, and says why; --mtp still turns it on
 _r = ui.mtp_reason(small["path"], None, True, "ls-new")
-check(_r.startswith("MTP off: a dense model") and "26.8 vs 27.8" in _r and "--mtp turns it on" in _r, f"MTP: dense model, agent mode: off by default, says why ({_r})")
+check(_r.startswith("MTP off: a dense model") and "no figure quoted in this release" in _r and "--mtp turns it on" in _r, f"MTP: dense model, agent mode: off by default, says why ({_r})")
 check(ui.mtp_reason(small["path"], None, False, "ls-new").startswith("MTP off: a dense model"), "MTP: dense model, plain server: the same line (no 'faster decode' hint)")
 check(ui.mtp_reason(small["path"], True, True, "ls-new").startswith("MTP on: the model has an MTP head"), "MTP: dense model with --mtp: on")
 ui.mc.is_dense_model = lambda path: False          # the MoE rule is unchanged: the tests below see an MoE model
@@ -1439,7 +1439,7 @@ if node:
     except Exception:
         card = ""; print(out.stdout[-300:], out.stderr[-500:])
     check(card.count("<h5>") >= 1 and "Your machine" in card and all(f"<td>{k}</td>" in card for k in ("RAM", "GPU", "Disk", "CPU", "llama.cpp")), "card: a 'Your machine' table with RAM, GPU, Disk, CPU, llama.cpp")
-    check(len(re.findall(r'<div class="name">', card)) == 1 and 'class="nums"' in card and "decode" in card and "tok/s" in card, "card: the recommendation is one bold name line with its measured numbers")
+    check(len(re.findall(r'<div class="name">', card)) == 1 and 'class="nums"' in card and "tok/s" not in card, "card: the recommendation is one bold name line with its numbers (no speed figures in 0.3.9)")
     check('class="why"' in card and 'class="alts"' in card or jj["recommendations"][0]["alternatives"] == [], "card: a Why line and the alternatives as a list")
     dm = re.search(r"<details>.*</details>", card, re.S)
     check(bool(dm) and "pwarn" in dm.group(0) and "pwarn" not in card[:dm.start()] and 'class="err"' not in card, "card: warnings sit in the collapsed details, in the one warning colour (no red 'err')")
