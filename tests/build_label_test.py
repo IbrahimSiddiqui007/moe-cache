@@ -41,6 +41,8 @@ inner = os.path.join(outer, "kit"); os.makedirs(inner); open(os.path.join(inner,
 snip = "".join(l for l in bs.splitlines(True) if l.startswith(("MC_COMMIT", "[ -n \"$MC_COMMIT", "if [ -n \"$MC_COMMIT", "case \"$MC_COMMIT")))
 got = subprocess.run(["bash", "-c", snip + 'echo "$MC_COMMIT"'], cwd=inner, capture_output=True, text=True).stdout.strip()
 check(got == "abc123456", f"build.sh in a kit inside another repo uses BUILD_COMMIT ({got})")
+io = open(os.path.join(HERE, "src", "mc_state_io.inl")).read()
+check("auto cache at exit: final budget" in io and "cache_on && !stats && auto_mode" in io, "stop-time budget/grow counter is printed without MOE_CACHE_STATS (LAUNCHER-1279 can be read from the plain log)")
 calls = []
 _orig = mc.build_commit; mc.build_commit = lambda *a, **k: calls.append(1) or "abc1234"; mc._VERSION_LABEL = None
 l1, l2 = mc.version_label(), mc.version_label(); mc.build_commit = _orig; mc._VERSION_LABEL = None

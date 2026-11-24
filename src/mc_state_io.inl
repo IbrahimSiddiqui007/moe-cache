@@ -363,6 +363,10 @@
                     (unsigned long long) co, sk + co ? 100.0 * sk / (double) (sk + co) : 0.0, (unsigned long long) exec_ops.load(), ns_cpu / 1e9, ns_total / 1e9,
                     ns_total ? 100.0 * ns_cpu / (double) ns_total : 0.0, sk + co ? "" : " -- NOTHING reached the executor, nothing was skipped");
         }
+        if (cache_on && !stats && auto_mode) {      // LAUNCHER-1281: always printed (not only with MOE_CACHE_STATS), so a growth run on the file-view path (LAUNCHER-1279) can be read from the plain log
+            fprintf(stderr, "moe-cache: auto cache at exit: final budget %.2f GiB, shrinks %llu, grows %llu%s\n", budget / 1073741824.0, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
+                    live_keep ? (", live-follow shrinks " + std::to_string(live_shrinks) + ", grows " + std::to_string(live_grows)).c_str() : "");
+        }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
             if (read_fallbacks) {
