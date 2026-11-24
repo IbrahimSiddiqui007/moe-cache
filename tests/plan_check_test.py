@@ -46,6 +46,13 @@ check(pc.compare(jp, pc.parse_json_plan(with_args(PRE, [], [("MOE_CACHE_LOG", "1
 check(pc.compare(jp, pc.parse_json_plan(PRE, [("GGML_VK_X", "1")]), set())[0] != [], "an arm's own --env words (GGML_VK_*) are compared")
 check(any(x.startswith("fa:") for x in pc.compare({"fa": "on"}, {"fa": "off"}, set())[0]), "fa is a HARD difference")
 
+# fix-batch-1 2026-11-24: plugin off is the declared plan key `plugin` (MOE_CACHE_DISABLE=1 in the arm's env), not a loose env word
+off = pc.parse_json_plan(PRE, [("MOE_CACHE_DISABLE", "1")])
+check(jp["plugin"] == "on" and off["plugin"] == "off" and off["env"] == jp["env"], "MOE_CACHE_DISABLE=1 -> plugin off, and it is not also an env difference")
+check([x.split(":")[0] for x in pc.compare(jp, off, set())[0]] == ["plugin"], "plugin on vs off is a FAIL when not declared")
+check(pc.compare(jp, off, {"plugin"})[0] == [] and any(x.startswith("plugin:") for x in pc.compare(jp, off, {"plugin"})[1]), "declared with --allow plugin: a note")
+check(pc.parse_json_plan(PRE, [("MOE_CACHE_DISABLE", "0")])["plugin"] == "on", "MOE_CACHE_DISABLE=0 is plugin on")
+
 tmp = tempfile.mkdtemp()
 FAKE = ('import sys, os, json\na = sys.argv[1:]\nsep = a.index("--") if "--" in a else len(a)\nhere = os.path.dirname(__file__)\n'
         'if "--dry-run" in a[sep:] or "--plan-json" in a[sep:]:\n    sys.exit(7)       # a flag after the separator goes to llama-server: the real launcher exits 1 (fixtures/plan/wrong_order)\n'

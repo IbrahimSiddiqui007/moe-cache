@@ -11,7 +11,7 @@ With --seed-a/--seed-b (the prepared, tuned caches of a --prep run) the check se
 Exit 0 = same plan (or only allowed differences), 1 = a difference that was not declared, 2 = a launcher dry run failed."""
 import argparse, json, os, re, shutil, subprocess, sys, tempfile
 
-HARD = ["engine", "load_method", "load_mode", "np", "ub", "batch", "kv", "n_cpu_moe", "ngl", "ctx", "device", "fa", "threads", "cpu_mask", "ot", "no_mmap", "mlock", "env"]
+HARD = ["engine", "load_method", "load_mode", "np", "ub", "batch", "kv", "n_cpu_moe", "ngl", "ctx", "device", "fa", "threads", "cpu_mask", "ot", "no_mmap", "mlock", "env", "plugin"]
 SOFT = ["cache_ram", "gpu_cache_gib", "moe_cache_gib"]
 NUM = re.compile(r"^-?\d+(\.\d+)?$")
 # flag spellings -> plan key (the mapping of bin/moe_cache_monitor.py plan_from_args, plus the load flags)
@@ -21,7 +21,7 @@ ALIAS = {"ctk": "ctk", "cache-type-k": "ctk", "ctv": "ctv", "cache-type-v": "ctv
          "dev": "device", "device": "device", "cache-ram": "cache-ram", "cram": "cache-ram", "no-mmap": "no-mmap", "mlock": "mlock", "moe-cache-mib": "moe-cache-mib"}
 BOOL = {"no-mmap", "mlock"}
 ENV_SPEED = re.compile(r"^(GGML_OP_OFFLOAD_MIN_BATCH|GGML_VK_.*|MOE_CACHE_.*)$")
-ENV_SKIP = re.compile(r"LOG|RECORD|TRACE|PROFILE|GGUF|LIB$|DIR$|PATH$|^MOE_CACHE_(SIZE_GIB|RAM_GIB|PRELOAD)$")      # log/record/path settings do not change speed; the sizes follow free memory (soft); PRELOAD is the load method, compared on its own
+ENV_SKIP = re.compile(r"LOG|RECORD|TRACE|PROFILE|GGUF|LIB$|DIR$|PATH$|^MOE_CACHE_(SIZE_GIB|RAM_GIB|PRELOAD|DISABLE)$")      # log/record/path settings do not change speed; the sizes follow free memory (soft); PRELOAD is the load method, compared on its own
 
 
 def parse_flags(line_or_toks):
@@ -58,7 +58,8 @@ def facts(fl, engine, method, env_pairs, has_server, text=""):
     m_ram = sizes.get("MOE_CACHE_SIZE_GIB")
     m_ram = float(m_ram) if m_ram and NUM.match(m_ram) else None
     mib = s("moe-cache-mib")
-    return {"has_server_line": has_server, "engine": engine, "load_method": method if has_server else None, "load_mode": s("load-mode") or ("default" if has_server else None),
+    off = str(dict(env_pairs).get("MOE_CACHE_DISABLE", "")) not in ("", "0")       # fix-batch-1: "plugin off" is the plan key `plugin` (on|off), declared with --plan-diff plugin; not an env word
+    return {"plugin": ("off" if off else "on") if has_server else None, "has_server_line": has_server, "engine": engine, "load_method": method if has_server else None, "load_mode": s("load-mode") or ("default" if has_server else None),
             "np": s("np") or ("default" if has_server else None), "ub": s("ub"), "batch": s("b"),
             "kv": ("%s/%s" % (s("ctk") or "f16", s("ctv") or "f16")) if has_server else None,
             "n_cpu_moe": s("n-cpu-moe"), "ngl": s("ngl"), "ctx": s("c"), "device": s("device") or ("default" if has_server else None), "fa": s("fa"),

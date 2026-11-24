@@ -12,7 +12,8 @@
 #   --order "A,B,B,A"    arms in the order they run         --label-a / --label-b   names in the record (A, B)
 #   --root-a DIR / --root-b DIR   launcher checkout per arm (default: the checkout this script is in); two code versions = two worktrees
 #   --args-a "ARGS" / --args-b "ARGS"   launcher arguments after the model, split on spaces (e.g. "--load-mode none", or "--n-cpu-moe 24 -- --alias x")
-#   --env-a "K=V K=V" / --env-b "K=V"   environment of that arm's launcher (MOE_CACHE_STATS_SIGNAL=1 also gives the per-turn plugin hit rate)
+#   --env-a "K=V K=V" / --env-b "K=V"   environment of that arm's launcher (MOE_CACHE_STATS_SIGNAL=1 also gives the per-turn plugin hit rate).
+#                        Plugin off for one arm = --env-b MOE_CACHE_DISABLE=1 together with --plan-check --plan-diff plugin (the plan key `plugin`, on|off; without the declaration --plan-check stops the run)
 #   --cache-seed DIR     an XDG_CACHE_HOME to copy into every arm's own cache first (arms start from the same planner records); default: empty cache per arm
 #   --max-turns N  --max-tokens N  --legacy   passed to conversation_bench.py run
 #   --bench-args "ARGS"  more arguments for conversation_bench.py run (split on spaces)
@@ -23,7 +24,7 @@
 #                        flash attention, -t, -C, -ot, --no-mmap, --mlock and the speed-relevant env vars (long flag forms too): a difference that is not named in --plan-diff stops the run
 #                        (tools/plan_check.py). With --prep the check runs twice: PRE-TUNE before the prep (says so in its output), and again on the TUNED plans (the prepared caches as seed) before the first
 #                        measured run. Off by default (old call shapes, fake launchers in tests); the void laptop A/B of 2026-11-16 differed in more than its switch and nothing compared the plans
-#   --plan-diff KEYS     comma list of plan keys that differ on purpose with --plan-check (engine,load_method,load_mode,np,ub,batch,kv,n_cpu_moe,ngl,ctx,device,fa,threads,cpu_mask,ot,no_mmap,mlock,env)
+#   --plan-diff KEYS     comma list of plan keys that differ on purpose with --plan-check (engine,load_method,load_mode,np,ub,batch,kv,n_cpu_moe,ngl,ctx,device,fa,threads,cpu_mask,ot,no_mmap,mlock,env,plugin)
 #   --no-evict           do not push the model out of the page cache before each arm   --no-cool   skip the quiet gate (tools/wait_cool.sh 65)
 #   --settle-s N         seconds to wait after ready, before the conversation (15)
 #   --ready-s N          seconds to wait for /health (1800)
