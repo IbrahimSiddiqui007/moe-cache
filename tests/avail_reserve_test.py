@@ -28,6 +28,7 @@ class M(mc.Machine):
     def mem_available(self): return self.avail
     def mem_total(self): return self.total
     def mem_cap(self): return self.total - max(4 * GIB, self.total / 8)
+    def cgroup_limit(self): return None       # the double must not read the real cgroup: inside cool_run's memory-capped scope the test failed (laptop-tests-1)
 
 
 def env_of(avail, args=(), stock=False, windows=True, total=31.1 * GIB):
