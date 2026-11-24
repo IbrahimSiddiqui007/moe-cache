@@ -37,10 +37,10 @@ SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flas
 # Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: faster with moe-cache, figures follow in v0.3.9.1; the decode numbers of
 # those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record not published;
 # IQ3_S is itself a 3-bit file: no Flash-Next file was measured against full precision)
-Q2_FAST = "can be faster than IQ3_XXS; measured numbers follow in v0.3.9.1"
+Q2_FAST = "smaller; measured comparison follows in v0.3.9.1"
 Q2_LESS = ("a little less exact (same top token as the 3-bit IQ3_S file, not full precision: 73.3 % against 76.5 % for IQ3_XXS; one run 2026-11-05, record not published), "
            "191/202 tasks against 193")
-SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); slower than Q2_0 at long context",
+SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); speed figures follow in v0.3.9.1",
                 "flash-next-q2_0": f"the smaller option, 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
 
 
@@ -459,8 +459,8 @@ def recommend(spec, use, model=None):
     R = []     # candidate rules in order: (id, condition, ctx, measured text or None = untested here, why)
     if use == "agents":
         R += [("bolt", fits("bolt") and vram >= 12 and bolt_ok(), 131072,
-               f"{PC}: the fastest OpenCode session we measured (speed figures follow in v0.3.9.1), 190/202 tasks",
-               "fits in your RAM, so llama.cpp runs it stock (moe-cache forced on it was slower); the fastest agent model we measured"),
+               f"{PC}: an OpenCode session measured (speed figures follow in v0.3.9.1), 190/202 tasks",
+               "fits in your RAM, so llama.cpp runs it stock"),
               ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 65536, None,
                "fits in your RAM (stock llama.cpp); measured only with a 16 GB GPU: with less VRAM long prompts are slower"),
               ("qwen3.6-35b", True, 65536,
@@ -502,7 +502,7 @@ def recommend(spec, use, model=None):
     else:
         R += [("bolt", fits("bolt") and vram >= 12 and bolt_ok(), 131072,
                f"{PC}: measured at 57k and 114k tokens; speed figures follow in v0.3.9.1",
-               "reads long prompts faster than Flash-Next at 128k and fits in your RAM (stock llama.cpp)"),
+               "fits in your RAM (stock llama.cpp)"),
               ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 65536, None, "fits in your RAM (stock llama.cpp); measured only with a 16 GB GPU"),
               ("qwen3.6-35b", True, 131072 if fits("qwen3.6-35b") and vram >= 12 else 65536,
                f"{PC}: measured at 128k; speed figures follow in v0.3.9.1" if fits("qwen3.6-35b") and vram >= 12 else None,
@@ -563,7 +563,7 @@ def recommend(spec, use, model=None):
     if k == "gpt-oss-120b" and use in ("agents", "docs"):
         warn.append("gpt-oss-120b with coding agents or 64k prompts is not tested here (a reasoning model: check that the agent handles its reasoning_content)")
     if build is not None and build < BOLT_BUILD and use in ("agents", "docs") and fits("bolt"):
-        warn.append(f"your llama-server is b{build}: Nemotron 3.5 Bolt (the faster pick here) needs b{BOLT_BUILD} or newer")
+        warn.append(f"your llama-server is b{build}: Nemotron 3.5 Bolt (the pick here) needs b{BOLT_BUILD} or newer")
     if vram and spec.get("gpu_margin") is not None and float(spec["gpu_margin"]) > GPU_MARGIN_GIB + 0.01:
         warn.append(f"counting {float(spec['gpu_margin']):.1f} GiB of VRAM as left free (--gpu-margin), the launcher's default is {GPU_MARGIN_GIB:.1f}")
     elif vram and use in ("agents", "docs") and ctx >= 131072:

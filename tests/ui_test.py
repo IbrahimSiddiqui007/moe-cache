@@ -649,7 +649,7 @@ check("--approx" in _ap and _ap[_ap.index("--approx") + 1] == "careful" and "--e
 check('id="approx"' in _html and "NOT identical" in _html and "approx: $(\"approx\").value" in _html, "QUALITY-970: the control page has the tier choice and says plainly that answers are not identical")
 check("--no-long-prompt" in ui.server_args({"model": "m.gguf", "no_long_prompt": True}) and "--no-long-prompt" not in ui.server_args({"model": "m.gguf"}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
       "Long-prompt mode is the default: --no-long-prompt on the Start command only when unticked (2026-11-08), no --long-prompt")
-check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "reads long prompts faster" in _html,
+check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "for agents and documents" in _html,
       "the page has the Long-prompt mode toggle, ticked by default, with its one-line explanation, sent with Start and with the plan request, restored from the last start")
 check("--leave-room" in ui.server_args({"model": "m.gguf", "leave_room": True}) and "--leave-room" not in ui.server_args({"model": "m.gguf"}),
       "Leave room for me: --leave-room on the Start command (owner 2026-10-30)")

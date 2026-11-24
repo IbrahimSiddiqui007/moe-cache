@@ -52,7 +52,7 @@ for label, m, want in TABLE:
 pc = "32 GB / 16 GB (the PC)"
 check(not recs[(pc, "agents")]["untested"] and "190/202 tasks" in recs[(pc, "agents")]["measured"], "PC agents: measured (190/202 tasks, no speed figure)")
 check(not recs[(pc, "chat")]["untested"] and "193/202 tasks" in recs[(pc, "chat")]["measured"], "PC chat: IQ3_XXS, the default Flash-Next file (owner 2026-10-30), measured 193/202 tasks")
-check(any(a["id"] == "flash-next-q2_0" and "faster" in a["why"] for a in recs[(pc, "chat")]["alternatives"]), "PC chat: Q2_0 offered as the faster alternative")
+check(any(a["id"] == "flash-next-q2_0" and "smaller" in a["why"] for a in recs[(pc, "chat")]["alternatives"]), "PC chat: Q2_0 offered as the smaller alternative")
 check(recs[("32 GB / 8 GB", "agents")]["untested"] and recs[("32 GB / 8 GB", "agents")]["measured"] == "untested on this class of machine",
       "32/8 agents (Bolt, measured only with a 16 GB GPU): 'untested on this class of machine'")
 check(recs[("32 GB / 8 GB", "chat")]["untested"] and "IQ2_XS" in recs[("32 GB / 8 GB", "chat")]["why"][0], "32/8 chat: untested, names the sibling file that was measured")

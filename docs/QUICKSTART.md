@@ -119,7 +119,7 @@ Run `python3 bin/moe_cache.py bench-report MODEL.gguf` (or press **Share my numb
 ## What speed to expect
 
 Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (llama.cpp's own GPU expert cache, `--moe-cache-mib`, is optional there; it was slower on our Vulkan PC, RESULTS 59): moe-cache adds nothing there on the 16 GB PC. Since v0.3.8 the launcher runs a model that fits in RAM but keeps expert layers on the CPU through the plugin (`--stock` opts out): laptop with an 8 GB card, release code, paired 40k-token chat: not faster (decode and prompt a little lower; an earlier figure was not reproduced); 16 GB PC forced through the plugin: pair pending on this kit; Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden).
-If it does not fit, moe-cache can be faster than stock; measured numbers follow in v0.3.9.1 ([RESULTS.md](results-archive/RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) for Linux; the README has a short table).
+If it does not fit, moe-cache is the tool meant for it; speed numbers follow in v0.3.9.1 ([RESULTS.md](results-archive/RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) for Linux).
 
 ## Which llama-server do I use?
 

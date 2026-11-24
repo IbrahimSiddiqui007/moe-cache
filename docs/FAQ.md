@@ -15,8 +15,8 @@ When they do not fit in RAM, the OS page cache thrashes and speed falls off a cl
 
 | Your situation | Best choice |
 |---|---|
-| The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). That flag is llama.cpp's own GPU expert cache, not moe-cache's: on our Windows Vulkan PC it was slower than without it (RESULTS 59), and its output can differ slightly from stock (not measured by us). On Qwen3.6-35B (21.7 GB) at a 24 GB limit, both with the same 5000 MiB GPU cache: stock was faster than moe-cache (RESULTS 29). moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. Since v0.3.8 the launcher runs a model that fits in RAM but keeps expert layers on the CPU through the plugin (`--stock` opts out): laptop with an 8 GB card, release code, paired 40k-token chat: not faster (decode and prompt a little lower; an earlier figure was not reproduced); 16 GB PC forced through the plugin: pair pending on this kit; Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden). |
-| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: **faster than plain llama.cpp on Windows and on Linux** when the model is bigger than your RAM (Windows since 2026-10-27, RESULTS 59: faster on the same models, GLM-5.3 faster in a paired run and faster again with MTP, coding-agent sessions faster; Linux clean runs since 2026-10-15: faster, by the most in one early test (gpt-oss-120b, v0.1, one run per side); speed figures follow in v0.3.9.1; measurements in [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md)). No gain when the model fits in RAM. |
+| The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). That flag is llama.cpp's own GPU expert cache, not moe-cache's: on our Windows Vulkan PC it was slower than without it (RESULTS 59), and its output can differ slightly from stock (not measured by us). On Qwen3.6-35B (21.7 GB) at a 24 GB limit, both with the same 5000 MiB GPU cache: stock and moe-cache were compared in RESULTS 29. moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. Since v0.3.8 the launcher runs a model that fits in RAM but keeps expert layers on the CPU through the plugin (`--stock` opts out): laptop with an 8 GB card, release code, paired 40k-token chat: not faster (decode and prompt a little lower; an earlier figure was not reproduced); 16 GB PC forced through the plugin: pair pending on this kit; Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden). |
+| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: **built for models bigger than your RAM** on Windows and on Linux (measured on Windows since 2026-10-27, RESULTS 59, and on Linux since 2026-10-15; speed numbers follow in v0.3.9.1; measurements in [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md)). No gain when the model fits in RAM. |
 
 
 ### Do I need this if my model fits in RAM?
@@ -33,15 +33,15 @@ LRU at expert granularity; the experts of the operation that is running are prot
 
 ### Is a very long prompt still slow?
 
-Less than before, but a long prompt is still a wait. Prompt reading runs on the GPU. On our Windows PC (Flash-Next Q2_0) v0.3.5 reads a 64k-token prompt faster than v0.3.4 did, and v0.3.4 was faster than the first measurement (agent mode, 2026-10-28) (§78). A 222k-token prompt at 256k context is a longer wait (launcher default `-ub 2048`, 2026-11-03). Speed figures follow in v0.3.9.1.
+Less than before, but a long prompt is still a wait. Prompt reading runs on the GPU. On our Windows PC (Flash-Next Q2_0) a 64k-token prompt was measured on v0.3.4 and v0.3.5 (agent mode, 2026-10-28) (§78). A 222k-token prompt at 256k context is a longer wait (launcher default `-ub 2048`, 2026-11-03). Speed figures follow in v0.3.9.1.
 
-### Why is it not faster when my model already fits in RAM?
+### Is there a gain when my model already fits in RAM?
 
-Because there is nothing to fix: stock llama.cpp then runs from the page cache with the same kernels. On Qwen3.6-35B at 24 GB, decode needs about 0.5 GB of expert weights per token (8 experts x 32 CPU layers x 1.9 MB), which the memory bus delivers at about 35 GB/s, close to this laptop's measured maximum (40 GB/s), so it is bandwidth-bound for everyone (stock and moe-cache decode at the same speed). The speed-ups appear when memory is short (the same model at 12 GB), for models larger than RAM, and for models with slow kernels (Q2_0 and the IQ types, where the executor and the faster kernel help).
+Because there is nothing to fix: stock llama.cpp then runs from the page cache with the same kernels. On Qwen3.6-35B at 24 GB, decode needs about 0.5 GB of expert weights per token (8 experts x 32 CPU layers x 1.9 MB), which the memory bus delivers at about 35 GB/s, close to this laptop's measured maximum (40 GB/s), so it is bandwidth-bound for everyone. moe-cache is aimed at memory that is short (the same model at 12 GB), models larger than RAM, and models with slow kernels (Q2_0 and the IQ types); speed numbers follow in v0.3.9.1.
 
 ### Does it use my GPU?
 
-Yes, through llama.cpp as usual. `moe-cache-server` picks how many layers' experts live on the GPU from your free VRAM (that alone is faster than keeping everything on the CPU). moe-cache itself manages the experts that stay on the CPU side.
+Yes, through llama.cpp as usual. `moe-cache-server` picks how many layers' experts live on the GPU from your free VRAM (that is the plan, instead of keeping everything on the CPU). moe-cache itself manages the experts that stay on the CPU side.
 
 ### Is the output really the same as stock?
 
