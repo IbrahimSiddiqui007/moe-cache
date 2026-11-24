@@ -18,11 +18,11 @@
 #     --yes-unverified  install even though the build attestation could not be checked (gh missing / not logged in / GitHub unreachable; a verification that ran and FAILED is never overridden); same as MOE_CACHE_ALLOW_UNVERIFIED=1. The sha256 check is never skipped.
 [ -n "$BASH_VERSION" ] || { command -v bash >/dev/null && exec bash "$0" "$@"; echo "install.sh needs bash"; exit 1; }   # `sh install.sh` is the documented way
 set -e
-# The llama.cpp commit moe-cache was built and tested against. Default: 7fe450e19 (ggml 0.25.1, backend API 2).
-# LLAMA_SHA=23b0202a1... (any full sha starting 23b0202a1, ggml 0.26.0, API 3: GLM-5.3-Flash and MTP support) selects the matching plugin build.
+# The llama.cpp commit moe-cache was built and tested against. Default: b12651 (f5e6915c2, ggml 1.0, backend API 4).
+# LLAMA_SHA=... selects another: 7fe450e19 (ggml 0.25.1, API 2; GGML_API stays unset) or 23b0202a1 (ggml 0.26.0, API 3: GLM-5.3-Flash and MTP support).
 LLAMA_SHA_GIVEN="${LLAMA_SHA:-}"                     # set by the user: build that commit, never the bundled build
-LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
-case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
+LLAMA_SHA="${LLAMA_SHA:-f5e6915c28f10330885fcb9243a93ae98d3115ab}"
+case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; f5e6915c2*) export GGML_API=4;; esac
 MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.9}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 GGUF_PY_SHA256=70bcd10edfe697fb2dad6e40af2234b9d8ece9a41a99761405121ebda1c3c1cd   # sha256 of gguf-$GGUF_PY_VERSION-py3-none-any.whl (RELEASE-008); pip is refused to install anything else
@@ -294,6 +294,6 @@ Done. Next steps (bash or zsh; for fish use: source $PREFIX/env.fish):
   #   curl -L -o gpt-oss-20b.gguf https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf
   moe-cache-check gpt-oss-20b.gguf
   $M/tests/identity.sh gpt-oss-20b.gguf --llama-server $BIN/llama-server     # PASS = same tokens as stock
-  moe-cache-server gpt-oss-20b.gguf --ram 20 --open                          # chat UI at http://localhost:8080
+  moe-cache-server gpt-oss-20b.gguf --open                                   # chat UI at http://localhost:8080
   python3 $M/bin/moe_cache.py bench-report gpt-oss-20b.gguf                   # stock vs moe-cache on your machine (or Share my numbers on the control page)
 EOT

@@ -114,6 +114,8 @@ def plan(*args, **envx):
 check("bundled llama.cpp" in plan() and "no build" in plan(), f"install.sh: uses the bundled llama.cpp ({plan()[:70]})")
 check("would build llama.cpp" in plan("--own-llama"), "install.sh --own-llama: builds")
 check("would build llama.cpp 23b0202a1" in plan(LLAMA_SHA="23b0202a1abc"), "install.sh LLAMA_SHA=...: builds that commit")
+check("would build llama.cpp f5e6915c2" in plan("--own-llama"), "install.sh --own-llama: builds the default pin (f5e6915c2)")
+check("would build llama.cpp 7fe450e19" in plan(LLAMA_SHA="7fe450e19abc"), "install.sh LLAMA_SHA=7fe450e19...: builds that commit")
 check("would build llama.cpp" in subprocess.run(["bash", os.path.join(HERE, "install.sh"), "--dry-run"], capture_output=True, text=True).stdout, "install.sh in a checkout without llama/: builds, as before")
 check(subprocess.run(["bash", "-n", os.path.join(HERE, "install.sh")]).returncode == 0 and subprocess.run(["bash", "-n", script]).returncode == 0, "the scripts parse")
 
