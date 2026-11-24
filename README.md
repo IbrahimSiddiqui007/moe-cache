@@ -4,7 +4,7 @@
 moe-cache is a plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle our build of llama.cpp b12651 (ggml 1.0) built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.3.8-blue">
+<img alt="status" src="https://img.shields.io/badge/status-v0.3.9-blue">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b12207%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
@@ -127,7 +127,7 @@ The q8_0 KV cache is not byte-identical to stock (see the top of this page); `--
 - **Cold start.** From a cold file cache the plugin reports ready a few seconds later than stock while it loads its hot experts; the first answer wins it back (RESULTS 61).
 - **Small samples.** Two runs per arm (one per arm for the long-prompt comparison), one PC, one seeded script, one head kit. The numbers depend on RAM speed (our test PC's RAM has run at 6000 MT/s, EXPO, since 2026-11-07).
 
-## Known issues in v0.3.8 (honest list)
+## Known issues in v0.3.9 (honest list)
 
 | Issue | Detail |
 |---|---|
