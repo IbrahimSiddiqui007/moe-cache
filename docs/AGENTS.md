@@ -93,12 +93,12 @@ Not covered yet: Oh My Pi (its `~/.omp/agent/models.yml` is YAML, only third-par
 
 | Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin) |
 |---|---|---|
-| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default (0.3.2 to 0.3.6, and again since v0.3.8) | decode 19.9 tok/s (2026-10-27), 193/202 tasks (the most), reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
-| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (decided 2026-11-05; IQ3_XXS is the default again since v0.3.8) | decode 22.2 tok/s on 2026-10-28, 191/202 tasks; in a real 65k conversation (fixed driver, RAM at 6000 MT/s) moe-cache reads new prompt tokens 1.9x as fast as stock (5.0x falling to 1.3x by depth) and decodes 26.9 against 25.4 tok/s (1.06x; equal to stock at 48k-64k depth), claim v038-conv-q2_0 |
-| coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
+| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default (0.3.2 to 0.3.6, and again since v0.3.8) | 193/202 tasks (the most), reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
+| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (decided 2026-11-05; IQ3_XXS is the default again since v0.3.8) | 191/202 tasks; speed figures follow in v0.3.9.1 |
+| coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | 189/202 tasks; session times follow in v0.3.9.1; general knowledge not checked beyond the task set |
 
 No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
-IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC.
+IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) runs with MTP in agent mode on the same PC; speed figures follow in v0.3.9.1.
 
 ## Without starting a server by hand (on-demand)
 
@@ -142,7 +142,7 @@ without `.gguf`), context 65536. The Hermes CLI and Desktop share one config, so
 
 The control page's Start button starts a server on its own port; do not give it the on-demand port while the listener runs.
 
-**Checked on the Linux laptop (2026-10-27)** with the real Hermes Agent 0.22.5 and OpenCode 1.19.4 (isolated config folders, API key on) against the listener: first request starts the model (Granite 1B: 2 s; Qwen3.6-35B under a 12 GB memory limit: 14-17 s), SSE streaming passes through, OpenCode ran `bash` and `read` tool calls on Qwen3.6, idle stop after the set minutes, the next request (Hermes) started it again, no key / wrong key / raw key without `Bearer` give 401, `x-api-key` and `Authorization: Bearer KEY` work, another site's origin gets no CORS header. One bug found and fixed: Hermes asks `/api/v1/models`, `/api/tags`, `/v1/props` and `/version` once to tell LM Studio, Ollama and llama.cpp apart; these started the model on a probe. The idle listener now answers them with llama-server's own 404. Not tried: the Desktop apps (no Windows here).
+**Checked on the Linux laptop (2026-10-27)** with the real Hermes Agent 0.22.5 and OpenCode 1.19.4 (isolated config folders, API key on) against the listener: first request starts the model, SSE streaming passes through, OpenCode ran `bash` and `read` tool calls on Qwen3.6, idle stop after the set minutes, the next request (Hermes) started it again, no key / wrong key / raw key without `Bearer` give 401, `x-api-key` and `Authorization: Bearer KEY` work, another site's origin gets no CORS header. One bug found and fixed: Hermes asks `/api/v1/models`, `/api/tags`, `/v1/props` and `/version` once to tell LM Studio, Ollama and llama.cpp apart; these started the model on a probe. The idle listener now answers them with llama-server's own 404. Not tried: the Desktop apps (no Windows here).
 
 ## PC checklist: Hermes Desktop and OpenCode Desktop with on-demand (Windows)
 
@@ -204,7 +204,7 @@ python3 bin/moe_cache.py connect hermes --write        # and/or: connect opencod
 
 The Linux commands were checked against `hermes --help` and `opencode --help` (2026-10-26); they were not started against a moe-cache server for this page.
 
-**Checked on the Linux laptop with a running agent-mode server (2026-10-29, Hermes Agent 0.22.5, OpenCode 1.19.4, Qwen3.6-35B-A3B, 64k):** `connect hermes --write` and `connect opencode --write` wrote correct configs (OpenCode: into the existing `opencode.jsonc`, old file kept as `.bak`). Both CLIs fixed a bug in a small git repo over two turns (run tests, edit, commit): `hermes chat -Q -t terminal,file,todo -q "..."` (then `-c` for the next turn) and `opencode run --auto "..." < /dev/null` (then `-c`). Flash-Next IQ3_XXS at 64k also fixed it with Hermes (373 s, cold first turn 5.8k tokens in 167 s). Hermes sends one `GET /v1/models` without the API key after each chat; the server logs "unauthorized: Invalid API Key" for it. That comes from Hermes and is harmless. The web UIs (`hermes dashboard`, `opencode web`) were not started.
+**Checked on the Linux laptop with a running agent-mode server (2026-10-29, Hermes Agent 0.22.5, OpenCode 1.19.4, Qwen3.6-35B-A3B, 64k):** `connect hermes --write` and `connect opencode --write` wrote correct configs (OpenCode: into the existing `opencode.jsonc`, old file kept as `.bak`). Both CLIs fixed a bug in a small git repo over two turns (run tests, edit, commit): `hermes chat -Q -t terminal,file,todo -q "..."` (then `-c` for the next turn) and `opencode run --auto "..." < /dev/null` (then `-c`). Flash-Next IQ3_XXS at 64k also fixed it with Hermes (cold first turn 5.8k tokens). Hermes sends one `GET /v1/models` without the API key after each chat; the server logs "unauthorized: Invalid API Key" for it. That comes from Hermes and is harmless. The web UIs (`hermes dashboard`, `opencode web`) were not started.
 
 **How each is pointed at moe-cache** (read from `connect()` in `bin/moe_cache.py`):
 
@@ -254,15 +254,15 @@ with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
 
 | Request | New prompt tokens | Prompt time |
 |---|---|---|
-| session 1, turn 1 (OpenCode's tools and instructions) | 7,438 | 45.6 s (163 tok/s) |
-| session 1, turns 2-3 | 79 / 20 | 3.4 s / 0.8 s |
-| session 2 (same server), turn 1 | 29 | 0.7 s |
-| after a server restart, warm session restored (0.2 s), turn 1 | 1,028 | 8.5 s |
-| Hermes Agent (file tools only), turn 1 / turn 2 | 3,687 / 76 | 23.0 s / 2.9 s |
-| whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | 78 s / 30 s / 39 s / 55 s |
+| session 1, turn 1 (OpenCode's tools and instructions) | 7,438 | speed figures follow in v0.3.9.1 |
+| session 1, turns 2-3 | 79 / 20 | speed figures follow in v0.3.9.1 |
+| session 2 (same server), turn 1 | 29 | speed figures follow in v0.3.9.1 |
+| after a server restart, warm session restored (0.2 s), turn 1 | 1,028 | speed figures follow in v0.3.9.1 |
+| Hermes Agent (file tools only), turn 1 / turn 2 | 3,687 / 76 | speed figures follow in v0.3.9.1 |
+| whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | speed figures follow in v0.3.9.1 |
 
-With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens in 186 s; after a restart with the warm session the whole OpenCode
-session takes 112 s instead of 242 s. Details: [RESULTS_OLD_LAPTOP.md, results 51-52](results-archive/RESULTS_OLD_LAPTOP.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens; after a restart with the warm session the whole OpenCode
+session is shorter (times follow in v0.3.9.1). Details: [RESULTS_OLD_LAPTOP.md, results 51-52](results-archive/RESULTS_OLD_LAPTOP.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
 model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.

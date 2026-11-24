@@ -12,6 +12,10 @@ DEFAULT_CTX = {"agents": 65536, "chat": 32768, "docs": 65536}
 ORDER = {"fits": 0, "tight": 1, "no": 2}
 
 
+# v0.3.9 ships no speed figures; set True in 0.3.9.1
+SHOW_MEASURED_SPEED = False
+
+
 def headline(k, spec):
     """The speed line of model k for this PC: the first decode number (shortest context) measured on a machine this PC is at least as strong as, with where it
     came from; None when nothing was measured on a PC like this. {text, value, ctx, machine, date, source, note}."""
@@ -20,6 +24,8 @@ def headline(k, spec):
     if not dec:
         return None
     r, m = dec[0]
+    if not SHOW_MEASURED_SPEED:
+        return {"text": "speed figures follow in v0.3.9.1", "value": r["value"], "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": r["source"], "note": r.get("note")}
     text = f"{r['value']:g} tok/s decode" + (f" at context {r['ctx']}" if r.get("ctx") else "") + f" ({m['name'].split(':')[0]}, {r['source']}, {r['date']})" + (f"; {r['note']}" if r.get("covers_fit") is False and r.get("note") else "")
     return {"text": text, "value": r["value"], "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": r["source"], "note": r.get("note")}
 

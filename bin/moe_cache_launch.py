@@ -271,8 +271,13 @@ def this_pc_lines(spec, ls):
     return out
 
 
+SHOW_MEASURED_SPEED = False     # v0.3.9 ships no speed figures (numbers follow in v0.3.9.1): set True then; models.json keeps the records
+
+
 def speed_text(r):
     """Expected speed only when it was measured on a PC like this one; otherwise say so."""
+    if not SHOW_MEASURED_SPEED:
+        return "speed: figures follow in v0.3.9.1"
     if r.get("untested") or not r.get("key"):
         return "speed: not measured on a PC like this one"
     nums = ", ".join(f"{label} {v}" for label, v in r["key"] if label in ("decode", "prompt"))

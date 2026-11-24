@@ -34,10 +34,10 @@ CAT = cat.models_dict(CATALOGUE)
 MODELS = {k: cat.legacy(m) for k, m in CAT.items()}
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
-# Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: 430.0 against 188.2 tok/s with moe-cache; the decode numbers of
+# Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: faster with moe-cache, figures follow in v0.3.9.1; the decode numbers of
 # those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record not published;
 # IQ3_S is itself a 3-bit file: no Flash-Next file was measured against full precision)
-Q2_FAST = "reads prompts about 2.3 times as fast as IQ3_XXS in a 65k conversation (430.0 against 188.2 tok/s, v0.3.7 records) and decodes faster"
+Q2_FAST = "reads prompts and decodes faster than IQ3_XXS in a 65k conversation (speed figures follow in v0.3.9.1)"
 Q2_LESS = ("a little less exact (same top token as the 3-bit IQ3_S file, not full precision: 73.3 % against 76.5 % for IQ3_XXS; one run 2026-11-05, record not published), "
            "191/202 tasks against 193")
 SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file (owner 2026-11-07): 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); slower than Q2_0 at long context",
@@ -459,40 +459,38 @@ def recommend(spec, use, model=None):
     R = []     # candidate rules in order: (id, condition, ctx, measured text or None = untested here, why)
     if use == "agents":
         R += [("bolt", fits("bolt") and vram >= 12 and bolt_ok(), 131072,
-               f"{PC}: OpenCode session 47.8 s (the fastest measured; Flash-Next IQ2_XS 73.4 s), prompts 721 tok/s at 114k tokens, decode 24.9 tok/s "
-               "there (27.9 short), 190/202 tasks",
-               "fits in your RAM, so llama.cpp runs it stock (moe-cache forced on it was 18 % slower); the fastest agent model we measured"),
+               f"{PC}: the fastest OpenCode session we measured (speed figures follow in v0.3.9.1), 190/202 tasks",
+               "fits in your RAM, so llama.cpp runs it stock (moe-cache forced on it was slower); the fastest agent model we measured"),
               ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 65536, None,
                "fits in your RAM (stock llama.cpp); measured only with a 16 GB GPU: with less VRAM long prompts are slower"),
               ("qwen3.6-35b", True, 65536,
-               f"{LAPTOP}: 42.9 tok/s stock when it fits; at 12 GB RAM + 8 GB GPU 22.6 tok/s with moe-cache; {PC}: 739-848 tok/s prompts and "
-               "59 tok/s decode at 64k" if vram >= 6 else
-               "no GPU, 12 GB RAM: 9.9 tok/s (laptop) and 10.6 tok/s (Ryzen mini PC) with moe-cache, short prompts",
+               f"{LAPTOP} and {PC}: measured, speed figures follow in v0.3.9.1" if vram >= 6 else
+               "no GPU, 12 GB RAM: measured with moe-cache on a laptop and a Ryzen mini PC, short prompts; speed figures follow in v0.3.9.1",
                "the smallest candidate (3B active): the one that still runs agents at 64k on this machine")]
     elif use == "chat":
         R += [("glm-5.3", fits("glm-5.3"), 32768, None, "fits in your RAM: the biggest candidate, stock llama.cpp"),
               # IQ3_XXS is the default Flash-Next file again (owner 2026-11-07: most people use it, and the measured quality loss of Q2_0 is small but the name puts people off);
               # Q2_0 is the faster option (earlier default: IQ3_XXS 2026-10-30, Q2_0 2026-11-05)
               ("flash-next-iq3_xxs", cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs"), 32768,
-               f"{PC}: 19.9 tok/s decode (2026-10-27), 193/202 tasks (the most)",
+               f"{PC}: 193/202 tasks (the most); speed figures follow in v0.3.9.1",
                "the default Flash-Next file: 3-bit, reads best and the most tasks right (top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0, measured 2026-11-05, record pending); "
                "bigger than your RAM, moe-cache keeps the hot experts in RAM. Q2_0 is the faster option (9 GB smaller, " + Q2_FAST + ")"),
               ("flash-next-q2_0", cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0"), 32768,
-               f"{PC}: 22-25 tok/s decode, 281-287 tok/s prompts, 191/202 tasks (2026-10-28)",
+               f"{PC}: 191/202 tasks (2026-10-28); speed figures follow in v0.3.9.1",
                "the faster option: 9 GB smaller than IQ3_XXS, " + Q2_FAST + "; " + Q2_LESS),
               ("flash-next-q2_0", cap >= 24 and vram >= 6 and drive_ok("flash-next-q2_0"), 32768, None,
-               f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size: 12.5 tok/s"),
+               f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size (speed figure follows in v0.3.9.1)"),
               ("qwen3.5-122b", cap >= 24 and vram >= 6 and drive_ok("qwen3.5-122b"), 32768,
-               f"{PC}: 19.7 tok/s at 4k, 17.3 at 64k; {LAPTOP}: 7.7 tok/s" if vram >= 12 else f"{LAPTOP}: 7.7 tok/s",
+               f"{PC} and {LAPTOP}: measured, speed figures follow in v0.3.9.1" if vram >= 12 else f"{LAPTOP}: measured, speed figure follows in v0.3.9.1",
                "36.6 GB on disk instead of Flash-Next's 66 GB"),
-              ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 32768, f"{PC}: 27.9 tok/s" if vram >= 12 else None,
+              ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 32768, f"{PC}: measured, speed figure follows in v0.3.9.1" if vram >= 12 else None,
                "fits in your RAM (stock llama.cpp)"),
               ("qwen3.6-35b", True, 32768,
-               f"{LAPTOP}: 42.9 tok/s stock when it fits, 22.6 tok/s with moe-cache at 12 GB RAM" if vram >= 6 else
-               "no GPU, 12 GB RAM: 9.9-10.6 tok/s with moe-cache",
+               f"{LAPTOP}: measured stock and with moe-cache at 12 GB RAM; speed figures follow in v0.3.9.1" if vram >= 6 else
+               "no GPU, 12 GB RAM: measured with moe-cache; speed figures follow in v0.3.9.1",
                "the smallest candidate (21.7 GB, 3B active)"),
               ("flash-next-q2_0", cap >= 11 and vram >= 6 and drive_ok("flash-next-q2_0"), 16384,
-               None,       # the only laptop figures (9.5 / 13.7 tok/s) were measured with --fast / --fast=2, which are off (measured as no win) and not what --apply sets
+               None,       # the only laptop figures were measured with --fast / --fast=2, which are off (measured as no win) and not what --apply sets
                "a much bigger model through moe-cache; with this little RAM most experts are read from the drive, so it is slow (no speed measured in the default mode)"),
               # never the automatic pick (the rows above always match first): offered as alternatives, or chosen with --model; untested here, so no speed is quoted
               ("gpt-oss-120b", cap >= 24 and vram >= 6 and drive_ok("gpt-oss-120b"), 32768, None,
@@ -500,14 +498,14 @@ def recommend(spec, use, model=None):
                "(--reasoning-budget); sampling temperature 1.0, top-p 1.0; coding agents at 64k are not tested"),
               ("deepseek-v41-flash", cap >= 24 and vram >= 12 and ds_ok(), 8192, None,
                "DeepSeek-V4.1-Flash-1017 IQ1_M (231 GB, of which 111 GB is the Engram lookup table read from the SSD): chat and short answers only; "
-               "long prompts are slow (a llama.cpp user measured about 31 tok/s prompt); needs 240 GB free and a fast drive")]
+               "long prompts are slow (a llama.cpp user reported very slow prompt reading); needs 240 GB free and a fast drive")]
     else:
         R += [("bolt", fits("bolt") and vram >= 12 and bolt_ok(), 131072,
-               f"{PC}: prompts 595 tok/s at 57k and 721 at 114k tokens, decode 24.9 at 114k (Flash-Next Q2_0: 170 tok/s prompts at 128k)",
-               "reads long prompts about 4x faster than Flash-Next at 128k and fits in your RAM (stock llama.cpp)"),
+               f"{PC}: measured at 57k and 114k tokens; speed figures follow in v0.3.9.1",
+               "reads long prompts faster than Flash-Next at 128k and fits in your RAM (stock llama.cpp)"),
               ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 65536, None, "fits in your RAM (stock llama.cpp); measured only with a 16 GB GPU"),
               ("qwen3.6-35b", True, 131072 if fits("qwen3.6-35b") and vram >= 12 else 65536,
-               f"{PC}: 936-1014 tok/s prompts and 45.8 tok/s decode at 128k" if fits("qwen3.6-35b") and vram >= 12 else None,
+               f"{PC}: measured at 128k; speed figures follow in v0.3.9.1" if fits("qwen3.6-35b") and vram >= 12 else None,
                "the smallest candidate; long prompts on a small GPU or none are slow")]
 
     def placed(k):
@@ -560,7 +558,7 @@ def recommend(spec, use, model=None):
         elif spec.get("disk_kind") != "SSD":
             warn.append("could not tell whether the models' drive is an SSD: DeepSeek-V4.1-Flash reads its 111 GB Engram table from the drive and needs a fast one")
         if use in ("agents", "docs"):
-            warn.append("DeepSeek-V4.1-Flash is for chat and short answers only: long prompts are slow (about 31 tok/s prompt in a llama.cpp user's report) and "
+            warn.append("DeepSeek-V4.1-Flash is for chat and short answers only: long prompts are slow (very slow in a llama.cpp user's report) and "
                         "saved prompt state is unreliable until llama.cpp #31292; do not use it with --agent")
     if k == "gpt-oss-120b" and use in ("agents", "docs"):
         warn.append("gpt-oss-120b with coding agents or 64k prompts is not tested here (a reasoning model: check that the agent handles its reasoning_content)")
@@ -603,7 +601,7 @@ def recommend(spec, use, model=None):
     if use == "agents" and k != "flash-next-iq3_xxs" and cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs") and placeable("flash-next-iq3_xxs"):
         alts.append({"id": "flash-next-iq3_xxs", "name": MODELS["flash-next-iq3_xxs"]["name"],
                      "why": f"the default Flash-Next file (3-bit, 193/202 tasks), moe-cache; long context measured with Q2_0 on {PC}: "
-                            "20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (2026-10-28); Q2_0 is the faster option (" + Q2_FAST + ")",
+                            "speed figures follow in v0.3.9.1 (2026-10-28); Q2_0 is the faster option (" + Q2_FAST + ")",
                      "fit": fit(spec, "flash-next-iq3_xxs", 65536, use, local)})
     if nothing:
         msg = (f"Nothing fits this machine well: the server may use {cap:.0f} GB of RAM and {vram:.0f} GiB of VRAM, and the smallest model we ever ran ({m['name']}, "

@@ -1729,11 +1729,11 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
 
 
 MTP_ARGS = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
-MTP_GAIN = "Qwen3.6 on the PC: decode +54 %, prompt processing -5..-8 %"
+MTP_GAIN = "faster decode on Qwen3.6, slower prompt processing; speed figures follow in v0.3.9.1"
 
 
-MTP_DENSE_WHY = ("a dense model runs every layer for every token, and MTP measured slower on the Qwen3.8-27B (64k: 26.8 vs 27.8 tok/s; 128k, part of the KV cache "
-                 "on the CPU: 9.55 vs 15.4 tok/s)")
+MTP_DENSE_WHY = ("a dense model runs every layer for every token, and MTP measured slower on the Qwen3.8-27B (64k, and at 128k with part of the KV cache "
+                 "on the CPU; no figure quoted in this release)")
 
 
 def is_dense_model(path):
@@ -2225,7 +2225,7 @@ def busy_note(item):
     """One sentence for a program from busy_programs(): what Windows measured, and what closing it is worth (measured only for the EA app)."""
     base = f"{item['name']} is using {item['what']} right now."
     if item["name"].lower().startswith(("eacef", "eadesktop", "eabackground", "ealocal")):
-        return base + " Closing it: on our test PC (Flash-Next at 34k) decode was 8-14 % faster and long prompts the same to 23 % faster, depending on how much it draws; your machine can differ."
+        return base + " Closing it: on our test PC decode and long prompts were faster, depending on how much it draws; your machine can differ."
     return base + " Closing it: not measured for this program."
 
 
@@ -2238,7 +2238,7 @@ def warn_heavy_background():
     named = heavy_background_apps(r.stdout)
     for name in named:
         if name == "EA app":
-            say("moe-cache: the EA app is open: close it for full speed (on our test PC with it open: decode 8-14 % slower, long prompts up to 23 % slower, depending on how much it draws; your machine can differ)", err=True)
+            say("moe-cache: the EA app is open: close it for full speed (on our test PC with it open decode and long prompts were slower, depending on how much it draws; your machine can differ)", err=True)
         else:
             say(f"moe-cache: {name} is open: if speed is low, close it (not measured for this program; on our test PC the EA app cost up to 23 %)", err=True)
     if "EA app" in named:
@@ -2633,16 +2633,16 @@ SERVER_HELP = """\
            it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
 --plan-file PATH  write the launch plan as JSON there: every setting the launcher decided, its value, where it came from (probe / measured / constant / user / llama) and a plain reason. A real start writes it to <cache>/plans/port-PORT.json and prints a short summary; --plan-json shows the same under "settings"
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
-           changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
-           the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
-           llama.cpp's (against f16: KL 0.014-0.015, same top token in 94-95 % of positions, meaning kept in 10 of 10 checks at 55k). Not with --exact, --stock or your own --ub
+           changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). It reads long prompts faster than -ub 2048 with
+           the f16 KV cache (speed figures follow in v0.3.9.1). The q8_0 KV cache means answers are NOT byte-identical to plain
+           llama.cpp's (against f16; quality figures: docs/EXACTNESS.md). Not with --exact, --stock or your own --ub
 --kv-4bit        dense models: when the q8_0 KV cache would still spill the GPU, also try K q8_0 / V q4_0 and then q4_0 / q4_0 before moving layers to system RAM. Off by default (a quality cost, README); your own -ctk/-ctv win
 --no-long-prompt  turn the long-prompt mode off: -ub 2048 and the f16 KV cache, as before v0.3.8
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
-           Flash-Next at 12 GB (laptop; not yet measured on the PC): 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
+           Tested on a laptop only (not yet measured on the PC); no gain at 24 GB. Speed figures follow in v0.3.9.1.
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
-           while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
+           while the CPU computes the rest at the same time (laptop test on 8 GB; speed figures follow in v0.3.9.1). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
 --approx safe|careful|aggressive  DEPRECATED alias (still works; forces the modes of the tier on; the default launch enables the modes measured as a win by itself). Speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
            head (every expert is computed). careful: --fast (rarely picked experts not in RAM are skipped, about 1 token in 40-50 differs) + the same. aggressive: --fast=2 (up to 4 low-ranked experts skipped, about 1 token
@@ -2658,7 +2658,7 @@ SERVER_HELP = """\
            GPU memory kept free for the desktop (not with --gpu-margin), 2 CPU cores left free (not with pinned hybrid cores or your own -t), lower priority; the start-up
            lines say which of these were applied. Smoother PC, slower model. MOE_CACHE_LEAVE_ROOM=1 turns it on for good
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
---ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
+--ub auto|N  micro-batch size (a bigger micro-batch reads prompts faster). auto = the largest that fits next to the KV cache of --ctx
 --ram GB   memory the cache and the layer plan are sized to (default: the cgroup limit or free RAM). A sizing hint, NOT a RAM cap: the launcher sets no
            limit on Linux (only a cgroup you set yourself is a hard limit). On Windows a job memory limit is set only for the plugin, only with --ram and
            only with MOE_CACHE_WIN_VIEW=0; the default file-view cache, the on-demand listener and stock llama-server get none (a job limit counts GPU
@@ -2673,7 +2673,7 @@ SERVER_HELP = """\
 --stock    run stock llama-server without the plugin whatever the model's size (to compare stock and moe-cache on the same model)
 --allow-sleep  let the machine sleep while the server runs (by default it is kept awake without changing a power setting: Windows power request,
            Linux systemd-inhibit; MOE_CACHE_ALLOW_SLEEP=1 does the same)
---no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
+--no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default; faster decode on such CPUs)
 --agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
            (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
            turns is llama-server's own: each slot keeps its conversation, and models with recurrent layers (Qwen3-Next, Qwen3.5/3.6) roll back to a
@@ -2689,7 +2689,7 @@ SERVER_HELP = """\
 --no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
-           Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
+           Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: faster decode, slower prompt processing (speed figures follow in v0.3.9.1). On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
 --no-sampling-defaults  do not pass the model card's sampling settings. By default, for Qwen3 / 3.5 / 3.6 / 3.8 / Qwen3-Next and GLM models,
            temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:
@@ -3976,7 +3976,7 @@ def cpu_placement_note(line, cpu_run=False):
         # attention with these settings (it then turns flash attention off; Granite 1B on the PC's Vulkan decoded 530 tok/s after it), or the KV cache did not fit
         return ("attn", f"moe-cache: WARNING: llama-server runs the attention over the KV cache of layer {m.group(1)} (weights on {m.group(2)}) on the CPU. Either the GPU backend "
                         "does not support this model's attention with these settings (llama.cpp then turns flash attention off; often harmless, e.g. on a small model), or the KV "
-                        "cache did not fit in GPU memory next to the model, and then decode is much slower (Qwen3.8-27B on the 16 GB RX 9070 XT at 64k: 35 -> 19 tok/s, our test PC). "
+                        "cache did not fit in GPU memory next to the model, and then decode is much slower (seen on our test PC, Qwen3.8-27B at 64k). "
                         "If the decode speed looks fine, nothing to do; if it is slow, a smaller --ctx or an 8-bit KV cache keeps it on the GPU")
     m = OFFLOADED_RE.search(text)
     if m and not cpu_run and int(m.group(1)) < int(m.group(2)):
@@ -4404,8 +4404,8 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     # The mode is ON by default only for a model bigger than the memory it may use (Flash-Next 64k, item 361: prompt +50.7 %, decode +5.3 %, forecast, one A B B A).
     if (not a.long_prompt and ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not dense and ctx >= LONG_PROMPT_MIN_CTX
             and (stock or getattr(a, "partial_offload", False))):
-        say("moe-cache: long-prompt mode: off by default for a model that fits in RAM (35B at 64k on our test PC: -ub 4096 + q8_0 KV read prompts 42 % slower, one A B B A, forecast, LAUNCHER-1236 item 351; "
-            "it stays on for a model bigger than RAM, Flash-Next: prompts +51 %, one A B B A, forecast, item 361); --long-prompt asks for it")
+        say("moe-cache: long-prompt mode: off by default for a model that fits in RAM (35B at 64k on our test PC: -ub 4096 + q8_0 KV read prompts slower, one A B B A, forecast; "
+            "it stays on for a model bigger than RAM, Flash-Next: prompts faster, one A B B A, forecast); --long-prompt asks for it")
     # LAUNCHER-985: a token mode given by the user (--fast, --fast=2, --fast=fewer, --fast=kv, --approx) only adds its own settings (plugin environment, the q8_0 KV cache it implies) on top of the
     # normal plan: the long-prompt mode (-ub 4096) still applies. lp_with_fast marks that --fast was there first, so the KV cache is never undone and the mode is not switched off.
     a.lp_with_fast = bool(a.fast) and not kv128_default
@@ -4469,21 +4469,21 @@ def fast_env_stage(a, env, stock, model, machine):
         env.append(("MOE_CACHE_ROUTE", "skip"))
         if a.fast == "2":
             env.append(("MOE_CACHE_ROUTE_DROP", "4"))
-            say("moe-cache: --fast=2: up to 4 low-ranked experts per token that are not in RAM are skipped (for memory much smaller than the model: "
-                "Flash-Next at 12 GB +43 %; about 1 top token in 28 differs from stock, KL 0.022; RESULTS 53)")
+            say("moe-cache: --fast=2: up to 4 low-ranked experts per token that are not in RAM are skipped (for memory much smaller than the model; "
+                "changes some tokens)")
         elif a.fast == "fewer":
             env.append(("MOE_CACHE_FEWER", "2"))
             say("moe-cache: --fast=fewer: --fast, and on the CPU-held layers the 2 lowest-ranked experts of every token are never computed (top-10 -> 8 on Flash-Next); "
                 "output no longer identical to stock, quality limits in docs/QUALITY_GATE.md (level fewer)")
         else:
-            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
+            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (faster, output no longer identical to stock)")
     elif not stock:
         # suggest --fast only where it pays: the model is much bigger than the memory it may use
         try:
             size = sum(os.path.getsize(p) for p in model_parts(model))
             lim = float(a.ram) * 1e9 if a.ram else machine.mem_total()
             if lim and size > 2 * lim:
-                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts for about +10 % (changes some tokens; off by default)")
+                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts to go faster (changes some tokens; off by default)")
         except Exception:
             pass
 
@@ -7474,7 +7474,7 @@ def check(argv):
     else:
         warn("cpu", f"{platform.machine()}: only x86-64 was tested")
     if os.access("/sys/devices/cpu_core/cpus", os.R_OK):
-        ok("cpu pinning", f"hybrid Intel CPU (performance cores {open('/sys/devices/cpu_core/cpus').read().strip()}): threads are pinned to the performance cores automatically (about +15 %)")
+        ok("cpu pinning", f"hybrid Intel CPU (performance cores {open('/sys/devices/cpu_core/cpus').read().strip()}): threads are pinned to the performance cores automatically")
     elif not WINDOWS:
         ok("cpu pinning", "not a hybrid Intel CPU: no pinning needed")
     else:

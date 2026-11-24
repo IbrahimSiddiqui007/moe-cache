@@ -7,6 +7,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "bin"))
 import moe_cache_catalogue as cat  # noqa: E402
 
+SHOW_MEASURED_SPEED = False     # v0.3.9 ships no speed figures (numbers follow in v0.3.9.1): set True then; models.json keeps the records
 DOC = os.path.join(HERE, "docs", "MODELS.md")
 BEGIN = "<!-- models:begin (generated from models.json by tools/gen_models_md.py: edit the JSON, then run the tool; CI checks it) -->"
 END = "<!-- models:end -->"
@@ -15,6 +16,8 @@ USE_WORDS = {"agents": "agents", "chat": "chat", "docs": "documents"}
 
 def speed(m, machines):
     """The best-known decode number: the strongest machine first, its shortest context."""
+    if not SHOW_MEASURED_SPEED:
+        return "speed figures follow in v0.3.9.1"
     dec = sorted((r for r in m["measured"] if r["metric"] == "decode_tps" and r.get("covers_fit", True)),
                  key=lambda r: (-machines[r["machine"]]["cap_gb"], r.get("ctx") or 0))
     if not dec:

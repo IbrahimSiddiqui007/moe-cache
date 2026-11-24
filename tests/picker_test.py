@@ -50,8 +50,8 @@ for label, m, want in TABLE:
 
 # measured vs untested wording: only where docs/RESULTS has a number for that class
 pc = "32 GB / 16 GB (the PC)"
-check(not recs[(pc, "agents")]["untested"] and "47.8 s" in recs[(pc, "agents")]["measured"], "PC agents: measured (OpenCode 47.8 s)")
-check(not recs[(pc, "chat")]["untested"] and "19.9 tok/s" in recs[(pc, "chat")]["measured"], "PC chat: IQ3_XXS, the default Flash-Next file (owner 2026-10-30), measured 19.9 tok/s")
+check(not recs[(pc, "agents")]["untested"] and "190/202 tasks" in recs[(pc, "agents")]["measured"], "PC agents: measured (190/202 tasks, no speed figure)")
+check(not recs[(pc, "chat")]["untested"] and "193/202 tasks" in recs[(pc, "chat")]["measured"], "PC chat: IQ3_XXS, the default Flash-Next file (owner 2026-10-30), measured 193/202 tasks")
 check(any(a["id"] == "flash-next-q2_0" and "faster" in a["why"] for a in recs[(pc, "chat")]["alternatives"]), "PC chat: Q2_0 offered as the faster alternative")
 check(recs[("32 GB / 8 GB", "agents")]["untested"] and recs[("32 GB / 8 GB", "agents")]["measured"] == "untested on this class of machine",
       "32/8 agents (Bolt, measured only with a 16 GB GPU): 'untested on this class of machine'")
@@ -63,9 +63,9 @@ check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next f
       "the sibling texts say which file is the default and which is the faster option")
 check(not any("86.9" in v or "50.7" in v for v in pk.SIBLINGS_WHY.values()), "no unrecorded 2026-11-05 percentages in the sibling texts")
 check(recs[("64 GB / 16 GB", "chat")]["id"] == "flash-next-iq3_xxs" and not recs[("64 GB / 16 GB", "chat")]["untested"], "64/16 chat: IQ3_XXS with the 16 GB GPU numbers")
-check(not recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["untested"] and "22.6" in recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["measured"],
-      "16/6 agents: Qwen3.6 with moe-cache at 12 GB was measured (22.6 tok/s)")
-check("9.9" in recs[("32 GB, no GPU", "agents")]["measured"], "no GPU: the no-GPU measurement is quoted")
+check(not recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["untested"] and "measured" in recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["measured"],
+      "16/6 agents: Qwen3.6 with moe-cache at 12 GB was measured (no speed figure)")
+check("no GPU" in recs[("32 GB, no GPU", "agents")]["measured"], "no GPU: the no-GPU measurement is named (no speed figure)")
 check(any("without a GPU" in w for w in recs[("32 GB, no GPU", "agents")]["warnings"]), "no GPU + agents: warns that long prompts are slow")
 
 # engine follows the launcher's own stock-or-plugin rule (moe_cache.decide: model + 1.5 GB in the memory the server may use)

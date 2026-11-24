@@ -72,7 +72,7 @@ A short session (typed answers after each question; `[...]` is trimmed output):
 2/5  Models for this PC
   1) Alpha 35B  (22.0 GB)   <- suggested
      on this PC: no (download 22.0 GB from https://huggingface.co/...)
-     speed: decode 42 tok/s (measured by the maintainer on a similar PC; yours will differ)
+     speed: measured by the maintainer on a similar PC; yours will differ
   2) Beta 20B  (12.0 GB)
      on this PC: yes (...)
      speed: not measured on a PC like this one
@@ -151,16 +151,16 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 ```
 `--ram 12` tells the launcher to size the cache and the GPU/CPU plan for 12 GB (a sizing hint, not a limit; the hard cap is `--max-ram`); leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
 
-**The first start is slow.** The server is ready after about 20 seconds (14-19 s measured); the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens took 186 s on our laptop, [docs/AGENTS.md](AGENTS.md); a 63k-token prompt about 5 minutes on our Windows PC, RESULTS 64). The chat page shows progress. Later turns are much faster because the conversation is kept.
+**The first start is slow.** The server is ready after about 20 seconds; the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens on our laptop, [docs/AGENTS.md](AGENTS.md); a 63k-token prompt on our Windows PC, RESULTS 64). The chat page shows progress. Later turns are much faster because the conversation is kept.
 
 **Speed options that change the answers a little (all off by default; the launcher suggests `--fast` when it would help):**
 
 | Option | What it does | Cost |
 |---|---|---|
-| `--fast` | about +10 % on models much bigger than your RAM | output no longer identical to stock |
-| `--fast=2` | a stronger level for memory far below the model size (Flash-Next at 12 GB: +43 % over `--fast`) | same answers in different words |
-| `--fast=kv` | only the q8_0 KV cache (Flash-Next Q2_0 at ctx 262144: prefill 2x, decode +11-13 % at 64k) | KL 0.0079, 190/202 tasks = stock (RESULTS 72); it is the default from 128k context, `--exact` turns it off |
-| `--long-prompt` (default from 32k context; `--no-long-prompt` turns it off) | the long-prompt mode (default since v0.3.8): a prompt chunk of 4096 tokens (`-ub 4096`) with the q8_0 KV cache, only when the memory plan of your card leaves room for it (else nothing changes). Flash-Next IQ3_XXS, 65k conversation, 16 GB card, previous default against long-prompt: prompts 187.4 to 331.8 tok/s (+77.0 %), answers 19.01 to 19.35 tok/s (+1.8 %) (claim `v038-longprompt-default`). For agents and documents; the page has it as **Long-prompt mode** | the q8_0 KV cache is not byte-identical to stock: answers may differ slightly in wording (KL 0.014-0.015, same top token 94-95 %, same meaning in our checks, 2026-11-07); `--exact` and `--stock` keep it off; your own `--ub` or `--fast` win |
+| `--fast` | faster on models much bigger than your RAM | output no longer identical to stock |
+| `--fast=2` | a stronger level for memory far below the model size (Flash-Next at 12 GB: faster than `--fast`) | same answers in different words |
+| `--fast=kv` | only the q8_0 KV cache (Flash-Next Q2_0 at ctx 262144: faster prefill and decode) | KL 0.0079, 190/202 tasks = stock (RESULTS 72); it is the default from 128k context, `--exact` turns it off |
+| `--long-prompt` (default from 32k context; `--no-long-prompt` turns it off) | the long-prompt mode (default since v0.3.8): a prompt chunk of 4096 tokens (`-ub 4096`) with the q8_0 KV cache, only when the memory plan of your card leaves room for it (else nothing changes). Flash-Next IQ3_XXS, 65k conversation, 16 GB card, previous default against long-prompt: prompts read faster, answers about the same (claim `v038-longprompt-default`). For agents and documents; the page has it as **Long-prompt mode** | the q8_0 KV cache is not byte-identical to stock: answers may differ slightly in wording (KL 0.014-0.015, same top token 94-95 %, same meaning in our checks, 2026-11-07); `--exact` and `--stock` keep it off; your own `--ub` or `--fast` win |
 | `--fast=fewer` | `--fast` plus two fewer experts per token on the CPU-held layers | KL 0.034, 192/202 tasks; faster at 4k, **unproven at 64k-256k** |
 
 **Easiest: the control page**: `bin/moe-cache-server --ui` (Windows: double-click `moe-cache.bat` in the kit folder) opens http://127.0.0.1:8070, a three-pane

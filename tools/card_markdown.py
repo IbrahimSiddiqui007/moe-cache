@@ -152,7 +152,8 @@ def blocks(n, h=3):
 
 def render():
     src = open(CARD, encoding="utf-8").read()
-    data = json.loads(re.search(r"var data = (\[.*?\n  \]);", src, flags=re.S).group(1))
+    m = re.search(r"var data = (\[.*?\n  \]);", src, flags=re.S)      # v0.3.9: the card has no chart (no speed figures), so no data block
+    data = json.loads(m.group(1)) if m else []
     tree = Tree()
     tree.feed(src[src.find('<div class="wrap">'):])
     header = next(find(tree.root, lambda k: k.tag == "header"))
