@@ -4,7 +4,7 @@
 # Identity: windows-package and linux-identity answer three prompts at temperature 0 with the unpatched build of the same commit (built here, job variant `plain`; since the pin has no upstream b-tag, owner 2026-11-23), with this build (all switches off) and with this
 # build (0004, 0020, 0040 switches on); the answers must be byte-identical (tools/llama_identity_run.sh).
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
-# Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first.
+# Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first. llama-fit-params is included for the launcher's planner (LAUNCHER-1236).
 name: llama-patched
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DLLAMA_BUILD_BORINGSSL=ON -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_OPENMP=ON -DGGML_OPENMP_FETCH=ON %CMAKE_ARGS% -DLLAMA_BUILD_TESTS=ON
-          cmake --build build --config Release --target llama-server test-backend-ops
+          cmake --build build --config Release --target llama-server llama-fit-params test-backend-ops
       - name: Version line
         shell: bash
         run: llama.cpp/build/bin/Release/llama-server.exe --version
@@ -176,6 +176,7 @@ jobs:
           $dir = "$PWD\pkg\llama-patched-win-x64"
           Get-ChildItem $dir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
           if (-not (Test-Path "$dir\llama-server.exe")) { throw "no llama-server.exe in the package" }
+          if (-not (Test-Path "$dir\llama-fit-params.exe")) { throw "no llama-fit-params.exe in the package" }
           & "$dir\llama-server.exe" --version
           $body = '{"prompt":"The quick brown fox jumps over the lazy dog. The quick brown fox","n_predict":100,"temperature":0,"seed":1,"cache_prompt":false}'
           $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port","8101","--no-warmup" -RedirectStandardError "smoke.err" -RedirectStandardOutput "smoke.out" -PassThru
@@ -247,7 +248,7 @@ jobs:
         working-directory: llama.cpp
         run: |
           cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS -DLLAMA_BUILD_TESTS=ON
-          T='llama-server test-backend-ops'; if [ '${{ matrix.variant }}' = patched ]; then T="$T test-cpu-gpu-split"; fi
+          T='llama-server llama-fit-params test-backend-ops'; if [ '${{ matrix.variant }}' = patched ]; then T="$T test-cpu-gpu-split"; fi
           cmake --build build --config Release --target $T -j $(nproc)
           build/bin/llama-server --version
       - name: "IQ3_XXS mat-vec kernel (patch 0090) against the CPU result, switch off and on (Vulkan on the CPU via mesa lavapipe, no GPU on the runner)"
@@ -275,11 +276,12 @@ jobs:
           name: llama-${{ matrix.variant }}-linux-x64
           path: |
             llama.cpp/build/bin/llama-server
+            llama.cpp/build/bin/llama-fit-params
             llama.cpp/build/bin/*.so
       - name: Pack with the library symlinks kept (the tarball the Linux release bundles)
         run: |
           mkdir pkg
-          cp -a llama.cpp/build/bin/llama-server llama.cpp/build/bin/*.so* pkg/
+          cp -a llama.cpp/build/bin/llama-server llama.cpp/build/bin/llama-fit-params llama.cpp/build/bin/*.so* pkg/
           tar -C pkg -czf llama-${{ matrix.variant }}-linux-x64.tar.gz .
           sha256sum llama-${{ matrix.variant }}-linux-x64.tar.gz | tee llama-${{ matrix.variant }}-linux-x64.tar.gz.sha256
           ls -l pkg | head -40
