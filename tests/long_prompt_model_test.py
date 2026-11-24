@@ -41,8 +41,8 @@ with tempfile.TemporaryDirectory() as tmp:
     # 35B, fits in RAM: OFF, and the plan says why (item 351)
     for label, opts in (("PC card (stock path)", ["--vram", "15"]), ("8 GiB card (plugin for a partial offload)", ["--vram", "8"])):
         p = plan("linux", twin, opts)
-        check(not p["on"] and p["ub"] == "2048" and p["ctk"] is None and p["off_line"] and "item 351" in p["out"],
-              f"35B fits in RAM, {label}: long-prompt OFF (-ub {p['ub']}, KV {p['ctk'] or 'f16'}) and the plan prints the source (item 351)")
+        check(not p["on"] and p["ub"] == "2048" and p["ctk"] is None and p["off_line"] and "off by default for a model that fits in RAM" in p["out"],
+              f"35B fits in RAM, {label}: long-prompt OFF (-ub {p['ub']}, KV {p['ctk'] or 'f16'}) and the plan says why")
     p = plan("linux", twin, ["--vram", "15", "--long-prompt"])
     check(p["ub"] == "4096" and p["ctk"] == "q8_0" and not p["off_line"], "35B: --long-prompt still asks for it (-ub 4096, q8_0 KV) and prints no 'off by default' line")
     p = plan("linux", twin, ["--vram", "15", "--no-long-prompt"])
