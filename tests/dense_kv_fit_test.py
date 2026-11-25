@@ -235,7 +235,7 @@ with tempfile.TemporaryDirectory() as tmp:
         # LAUNCHER-1067: the line shows the spill before and after the rule's own savings (-np 1 per-slot state, -ub 256 compute buffer) and where the GPU weights come from
         o128 = out(d128)
         import re as _re
-        m = _re.search(r"spills ([0-9.]+) GiB at 128k \(estimate with 4 slots and -ub 512\).*?frees ([0-9.]+) GiB of per-slot state.*?leave about ([0-9.]+) GiB spilled; GPU weights ([0-9.]+) GiB = file minus token embedding ([0-9.]+) GiB", o128)
+        m = _re.search(r"spills ([0-9.]+) GiB at 128k \(estimate with 4 slots and -ub 512\).*?frees ([0-9.]+) GiB of per-slot state.*?leave about ([0-9.]+) GiB spilled \(planner estimate[^)]*\); GPU weights ([0-9.]+) GiB = file minus token embedding ([0-9.]+) GiB", o128)
         check(bool(m) and "minus MTP" not in o128 and "planner estimate" in o128 and "from the GGUF header" in o128, "spill rule line: before / after figures and the weights' source (token embedding, MTP) are printed")
         if m:
             before, np1, after_, = float(m.group(1)), float(m.group(2)), float(m.group(3))
