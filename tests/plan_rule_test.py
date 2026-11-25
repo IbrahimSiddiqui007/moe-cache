@@ -86,5 +86,53 @@ if os.name != "nt":
                        capture_output=True, text=True, env=env, timeout=60)
     check(r.returncode != 0 and "ZeroDivisionError" not in r.stderr and "head_count" in r.stderr, f"plan.py: head_count 0 -> a message, no traceback ({r.stderr[-120:]!r})")
     check(gp.kv_bytes(z, 1024) is None, "gguf_plan.kv_bytes: head_count 0 -> None")
+# LAUNCHER-1236 critic: tune() itself obeys the switch. The measured buffer (llama-fit-params) is stubbed, so no GPU and no binary: with the rule off the stub is never
+# asked and the table decides; with MOE_CACHE_PLAN_RULE=1 (or the default flipped on) the stub's number decides, a bigger reserve leaves fewer expert layers on the GPU;
+# =0 beats the default flag; the default flag without a fit_params binary changes nothing.
+_MIB = 1 << 20
+_rd = tempfile.mkdtemp(prefix="plan-rule-tune-")
+_rm = os.path.join(_rd, "rule.gguf")
+def _rs(x):
+    b = x.encode(); return struct.pack("<Q", len(b)) + b
+_rt = [("token_embd.weight", 300 * _MIB)] + [(f"blk.{i}.ffn_{k}_exps.weight", 240 * _MIB) for i in range(40) for k in ("gate", "up", "down")] + [(f"blk.{i}.attn_q.weight", 4 * _MIB) for i in range(40)]
+_rk = [_rs("general.architecture") + struct.pack("<I", 8) + _rs("tst")]
+_ro, _rtot = [], 0
+for _n, _sz in _rt:
+    _ro.append(_rtot); _rtot += _sz
+_rh = b"GGUF" + struct.pack("<IQQ", 3, len(_rt), len(_rk)) + b"".join(_rk) + b"".join(_rs(n) + struct.pack("<IQIQ", 1, 8, 0, o) for (n, _), o in zip(_rt, _ro))
+with open(_rm, "wb") as _f:
+    _f.write(_rh + b"\0" * (-len(_rh) % 32)); _f.truncate(len(_rh) + (-len(_rh) % 32) + _rtot)       # sparse
+_asked = []
+_stub = {"mib": 100.0}
+_orig_fp, _orig_pf = gp.fit_params_buffer_mib, gp.prefetch_fit_params
+gp.fit_params_buffer_mib = lambda fp, path, ctx, ub, kv_q8=False, timeout=90: (_asked.append((fp, ub)), _stub["mib"])[1]
+gp.prefetch_fit_params = lambda *a, **k: None
+def _tune(fp="/x/llama-fit-params"):
+    _asked.clear()
+    return gp.tune(_rm, 8192, free=14 * 2**30, want_cache=False, fit_params=fp)
+try:
+    os.environ.pop("MOE_CACHE_PLAN_RULE", None)
+    r_off = _tune()
+    check(not _asked, f"tune: rule off by default, fit_params given -> llama-fit-params never asked ({len(_asked)} asks)")
+    _stub["mib"] = 100.0; os.environ["MOE_CACHE_PLAN_RULE"] = "1"
+    r_small = _tune()
+    check(_asked and all(a[0] == "/x/llama-fit-params" for a in _asked), f"tune: MOE_CACHE_PLAN_RULE=1 asks the fit_params stub ({len(_asked)} asks)")
+    _stub["mib"] = 6000.0
+    r_big = _tune()
+    check(r_big["n_cpu_moe"] > r_small["n_cpu_moe"], f"tune: a 6000 MiB measured reserve puts more layers on the CPU than 100 MiB ({r_big['n_cpu_moe']} vs {r_small['n_cpu_moe']})")
+    os.environ["MOE_CACHE_PLAN_RULE"] = "0"; _stub["mib"] = 6000.0
+    r_zero = _tune()
+    check(not _asked and r_zero["n_cpu_moe"] == r_off["n_cpu_moe"], "tune: MOE_CACHE_PLAN_RULE=0 = the table (same answer as the default, stub not asked)")
+    os.environ.pop("MOE_CACHE_PLAN_RULE", None)
+    gp.PLAN_RULE_DEFAULT_ON = True
+    r_def = _tune()
+    check(_asked and r_def["n_cpu_moe"] == r_big["n_cpu_moe"], "tune: PLAN_RULE_DEFAULT_ON with fit_params -> the rule decides, as with =1")
+    r_nofp = _tune(None)
+    check(not _asked and r_nofp["n_cpu_moe"] == r_off["n_cpu_moe"], "tune: PLAN_RULE_DEFAULT_ON without fit_params -> the table, nothing asked")
+finally:
+    gp.fit_params_buffer_mib, gp.prefetch_fit_params = _orig_fp, _orig_pf
+    gp.PLAN_RULE_DEFAULT_ON = _saved_default
+    os.environ.pop("MOE_CACHE_PLAN_RULE", None)
+    import shutil; shutil.rmtree(_rd, ignore_errors=True)      # the sparse model is ~28 GiB of apparent size
 print(f"plan_rule_test: {len(fails)} failed")
 sys.exit(1 if fails else 0)

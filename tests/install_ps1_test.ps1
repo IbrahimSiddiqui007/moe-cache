@@ -167,12 +167,15 @@ try {
     Check ($r.Code -eq 0 -and $recJ.own_cache -eq $false -and $r.Out -match 'cache:\s+your user cache') '...an older install without the flag stays on the user cache after an update'
     # the default root is not isolated: LOCALAPPDATA pointed at a temp folder, no -Root
     $savedLad = $env:LOCALAPPDATA; $env:LOCALAPPDATA = Join-Path $T 'lad'; New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+    $savedXdg = $env:XDG_CACHE_HOME; $xdgDir = Join-Path $T 'xdgcache'; $env:XDG_CACHE_HOME = $xdgDir
     try {
         $r = & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -BaseUrl (Join-Path $T 'good2') -Version 9.9.2 2>&1 | Out-String
+        # LAUNCHER-1222 critic G: the "cache:" line names the folder the launcher really reads (bin/moe_cache.py CACHE_DIR: XDG_CACHE_HOME first), not a fixed %USERPROFILE%\.cache
+        Check ($r.Contains('your user cache (' + (Join-Path $xdgDir 'moe-cache') + ')')) "...the 'cache:' line follows XDG_CACHE_HOME ($xdgDir\moe-cache)"
         $recD = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'moe-cache\install.json') -Raw | ConvertFrom-Json
         Check ($LASTEXITCODE -eq 0 -and $recD.own_cache -eq $false) '...an install into the default root does not isolate the cache'
         & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -Uninstall 2>&1 | Out-Null
-    } finally { $env:LOCALAPPDATA = $savedLad }
+    } finally { $env:LOCALAPPDATA = $savedLad; $env:XDG_CACHE_HOME = $savedXdg }
 
     # ---- failure midway (AUD-050): a failed update keeps the 9.9.2 install whole, a failed first install leaves nothing
     function Snapshot { $k = if (Test-Path $kit) { (Get-ChildItem -LiteralPath $kit -Recurse -Force | ForEach-Object { $_.FullName.Substring($kit.Length) }) -join '|' } else { '' }
