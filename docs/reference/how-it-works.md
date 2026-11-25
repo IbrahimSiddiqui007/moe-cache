@@ -33,7 +33,7 @@ The path of one operation:
 ```
 
 Each expert keeps its normal address inside one large reserved block of memory; moe-cache decides which experts have real memory behind them.
-It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.cpp runs through its expert multiplication should work; the architectures that were actually tested are listed in [COMPATIBILITY](compatibility.md), [RESULTS](../results/archive/results-windows-desktop.md) and [RESULTS_OLD_LAPTOP](../results/archive/results-old-laptop.md).
+It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.cpp runs through its expert multiplication should work; the architectures that were actually tested are listed in [platforms](platforms.md), [RESULTS](../results/archive/results-windows-desktop.md) and [RESULTS_OLD_LAPTOP](../results/archive/results-old-laptop.md).
 
 ## The patched llama.cpp build
 

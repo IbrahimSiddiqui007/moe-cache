@@ -442,7 +442,7 @@
 - Quality yardstick on the PC: 202 tasks, Flash-Next IQ3_XXS 193 right, IQ2_XS 187 (RESULTS 60): IQ3_XXS when accuracy matters, IQ2_XS for speed.
 - **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
   Granite, Qwen3.6 and Qwen3.5-122B (bigger than RAM); executor byte check 0 mismatches; Flash-Next through the launcher and a chat. Steps:
-  [docs/WINDOWS.md](docs/guides/windows.md); status in [docs/COMPATIBILITY.md](docs/reference/compatibility.md). Windows stays **experimental**.
+  [docs/WINDOWS.md](docs/guides/windows.md); status in [docs/COMPATIBILITY.md](docs/reference/platforms.md). Windows stays **experimental**.
 - Launcher finds the GPU on Windows with AMD and Intel cards (the planner knew only nvidia-smi and Linux sysfs, so it saw no GPU and kept every expert on
   the CPU): it reads `llama-server --list-devices` and picks the adapter with the most dedicated VRAM in the registry, not the first listed (the iGPU).
 - **Windows: the plugin releases the model-file pages llama.cpp leaves in llama-server's working set** (I37). llama.cpp's Windows loader never unmaps the

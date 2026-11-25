@@ -24,7 +24,7 @@ The plugin is built and tested against four llama.cpp versions (the table below)
 | commit `7fe450e19` (2026-09-23; Arch `llama.cpp-cuda` 0.5.0-1) | 0.25.1 | 2 | `./build.sh` |
 
 Other versions may work; the plugin prints a warning if the version differs, and refuses to load (the model then loads normally) when it knows the API differs.
-Currently tested on: Linux, Intel CPU, NVIDIA GPU. Everything else is in `COMPATIBILITY.md`.
+Currently tested on: Linux, Intel CPU, NVIDIA GPU. Everything else is in `platforms.md`.
 
 ## 0. If your distro's llama.cpp is not usable: build the matching llama.cpp with Vulkan (about 20 minutes, once)
 

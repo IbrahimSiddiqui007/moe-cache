@@ -69,7 +69,7 @@ The shareable report and the default JSON export contain none of the prompts, ou
 
 ## Known limits
 - The plugin trusts the GGUF header of the model you load (llama.cpp does too). A hostile model file is a risk for llama.cpp itself, not only for this plugin.
-- Most testing is on Linux x86-64 with an NVIDIA GPU (CUDA and Vulkan) and CPU-only builds; Windows 11 with an AMD GPU is tested on one desktop (identity and speed, [COMPATIBILITY.md](compatibility.md)) and in CI.
+- Most testing is on Linux x86-64 with an NVIDIA GPU (CUDA and Vulkan) and CPU-only builds; Windows 11 with an AMD GPU is tested on one desktop (identity and speed, [platforms.md](platforms.md)) and in CI.
 - On a machine shared with other users, files in `/tmp` and other users' processes are outside what this project protects.
 
 ## Reporting

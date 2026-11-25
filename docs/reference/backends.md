@@ -7,7 +7,7 @@ moe-cache talks to llama.cpp only through ggml's generic backend interface, so i
 |---|---|---|
 | CUDA (NVIDIA) | **tested** (RTX 4060 Laptop, CUDA 13) | plugin, executor, llama.cpp GPU expert cache, identity |
 | Vulkan on an Intel iGPU | **tested** earlier (llama.cpp 7fe450e19, loadable backends) | plugin and identity; not re-run on the newer commit |
-| Vulkan on AMD (RX 9070 XT, Windows 11 and a user's Linux; Vega 8 iGPU on Linux) and NVIDIA (Linux) | **tested**: identity 4/4 (details and dates: [COMPATIBILITY.md](compatibility.md)) | the Windows desktop is the speed reference |
+| Vulkan on AMD (RX 9070 XT, Windows 11 and a user's Linux; Vega 8 iGPU on Linux) and NVIDIA (Linux) | **tested**: identity 4/4 (details and dates: [platforms.md](platforms.md)) | the Windows desktop is the speed reference |
 | Vulkan on Intel Arc (discrete) | untested | expected to behave like the Intel iGPU case |
 | ROCm / HIP (AMD) | **loads, not identity-checked** (Windows, official b11669 HIP zip, RX 9070 XT; RESULTS 67) | generic ggml calls only; the llama.cpp GPU expert cache is backend-neutral upstream code. On that card (older build) HIP was slower than Vulkan even without the plugin, and the launcher reads no GPU memory from a HIP build (it plans every expert layer on the CPU) |
 | SYCL (Intel Arc, Intel GPUs) | **untested** | same as above |

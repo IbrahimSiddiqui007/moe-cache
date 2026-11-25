@@ -14,9 +14,9 @@ print(f"README.md: {n} lines (limit: under 200)")
 import shutil, tempfile
 T = tempfile.mkdtemp(prefix="moe-doclinks-")
 os.makedirs(os.path.join(T, "tools")); shutil.copy(os.path.join(HERE, "tools", "check_doc_links.py"), os.path.join(T, "tools"))
-open(os.path.join(T, "A.md"), "w").write("[ok](B.md) [bad](nope.md)\n"); open(os.path.join(T, "B.md"), "w").write("x\n")
+open(os.path.join(T, "A.md"), "w").write("[ok](B.md) [bad](nope.md)\n"); open(os.path.join(T, "B.md"), "w").write("x\n"); open(os.path.join(T, "C.md"), "w").write("see `docs/gone.md` and `tools/check_doc_links.py` and `docs/*.md`\n")
 r2 = subprocess.run([sys.executable, os.path.join(T, "tools", "check_doc_links.py")], capture_output=True, text=True, env=dict(os.environ, GIT_DIR=os.path.join(T, "no-such")))
-ok2 = r2.returncode == 1 and "nope.md" in r2.stdout and "2 files" in r2.stdout
+ok2 = r2.returncode == 1 and "nope.md" in r2.stdout and "3 files" in r2.stdout and "docs/gone.md" in r2.stdout and "*.md" not in r2.stdout.replace("check", "")
 print(("  ok   " if ok2 else "  FAIL ") + f"no git: the folder is walked and the broken link is found ({r2.returncode}, {r2.stdout.strip()[:80]})")
 shutil.rmtree(T, ignore_errors=True)
 # a release kit has no .git and ships only part of the docs: its links into benchmarks/ and archive/ are not there, so outside a checkout only "files were seen" counts

@@ -74,4 +74,4 @@ Yes: the control page (`bin/moe-cache-server --ui`, see [docs/guides/gui.md](gui
 
 ### Why not an own inference engine?
 
-moe-cache is a small layer for the MoE models stock llama.cpp runs (tested list in COMPATIBILITY), so a new model works as soon as llama.cpp runs it. The reasoning and our measurements: [docs/internal/ENGINE_DECISION.md](../internal/ENGINE_DECISION.md).
+moe-cache is a small layer for the MoE models stock llama.cpp runs (tested list in platforms.md), so a new model works as soon as llama.cpp runs it. The reasoning and our measurements: [docs/internal/ENGINE_DECISION.md](../internal/ENGINE_DECISION.md).

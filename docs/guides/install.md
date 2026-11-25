@@ -197,7 +197,7 @@ Keep the Windows page file at "system managed" (or 14 GB or more): the cache cos
 
 ### 5. Optional: prove it is correct and measure it on your machine
 
-Linux (from the tarball or a checkout; the Windows kit has `tools\windows_test.ps1` instead, see docs/guides/windows-test.md):
+Linux (from the tarball or a checkout; the Windows kit has `tools\windows_test.ps1` instead, see docs/guides/windows.md):
 
 ```bash
 tests/identity.sh /path/to/model.gguf --llama-server /path/to/llama-server      # PASS = the same tokens as stock llama.cpp
