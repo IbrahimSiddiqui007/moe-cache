@@ -2589,7 +2589,7 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     if b:
                         rr.measure_save(CACHE_DIR, cmd, dev, b, ded, sha)
             threading.Thread(target=rr.watch_room, args=(p.pid, dev, CACHE_DIR, lambda m: say(m, err=True), lambda: p.poll() is None, lambda: seen["ready"]),
-                             kwargs={"room_mib": REAL_ROOM.get("room_mib"), "on_reading": first_reading}, daemon=True).start()
+                             kwargs={"room_mib": REAL_ROOM.get("room_mib"), "others_mib": REAL_ROOM.get("others_mib"), "on_reading": first_reading}, daemon=True).start()
         except Exception:
             pass
     if port:
@@ -3741,7 +3741,7 @@ def real_room_stage(a, g, machine):
         planner_path()
         from gguf_plan import others_dedicated_mib, real_room_mib, ROOM_RESERVE_MIB
         from real_room import _age_text
-        from real_room import room_ceiling_info, room_forget, enabled, NEAR_ROOM_MIB
+        from real_room import room_ceiling_info, room_forget, enabled, NEAR_ROOM_MIB, OTHERS_MOVED_MIB, others_moved, const_label
         total, driver = float(g[3]), float(g[2])
         REAL_ROOM.clear(); REAL_ROOM["device"] = g[1]
         others = others_dedicated_mib(machine.gpu_process_text())
@@ -3751,18 +3751,26 @@ def real_room_stage(a, g, machine):
         ci = room_ceiling_info(CACHE_DIR, g[1]) if learn else None
         ceil_ = ci[0] if ci else None                      # LAUNCHER-1131: what an earlier start of this GPU kept in dedicated memory when it paged
         if ceil_ and others is not None:
-            pre = real_room_mib(total, others)
-            if pre and pre > ceil_ + NEAR_ROOM_MIB:        # critic F2: the desktop gave the room back (the counters show it now): do not plan against the stale ceiling, and forget it
+            by_card0 = total - others
+            pre = real_room_mib(min(by_card0, driver - others if driver >= by_card0 else driver), 0.0)      # the same room as below (critic N1-N3)
+            mv = others_moved(CACHE_DIR, g[1], others)     # LAUNCHER-1154: the other programs' use moved since the ceiling was stored: measure again, do not wait for 30 days
+            if mv:
                 room_forget(CACHE_DIR, g[1])
-                say(f"moe-cache: GPU room: the card has {pre / 1024:.1f} GiB of room now, more than the {ceil_ / 1024:.1f} GiB learned {_age_text(ci[1])} ago: that ceiling is dropped (MOE_CACHE_LEARN_ROOM=0 turns learning off)")
+                say(f"moe-cache: GPU room: the other programs held {mv[0] / 1024:.1f} GiB of the card when the {ceil_ / 1024:.1f} GiB ceiling was learned ({_age_text(ci[1])} ago), they hold {mv[1] / 1024:.1f} GiB now (a move of more than {OTHERS_MOVED_MIB} MiB: "
+                    f"{const_label('OTHERS_MOVED_MIB')}): that ceiling is dropped and the room is measured again (MOE_CACHE_LEARN_ROOM=0 turns the learning off)")
+                ceil_ = None
+            elif pre and pre > ceil_ + NEAR_ROOM_MIB:      # critic F2: the desktop gave the room back (the counters show it now): do not plan against the stale ceiling, and forget it
+                room_forget(CACHE_DIR, g[1])
+                say(f"moe-cache: GPU room: the card has {pre / 1024:.1f} GiB of room now, more than the {ceil_ / 1024:.1f} GiB learned {_age_text(ci[1])} ago: that ceiling is dropped ({const_label('NEAR_ROOM_MIB')}; MOE_CACHE_LEARN_ROOM=0 turns the learning off)")
                 ceil_ = None
         if others is None:
             say("moe-cache: GPU room: the other programs' GPU memory use could not be read (Windows counters): planning with llama-server's free figure as before")
             if ceil_ and ceil_ < driver - 256:
                 a.room_gib = ceil_ / 1024
-                say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, the most an earlier start kept in dedicated memory before the card paged, learned {_age_text(ci[1])} ago (`moe_cache.py room --reset` forgets it)")
+                say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, the most an earlier start kept in dedicated memory before the card paged, learned {_age_text(ci[1])} ago (trusted for {const_label('ROOM_KEEP_S')} unless the room changes; `moe_cache.py room --reset` forgets it)")
             return
         a.room_used_gib = others / 1024
+        REAL_ROOM["others_mib"] = others
         # critic N1-N3: the room is the smaller of (a) the card's size minus the others and (b) llama-server's free figure minus the others, then the growth reserve comes off the result.
         # (b) only when that figure does not already count the others (driver >= card - others); otherwise the driver's figure is taken as it is.
         by_card = total - others
@@ -3779,7 +3787,7 @@ def real_room_stage(a, g, machine):
         a.room_gib = room / 1024
         if why_ceil:
             say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, the most an earlier start kept in dedicated memory before the card paged, learned {_age_text(ci[1])} ago (the desktop and other programs hold {others / 1024:.1f} GiB now; "
-                "`moe_cache.py room` shows what was learned, `moe_cache.py room --reset` forgets it, MOE_CACHE_LEARN_ROOM=0 turns it off)")
+                f"trusted for {const_label('ROOM_KEEP_S')} unless the room changes; `moe_cache.py room` shows what was learned, `moe_cache.py room --reset` forgets it, MOE_CACHE_LEARN_ROOM=0 turns it off)")
             return
         if others >= 1024:                         # a card nearly empty of other programs: planned with the room, nothing worth saying
             say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB (the desktop and other programs hold {others / 1024:.1f} GiB of the card's "

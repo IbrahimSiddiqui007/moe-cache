@@ -13,6 +13,18 @@ ROOM_KEEP_S = 30 * 86400    # a learned ceiling is trusted for 30 days
 MEASURE_KEEP_S = 90 * 86400
 NEAR_ROOM_MIB = 1024        # dedicated memory this close to the room (or closer) means the card is full
 MEASURE_VERSION = 1
+OTHERS_MOVED_MIB = 1024     # LAUNCHER-1154: other programs' dedicated GPU use that differs this much from what it was when the ceiling was stored: the ceiling is dropped and the room measured again
+
+# LAUNCHER-1154 (R19): every constant above comes from our test PC (Windows, AMD RX 9070 XT, one machine), not from the user's machine; the plan and `moe_cache.py room` say so where they use one.
+OUR_PC_CONSTANTS = {"GPU_PAGED_MIB": GPU_PAGED_MIB, "NEAR_ROOM_MIB": NEAR_ROOM_MIB, "ROOM_KEEP_S": ROOM_KEEP_S, "OTHERS_MOVED_MIB": OTHERS_MOVED_MIB}
+
+
+def const_label(*names):
+    """'our-PC constants: ROOM_KEEP_S 30 d, NEAR_ROOM_MIB 1024 MiB ...': the source of each figure a plan line used (R19)."""
+    def one(n):
+        v = OUR_PC_CONSTANTS[n]
+        return f"{n} {v // 86400} d" if n.endswith("_S") else f"{n} {v} MiB"
+    return "our-PC constants: " + ", ".join(one(n) for n in names)
 
 
 def _win_ps():
@@ -83,12 +95,27 @@ def room_ceiling_info(cache_dir, device, now=None):
     return c, max(0, int((now or time.time()) - float((_read_json(_store_file(cache_dir)).get(device) or {}).get("t", 0))))
 
 
+def others_moved(cache_dir, device, others_mib, now=None):
+    """LAUNCHER-1154: (stored, now) in MiB when other programs' dedicated GPU use has moved by more than OTHERS_MOVED_MIB since the ceiling was stored, else None. A ceiling stored before
+    this was recorded (no figure), or no reading now, cannot be compared: None (the 30 days and the room checks still apply)."""
+    d = _read_json(_store_file(cache_dir)).get(device) or {}
+    try:
+        old = d.get("others_mib")
+        if others_mib is None or old is None or not room_ceiling(cache_dir, device, now):
+            return None
+        if abs(float(others_mib) - float(old)) > OTHERS_MOVED_MIB:
+            return float(old), float(others_mib)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def room_forget(cache_dir, device):
     """Drop the learned ceiling of this GPU (the desktop gave the room back); True when something was dropped."""
     st = _read_json(_store_file(cache_dir)); d = st.get(device) or {}
     if "ceiling_mib" not in d:
         return False
-    d.pop("ceiling_mib", None); d.pop("paged_mib", None)
+    d.pop("ceiling_mib", None); d.pop("paged_mib", None); d.pop("others_mib", None)
     st[device] = d
     return _write_json(_store_file(cache_dir), st)
 
@@ -103,7 +130,7 @@ def learned_text(cache_dir, now=None):
     for dev, d in sorted(_read_json(_store_file(cache_dir)).items()):
         info = room_ceiling_info(cache_dir, dev, now) if isinstance(d, dict) else None
         if info:
-            out.append(f"GPU {dev}: planning ceiling {info[0] / 1024:.2f} GiB of dedicated memory, learned {_age_text(info[1])} ago (the card paged; kept {ROOM_KEEP_S // 86400} days unless a later start sees the room back)")
+            out.append(f"GPU {dev}: planning ceiling {info[0] / 1024:.2f} GiB of dedicated memory, learned {_age_text(info[1])} ago (the card paged; kept {ROOM_KEEP_S // 86400} days unless a later start sees the room back or the other programs' use moves by {OTHERS_MOVED_MIB} MiB; {const_label("ROOM_KEEP_S", "OTHERS_MOVED_MIB")})")
     md = os.path.join(cache_dir, "measured")
     n = 0
     try:
@@ -129,7 +156,7 @@ def reset_learned(cache_dir):
     return n
 
 
-def room_learn(cache_dir, device, ded, sha, now=None, room_mib=None):
+def room_learn(cache_dir, device, ded, sha, now=None, room_mib=None, others_mib=None):
     """Record one reading of our own process. Paging = shared above GPU_PAGED_MIB while dedicated memory is within NEAR_ROOM_MIB of room_mib (the pre-load room; unknown: any shared use counts):
     the dedicated figure becomes the ceiling. Shared use with dedicated far below the room is staging, not paging. No paging with more dedicated memory than a stored ceiling, or a pre-load
     room clearly above it: the desktop gave room back, the ceiling goes. Returns True when the process is paging."""
@@ -143,15 +170,19 @@ def room_learn(cache_dir, device, ded, sha, now=None, room_mib=None):
     before = json.dumps(d, sort_keys=True)
     if paging:
         d.update(ceiling_mib=int(ded), paged_mib=int(sha), t=now or time.time())
+        if others_mib is not None:
+            d["others_mib"] = int(others_mib)      # LAUNCHER-1154: what the other programs held when this ceiling was learned
+        else:
+            d.pop("others_mib", None)
     elif d.get("ceiling_mib") and (ded > d["ceiling_mib"] + 256 or (room_mib and room_mib > d["ceiling_mib"] + NEAR_ROOM_MIB)):
-        d.pop("ceiling_mib", None); d.pop("paged_mib", None)
+        d.pop("ceiling_mib", None); d.pop("paged_mib", None); d.pop("others_mib", None)
     if json.dumps(d, sort_keys=True) != before:
         st[device] = d
         _write_json(_store_file(cache_dir), st)
     return paging
 
 
-def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=None, delays=(5, 25, 60), every=300, room_mib=None, on_reading=None):
+def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=None, delays=(5, 25, 60), every=300, room_mib=None, on_reading=None, others_mib=None):
     """After the load (ready() true) read our own process's dedicated and shared GPU memory at `delays`, then every `every` seconds while alive(): learn the ceiling and say one
     'moe-cache: warning:' line when paging starts. on_reading(ded, sha) gets every reading (the measurement store uses the first). Stops after 3 readings in a row without a counter.
     sampler(pid) -> text and sleep(s) are injectable for tests."""
@@ -179,10 +210,10 @@ def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=No
                 on_reading(ded, sha)
             except Exception:
                 pass
-        if room_learn(cache_dir, device, ded, sha, room_mib=room_mib) and not warned:
+        if room_learn(cache_dir, device, ded, sha, room_mib=room_mib, others_mib=others_mib) and not warned:
             warned = True
             say(f"moe-cache: warning: GPU memory is paging: {sha:.0f} MiB of this server sit in shared system memory (the card keeps {ded / 1024:.1f} GiB of dedicated memory for it, "
-                "the desktop and other programs hold the rest), so decode is slower. A dense model's next start plans with that room and takes a smaller KV cache type first "
+                f"the desktop and other programs hold the rest; paging means more than {GPU_PAGED_MIB} MiB shared with dedicated memory within {NEAR_ROOM_MIB} MiB of the room: " + const_label("GPU_PAGED_MIB", "NEAR_ROOM_MIB") + "), so decode is slower. A dense model's next start plans with that room and takes a smaller KV cache type first "
                 "(q8_0, then K q8_0 / V q4_0, then q4_0); closing programs that use the card gives the room back")
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LAUNCHER-1131 second half (audit ranks 4 and 5): paging detector, learned ceiling, "every load is a measurement" (planner/real_room.py). Fake counters and recorded log lines, no server.
    python3 tests/real_room_test.py"""
-import os, struct, sys, tempfile, types
+import json, os, struct, sys, tempfile, time, types
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-realroom-test-")
 os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")
@@ -161,13 +161,13 @@ def stage(m):
         mc.say = sv
     return a, said
 a1, s1 = stage(SM())
-check(abs(a1.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and mc.REAL_ROOM.get("room_mib") == 16304 - 2400 - 300, f"gpu_stage: the pre-load room as before; the watcher gets room_mib {mc.REAL_ROOM.get('room_mib')}")
-rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 13000, 2000)
+check(abs(a1.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and mc.REAL_ROOM.get("room_mib") == 15400 - 2400 - 300, f"gpu_stage: the pre-load room as before; the watcher gets room_mib {mc.REAL_ROOM.get('room_mib')}")
+rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 12000, 2000)
 a2, s2 = stage(SM())
-check(abs(a2.room_gib - 13000 / 1024) < 0.01 and any("before the card paged" in x for x in s2), f"gpu_stage: a learned ceiling below the pre-load room wins ({getattr(a2, 'room_gib', None)})")
+check(abs(a2.room_gib - 12000 / 1024) < 0.01 and any("before the card paged" in x for x in s2), f"gpu_stage: a learned ceiling below the pre-load room wins ({getattr(a2, 'room_gib', None)})")
 m0 = SM(); m0.others = 0
 a3, s3 = stage(m0)
-check(abs(a3.room_gib - 13000 / 1024) < 0.01 and any("could not be read" in x for x in s3), "gpu_stage: counters unreadable -> the ceiling still applies")
+check(abs(a3.room_gib - 12000 / 1024) < 0.01 and any("could not be read" in x for x in s3), "gpu_stage: counters unreadable -> the ceiling still applies")
 
 # --- critic F1: the plan's -ub reaches the stored measurement (the wiring, not only the function) ---
 mc.CACHE_DIR = os.path.join(TMP, "f1_cache"); mc.REAL_ROOM.clear(); mc.REAL_ROOM["device"] = "AMD Radeon RX 9070 XT"
@@ -187,16 +187,16 @@ os.environ["MOE_CACHE_LEARN_ROOM"] = "0"
 check(mc.measured_need(mdl, ctx, ("q4_0", "q4_0"), 512) is None, "F4: MOE_CACHE_LEARN_ROOM=0: a stored measurement is not used")
 mc.CACHE_DIR = os.path.join(TMP, "f4_cache"); rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 12000, 2000)
 a4, s4 = stage(SM())
-check(abs(a4.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and not mc.REAL_ROOM.get("device") and not any("before the card paged" in x for x in s4), "F4: MOE_CACHE_LEARN_ROOM=0: the learned ceiling is ignored, no watcher device (the pre-load room stays)")
+check(abs(a4.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and not mc.REAL_ROOM.get("device") and not any("before the card paged" in x for x in s4), "F4: MOE_CACHE_LEARN_ROOM=0: the learned ceiling is ignored, no watcher device (the pre-load room stays)")
 del os.environ["MOE_CACHE_LEARN_ROOM"]
 
 # --- critic F2: a stale ceiling is dropped at the start when the room is back ---
 mc.CACHE_DIR = os.path.join(TMP, "f2_cache"); rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 10000, 2000)
-a5, s5 = stage(SM())              # pre-load room 13604 MiB > 10000 + 1024: the ceiling is stale
-check(abs(a5.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and rr.room_ceiling(mc.CACHE_DIR, "AMD Radeon RX 9070 XT") is None and any("ceiling is dropped" in x for x in s5), "F2: room 13.3 GiB against a learned 9.8 GiB: planned with the room, the ceiling is gone at once")
-rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 13000, 2000)
-a6, s6 = stage(SM())              # ceiling 13000 is within 1024 of the room 13604: it stands
-check(abs(a6.room_gib - 13000 / 1024) < 0.01 and any("learned" in x and "ago" in x for x in s6) and rr.room_ceiling(mc.CACHE_DIR, "AMD Radeon RX 9070 XT") == 13000, "F2: a ceiling within 1 GiB of the room stands, and the line says how old it is")
+a5, s5 = stage(SM())              # pre-load room 12700 MiB > 10000 + 1024: the ceiling is stale
+check(abs(a5.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and rr.room_ceiling(mc.CACHE_DIR, "AMD Radeon RX 9070 XT") is None and any("ceiling is dropped" in x for x in s5), "F2: room 13.3 GiB against a learned 9.8 GiB: planned with the room, the ceiling is gone at once")
+rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 12000, 2000)
+a6, s6 = stage(SM())              # ceiling 12000 is within 1024 of the room 12700: it stands
+check(abs(a6.room_gib - 12000 / 1024) < 0.01 and any("learned" in x and "ago" in x for x in s6) and rr.room_ceiling(mc.CACHE_DIR, "AMD Radeon RX 9070 XT") == 12000, "F2: a ceiling within 1 GiB of the room stands, and the line says how old it is")
 
 # --- critic F4: see and reset ---
 mc.CACHE_DIR = os.path.join(TMP, "f4b_cache"); rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 12000, 2000)
@@ -211,4 +211,41 @@ with contextlib.redirect_stdout(buf):
     mc.room_cmd([])
 out = buf.getvalue()
 check("11.72 GiB" in out and "forgot 2 file(s)" in out and out.rstrip().endswith("nothing learned yet"), "F4: `moe_cache.py room` shows, `--reset` forgets, then there is nothing")
+
+# --- LAUNCHER-1154: labels and the "other programs moved" invalidation ---
+check(rr.const_label("ROOM_KEEP_S", "NEAR_ROOM_MIB") == "our-PC constants: ROOM_KEEP_S 30 d, NEAR_ROOM_MIB 1024 MiB" and set(rr.OUR_PC_CONSTANTS) >= {"GPU_PAGED_MIB", "NEAR_ROOM_MIB", "ROOM_KEEP_S", "OTHERS_MOVED_MIB"}, "1154: const_label names each figure as our-PC constant")
+src = open(os.path.join(HERE, "planner", "real_room.py"), encoding="utf-8").read()
+check("our-PC constants" in src and "OUR_PC_CONSTANTS" in src, "1154: the constants are labelled in the code")
+mc.CACHE_DIR = os.path.join(TMP, "m1_cache"); DEV = "AMD Radeon RX 9070 XT"
+rr.room_learn(mc.CACHE_DIR, DEV, 12000, 2000, others_mib=2400)
+check(rr.others_moved(mc.CACHE_DIR, DEV, 2400 + 1024) is None and rr.others_moved(mc.CACHE_DIR, DEV, 2400 - 1024) is None, "1154: a move of exactly OTHERS_MOVED_MIB (up or down) is not notable")
+check(rr.others_moved(mc.CACHE_DIR, DEV, 2400 + 1025) == (2400.0, 3425.0) and rr.others_moved(mc.CACHE_DIR, DEV, 100) == (2400.0, 100.0), "1154: a move above OTHERS_MOVED_MIB, up or down, is reported with both figures")
+check(rr.others_moved(mc.CACHE_DIR, DEV, None) is None, "1154: no reading now: no comparison")
+check(rr.room_ceiling(mc.CACHE_DIR, DEV, now=time.time() + rr.ROOM_KEEP_S + 5) is None and rr.others_moved(mc.CACHE_DIR, DEV, 9000, now=time.time() + rr.ROOM_KEEP_S + 5) is None, "1154: an expired ceiling is not reported as moved (it is already gone)")
+mc.CACHE_DIR = os.path.join(TMP, "m2_cache"); rr.room_learn(mc.CACHE_DIR, DEV, 12000, 2000)
+check(rr.others_moved(mc.CACHE_DIR, DEV, 9000) is None, "1154: a ceiling stored without the others' figure (older start) cannot be compared: it stands")
+# through gpu_stage: others held 2400 (SM default); a ceiling stored when they held 400 is dropped, one stored at 2000 stands
+mc.CACHE_DIR = os.path.join(TMP, "m3_cache"); rr.room_learn(mc.CACHE_DIR, DEV, 12000, 2000, others_mib=400)
+a7, s7 = stage(SM())
+check(rr.room_ceiling(mc.CACHE_DIR, DEV) is None and abs(a7.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and any("held 0.4 GiB" in x and "now" in x and "dropped" in x and "our-PC constants: OTHERS_MOVED_MIB 1024 MiB" in x for x in s7), f"1154: gpu_stage drops a ceiling when the others' use moved (400 -> 2400 MiB), plans with the room, says why and labels the constant ({[x for x in s7 if 'dropped' in x]})")
+mc.CACHE_DIR = os.path.join(TMP, "m4_cache"); rr.room_learn(mc.CACHE_DIR, DEV, 12000, 2000, others_mib=2000)
+a8, s8 = stage(SM())
+check(rr.room_ceiling(mc.CACHE_DIR, DEV) == 12000 and abs(a8.room_gib - 12000 / 1024) < 0.01 and any("our-PC constants: ROOM_KEEP_S 30 d" in x for x in s8), "1154: others 2000 -> 2400 MiB: the ceiling stands, and the plan line labels the 30 days as our-PC constant")
+check(mc.REAL_ROOM.get("others_mib") == 2400, "1154: the start remembers the others' use for the watcher")
+# the watcher stores the others' figure with a new ceiling and drops it with the ceiling
+mc.CACHE_DIR = os.path.join(TMP, "m5_cache"); rr.room_learn(mc.CACHE_DIR, DEV, 12000, 2000, others_mib=2400)
+check(json.load(open(os.path.join(mc.CACHE_DIR, "gpu_room.json")))[DEV].get("others_mib") == 2400, "1154: room_learn stores the others' figure with the ceiling")
+rr.room_learn(mc.CACHE_DIR, DEV, 15000, 0)
+check(rr.room_ceiling(mc.CACHE_DIR, DEV) is None and "others_mib" not in json.load(open(os.path.join(mc.CACHE_DIR, "gpu_room.json")))[DEV], "1154: a dropped ceiling takes the others' figure with it")
+# the paging warning and `room` text carry the labels
+rr.room_learn(mc.CACHE_DIR, DEV, 12000, 2000, others_mib=2400)
+lt2 = rr.learned_text(mc.CACHE_DIR)
+check(any("our-PC constants: ROOM_KEEP_S 30 d, OTHERS_MOVED_MIB 1024 MiB" in x for x in lt2), "1154: `moe_cache.py room` labels the constants it names")
+said_w, nw = [], [0]
+def alive_w():
+    nw[0] += 1
+    return nw[0] < 10
+rr.watch_room(7, "GPU V", os.path.join(TMP, "v"), said_w.append, alive_w, lambda: True, sampler=lambda pid: line(7, "dedicated", 12000) + ";" + line(7, "shared", 2000), sleep=lambda s: None, others_mib=1800)
+check(len(said_w) == 1 and "our-PC constants: GPU_PAGED_MIB 300 MiB, NEAR_ROOM_MIB 1024 MiB" in said_w[0], "1154: the paging warning labels GPU_PAGED_MIB and NEAR_ROOM_MIB as our-PC constants")
+check(json.load(open(os.path.join(TMP, "v", "gpu_room.json")))["GPU V"].get("others_mib") == 1800, "1154: the watcher stores the others' figure it was given")
 sys.exit(1 if fails else 0)
