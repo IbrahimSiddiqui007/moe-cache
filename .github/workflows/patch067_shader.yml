@@ -62,7 +62,7 @@ jobs:
       - name: Build (Vulkan linked in, no DL backends, one folder)
         working-directory: llama.cpp
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CONNECT=OFF -DLLAMA_BUILD_BORINGSSL=ON
+          cmake -S . -B build -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CONNECT=OFF -DLLAMA_BUILD_BORINGSSL=ON
           cmake --build build --config Release --target test-backend-ops llama-bench
       - name: Version and device list
         run: |
