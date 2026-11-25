@@ -518,19 +518,57 @@ def cmd_board(a, bdir):
 
 PERF = re.compile(r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?(?:tok/s|tokens/s)|(?<![\w.])[+\-−–]\d+(?:[.,]\d+)?\s?%|(?<![\w.])\d+(?:\.\d+)?\s?(?:×|x)(?![\w])")
 
+_WIDE_UNIT = r"(?:ms|seconds|secs?|minutes|mins?|s)"
+_WIDE_NEXT = r"(?=\s*,?\s*(?:faster|slower|latency|per[\s-]token|to[\s-]first[\s-]token|TTFT|load[\s-]time|startup)\b)"
+# --wide only: throughput, latency/duration near a comparison word, unsigned comparison percents, N-fold / N times faster
+PERF_WIDE = re.compile(PERF.pattern + "|" + "|".join((
+    r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?(?:GiB|GB|MB)/(?:s|sec)\b",
+    r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?" + _WIDE_UNIT + r"\b" + _WIDE_NEXT,
+    r"(?:TTFT|latency|time\s+to\s+first\s+token)[\s:]*(?:of\s+)?(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?" + _WIDE_UNIT + r"\b",
+    r"(?<![\w.+\-−–≈])\d+(?:\.\d+)?\s?%(?=\s*(?:faster|slower|speedup|lower|higher|less|reduction|gain|improvement)\b)",
+    r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?(?:-\s?fold|\s?times\s+(?:faster|slower))",
+)))
 
-def perf_numbers(line):
-    """The performance numbers a line shows (tok/s values, signed percents, N× multipliers), outside HTML tags and comments."""
+
+def perf_numbers(line, wide=False):
+    """The performance numbers a line shows (tok/s values, signed percents, N× multipliers; with wide: GB/s, latency and comparison forms), outside HTML tags and comments."""
     text = re.sub(r"<!--.*?-->", " ", line)
     text = re.sub(r"<[^>]+>", " ", text)
-    return [m.group(0).strip() for m in PERF.finditer(text)]
+    return [m.group(0).strip() for m in (PERF_WIDE if wide else PERF).finditer(text)]
 
 
-def lint_file(path, claims, status, root=ROOT):
+WIDE_PATTERNS = ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/*.md", "docs/releases/*.md",
+                 "docs/*.html", "docs/mockup/*.html", "benchmarks/README.md")
+WIDE_EXCLUDE = re.compile(r"(?:^|/)(?:docs/internal|docs/results-archive|archive|third_party|benchmarks/claims|tests)(?:/|$)")
+
+
+def wide_files(root=ROOT):
+    """The public text files `lint --wide` reads, found with glob (no git call): sorted, generated files and older release notes left out."""
+    out = []
+    for p in WIDE_PATTERNS:
+        for f in glob.glob(os.path.join(root, p)):
+            rel = os.path.relpath(f, root).replace(os.sep, "/")
+            if rel in ("benchmarks/BOARD.md", "benchmarks/JOURNAL.md") or WIDE_EXCLUDE.search(rel):
+                continue
+            m = re.fullmatch(r"docs/releases/RELEASE_NOTES_v(.+)\.md", rel)
+            if m:
+                cur, v = vtuple(current_version(root)), vtuple(m.group(1))
+                if v is not None and cur is not None and v < cur:
+                    continue
+            out.append(f)
+    return sorted(out)
+
+
+def lint_file(path, claims, status, root=ROOT, wide=False):
     """Problems [(line, kind, text)] and the count of lines that show numbers."""
     probs, shown, ok = [], 0, 0
     fence = skip = False
+    heads = 0
     for n, line in enumerate(open(path, encoding="utf-8").read().splitlines(), 1):
+        if wide and os.path.basename(path) == "CHANGELOG.md" and line.startswith("## "):
+            heads += 1
+            if heads > 1:
+                break  # --wide reads only the newest CHANGELOG section; older ones are history
         if path.endswith((".md", ".markdown")) and line.lstrip().startswith("```"):
             fence = not fence
             continue
@@ -542,7 +580,7 @@ def lint_file(path, claims, status, root=ROOT):
             continue
         if fence or skip:
             continue
-        nums = perf_numbers(line)
+        nums = perf_numbers(line, wide)
         if not nums:
             continue
         shown += 1
@@ -565,10 +603,10 @@ def lint_file(path, claims, status, root=ROOT):
 def cmd_lint(a, bdir):
     claims, runs = load_claims(bdir), load_runs(bdir)
     status, _ = compute_status(claims, runs)
-    files = a.files or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "RESULTS_CURRENT.md"), os.path.join(ROOT, "docs", "benchmark_card.html")]
+    files = a.files or (wide_files() if a.wide else [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "RESULTS_CURRENT.md"), os.path.join(ROOT, "docs", "benchmark_card.html")])
     total = 0
     for f in files:
-        probs, shown, ok = lint_file(f, claims, status)
+        probs, shown, ok = lint_file(f, claims, status, wide=a.wide)
         rel = os.path.relpath(f, ROOT) if f.startswith(ROOT) else f
         for n, kind, text in probs:
             print(f"{rel}:{n}: {kind}: {text}")
@@ -672,6 +710,7 @@ def main(argv=None, prog_cmd=None):
     b = sub.add_parser("board", help="write BOARD.md and JOURNAL.md"); b.add_argument("--check", action="store_true")
     l = sub.add_parser("lint", help="every performance number in README.md / the card needs a current claim marker"); l.add_argument("files", nargs="*")
     l.add_argument("--warn", action="store_true", help="print the problems, exit 0"); l.add_argument("--strict", action="store_true", help="exit 1 on a problem (default)")
+    l.add_argument("--wide", action="store_true", help="every public text file (README, CHANGELOG, CONTRIBUTING, docs, benchmarks/README) and more number forms: GB/s, latency near faster/slower/TTFT, unsigned comparison percents, N-fold")
     r = sub.add_parser("replay", help="commands to reproduce a claim; --record NEW.json compares")
     r.add_argument("claim"); r.add_argument("--run", action="store_true", help="execute the commands (asks before each one)"); r.add_argument("--yes", action="store_true", help="with --run: do not ask (read the commands first)"); r.add_argument("--record"); r.add_argument("--band", type=float, default=NOISE_MIN_PCT)
     r.add_argument("--arm-map", action="append", help="CLAIMARM=NEWARM when the new record names the arms differently")
