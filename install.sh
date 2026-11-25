@@ -14,6 +14,7 @@
 # ~/.local/share/moe-cache) and adds a `moe-cache` command in ~/.local/bin. No apt, no compiler, no root, nothing sent anywhere. Run it again to update.
 #     --uninstall  remove exactly what a release install added (the versions folder, the moe-cache command); models and the moe-cache folder under your user cache (<prefix>/cache for an install under its own --prefix) stay
 #     --build      build from source even when downloaded on its own (the old behaviour)
+#     --force      unpack the release again even when this version is already there (repairs a damaged or changed folder; a plain re-run only refreshes the command)
 #     --bin-dir D  where the moe-cache command goes (default ~/.local/bin)
 #     --yes-unverified  install even though the build attestation could not be checked (gh missing / not logged in / GitHub unreachable; a verification that ran and FAILED is never overridden); same as MOE_CACHE_ALLOW_UNVERIFIED=1. The sha256 check is never skipped.
 [ -n "$BASH_VERSION" ] || { command -v bash >/dev/null && exec bash "$0" "$@"; echo "install.sh needs bash"; exit 1; }   # `sh install.sh` is the documented way
@@ -27,14 +28,15 @@ MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.9.1}"            # tag of moe-cache used wi
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 GGUF_PY_SHA256=70bcd10edfe697fb2dad6e40af2234b9d8ece9a41a99761405121ebda1c3c1cd   # sha256 of gguf-$GGUF_PY_VERSION-py3-none-any.whl (RELEASE-008); pip is refused to install anything else
 UNVERIFIED_OK=0; [ "${MOE_CACHE_ALLOW_UNVERIFIED:-}" = 1 ] || [ "${MOE_CACHE_SKIP_ATTESTATION:-}" = 1 ] && UNVERIFIED_OK=1
-VULKAN=0; PREFIX=""; JOBS=$(nproc 2>/dev/null || echo 2); APT=1; OWN=0; DRY=0; UNINSTALL=0; BUILD=0; BINDIR="$HOME/.local/bin"
-while [ $# -gt 0 ]; do case "$1" in --yes-unverified) UNVERIFIED_OK=1; shift;; --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;; --uninstall) UNINSTALL=1; shift;; --build) BUILD=1; shift;; --bin-dir) BINDIR=$2; shift 2;;
+VULKAN=0; PREFIX=""; JOBS=$(nproc 2>/dev/null || echo 2); APT=1; OWN=0; DRY=0; UNINSTALL=0; BUILD=0; FORCE=0; BINDIR="$HOME/.local/bin"
+while [ $# -gt 0 ]; do case "$1" in --yes-unverified) UNVERIFIED_OK=1; shift;; --force) FORCE=1; shift;; --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;; --uninstall) UNINSTALL=1; shift;; --build) BUILD=1; shift;; --bin-dir) BINDIR=$2; shift 2;;
   -h|--help) sed -n 2,20p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
 say() { printf '\n== %s\n' "$*"; }
 
 # ---- release install: this file was downloaded on its own (no build.sh, no llama/ next to it) ----
-SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_DIR/build.sh" ] && [ ! -x "$SELF_DIR/llama/llama-server" ]; then
+# PACKAGING-832 item 16: run as `curl ... | bash` $0 is "bash", not a file: its dirname would be the CURRENT folder, and a build.sh there (the user's own checkout) would be run. No file = no folder = release mode.
+SELF_DIR=""; [ -f "$0" ] && SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && { [ -z "$SELF_DIR" ] || { [ ! -f "$SELF_DIR/build.sh" ] && [ ! -x "$SELF_DIR/llama/llama-server" ]; }; }; then
   REL_PREFIX="${PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/moe-cache}"
   REL_BASE="${MOE_CACHE_BASE_URL:-https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/$MOE_CACHE_REF}"   # MOE_CACHE_BASE_URL: tests, mirrors
   case "$REL_PREFIX" in /*) ;; *) REL_PREFIX="$PWD/$REL_PREFIX";; esac; case "$BINDIR" in /*) ;; *) BINDIR="$PWD/$BINDIR";; esac
@@ -64,7 +66,9 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   if [ $DRY = 1 ]; then echo "install.sh: would download $REL_BASE/$REL_NAME.tar.gz and SHA256SUMS, check the hash, unpack under $REL_PREFIX/versions and add $REL_SHIM"; exit 0; fi
   command -v python3 >/dev/null && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' \
     || { echo "Python 3.8 or newer is needed (python3 not found or too old). Ubuntu / Debian: sudo apt install python3; Fedora: sudo dnf install python3; Arch: sudo pacman -S python. Then run this again."; exit 1; }
-  if command -v curl >/dev/null; then dl() { curl -fsSL -o "$2" "$1"; }; elif command -v wget >/dev/null; then dl() { wget -q -O "$2" "$1"; }
+  # PACKAGING-832 item 9: an https address stays https through every redirect (a redirect to plain http would let a man in the middle swap both SHA256SUMS and the file)
+  CURLP=(); case "$REL_BASE" in https://*) CURLP=(--proto '=https' --proto-redir '=https');; esac
+  if command -v curl >/dev/null; then dl() { curl -fsSL "${CURLP[@]}" -o "$2" "$1"; }; elif command -v wget >/dev/null; then dl() { wget -q -O "$2" "$1"; }
   else echo "curl or wget is needed to download the release"; exit 1; fi
   command -v sha256sum >/dev/null || { echo "sha256sum is needed to check the download"; exit 1; }
   # preflight: everything that can refuse runs BEFORE anything is downloaded or touched (AUD-049)
@@ -133,7 +137,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   tar -tvzf "$TMP/$REL_NAME.tar.gz" | awk '{c=substr($0,1,1)} c=="-"||c=="d"{next} c=="l"{i=index($0," -> "); t=substr($0,i+4); if(i>0 && t !~ /\// && t != ".." && t != "."){next}} {bad=1} END{exit bad}' || { echo "REFUSED: the tarball has a member that is not a plain file, folder or a link to a file name beside it"; exit 1; }
   HAD_COPY=0; ls "$REL_PREFIX"/versions/moe-cache-v* >/dev/null 2>&1 && HAD_COPY=1     # LAUNCHER-1222 item 5: a copy with no record is an existing install
   OLD="$(rec version || true)"
-  if [ -f "$REL_PREFIX/versions/$REL_NAME/bin/moe_cache.py" ] && [ "$OLD" = "$REL_VER" ]; then echo "moe-cache $REL_VER is already unpacked here: refreshing the command only"
+  if [ -f "$REL_PREFIX/versions/$REL_NAME/bin/moe_cache.py" ] && [ "$OLD" = "$REL_VER" ] && [ $FORCE = 0 ]; then echo "moe-cache $REL_VER is already unpacked here: refreshing the command only"
   else
     rm -rf "$STAGE" "$BACKUP"; mkdir "$STAGE"
     tar -xzf "$TMP/$REL_NAME.tar.gz" -C "$STAGE" --strip-components=1
@@ -189,8 +193,8 @@ PREFIX="${PREFIX:-$HOME/moe-cache-setup}"
 # the official llama.cpp bundled in this folder (release tarball): used instead of building one
 BUNDLED=""
 if [ $OWN = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ]; then
-  HERE_="$(cd "$(dirname "$0")" && pwd)"
-  for d in "$HERE_/llama" "$HERE_/llama/bin"; do [ -x "$d/llama-server" ] && { BUNDLED="$d"; break; }; done
+  HERE_="$SELF_DIR"
+  for d in "$HERE_/llama" "$HERE_/llama/bin"; do [ -n "$HERE_" ] && [ -x "$d/llama-server" ] && { BUNDLED="$d"; break; }; done
 fi
 if [ $DRY = 1 ]; then
   if [ -n "$BUNDLED" ]; then echo "install.sh: would use the bundled llama.cpp in $BUNDLED (no build, no apt); plugin: the prebuilt one if present"
@@ -237,7 +241,7 @@ BIN="$L/build/bin"; [ -x "$BIN/llama-server" ] || { echo "llama-server was not b
 fi
 
 say "4/5 moe-cache plugin"
-if [ -f "$(dirname "$0")/build.sh" ] && [ -d "$(dirname "$0")/src" ]; then M="$(cd "$(dirname "$0")" && pwd)"; else
+if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/build.sh" ] && [ -d "$SELF_DIR/src" ]; then M="$SELF_DIR"; else
   M="$PREFIX/moe-cache"
   if [ -d "$M/.git" ]; then git -C "$M" fetch -q --tags origin && git -C "$M" checkout -q "$MOE_CACHE_REF"
   else git clone -q --branch "$MOE_CACHE_REF" https://github.com/IbrahimSiddiqui007/moe-cache "$M"; fi

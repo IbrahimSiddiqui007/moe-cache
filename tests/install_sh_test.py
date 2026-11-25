@@ -241,5 +241,21 @@ _m1, _m2 = re.search(r'^LLAMA_SHA="\$\{LLAMA_SHA:-([0-9a-f]{40})\}"', _sh, re.M)
 check(bool(_m1 and _m2 and _m1.group(1) == _m2.group(1)), f"install.sh's default build commit equals the bundled pin ({_m1 and _m1.group(1)[:9]} vs {_m2 and _m2.group(1)[:9]})")
 check(bool(_m1) and re.search(r"case \"\$LLAMA_SHA\" in .*\b" + _m1.group(1)[:9] + r"\*\) export GGML_API=4", _sh) is not None, "the default build commit selects GGML_API=4 (the bundled build's backend API)")
 
+rc, out = run2(r3, "9.9.3")
+# ---- PACKAGING-832 item 16: `curl ... | bash` has $0 = "bash": the script must not take the folder you stand in for its own folder (a build.sh there is not ours)
+mine = os.path.join(T, "my-checkout"); os.makedirs(os.path.join(mine, "src"))
+open(os.path.join(mine, "build.sh"), "w").write("#!/bin/sh\necho MY-OWN-BUILD-RAN\n"); os.chmod(os.path.join(mine, "build.sh"), 0o755)
+env16 = dict(os.environ, MOE_CACHE_REF="v9.9.3", HOME=os.path.join(T, "home"), **GOOD_ENV)
+r = subprocess.run(["bash", "-s", "--", "--prefix", sp, "--bin-dir", sb, "--no-apt", "--dry-run"], stdin=open(inst), capture_output=True, text=True, env=env16, cwd=mine, timeout=60)
+check(r.returncode == 0 and "release install into" in r.stdout and "MY-OWN-BUILD-RAN" not in r.stdout + r.stderr, f"piped into bash from a folder with a build.sh: still the release install, the folder's build.sh is not used ({(r.stdout + r.stderr).strip()[-120:]})")
+# ---- item 19: a re-run of the same version only refreshes the command; --force unpacks again and repairs a damaged tree
+rc, out = run2(r3, "9.9.3")      # the uninstall above removed it
+kit = os.path.join(sp, "versions", "moe-cache-v9.9.3-ggml0.26-linux-x86_64", "bin", "moe_cache.py"); good = open(kit).read()
+open(kit, "w").write("# damaged\n")
+rc, out = run2(r3, "9.9.3"); check(rc == 0 and "already unpacked" in out and open(kit).read() == "# damaged\n", "same version again: only the command is refreshed (a damaged tree stays damaged)")
+rc, out = run2(r3, "9.9.3", "--force"); check(rc == 0 and "already unpacked" not in out and open(kit).read() == good, "--force unpacks the release again and repairs the damaged tree")
+# ---- item 9: an https download address keeps curl on https through redirects
+check("--proto '=https' --proto-redir '=https'" in _sh and 'case "$REL_BASE" in https://*) CURLP=' in _sh, "curl is told to stay on https (--proto / --proto-redir) for an https download address")
+
 check(subprocess.run(["bash", "-n", os.path.join(HERE, "install.sh")]).returncode == 0, "install.sh parses")
 print("FAIL" if fails else "PASS", f"({len(fails)} failed)"); sys.exit(1 if fails else 0)
