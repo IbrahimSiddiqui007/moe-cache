@@ -5,6 +5,7 @@ import json, os, struct, sys, tempfile, time, types
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-realroom-test-")
 os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")
+os.environ["MOE_CACHE_REAL_ROOM"] = "1"       # LAUNCHER-1131 is opt-in (owner 2026-11-25): the tests below run with it on; the default-off check is after the F4 block
 sys.path.insert(0, os.path.join(HERE, "bin")); sys.path.insert(0, os.path.join(HERE, "planner")); sys.path.insert(0, os.path.join(HERE, "tests"))
 import moe_cache as mc   # noqa: E402
 import gguf_plan as gp   # noqa: E402
@@ -189,6 +190,15 @@ mc.CACHE_DIR = os.path.join(TMP, "f4_cache"); rr.room_learn(mc.CACHE_DIR, "AMD R
 a4, s4 = stage(SM())
 check(abs(a4.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and not mc.REAL_ROOM.get("device") and not any("before the card paged" in x for x in s4), "F4: MOE_CACHE_LEARN_ROOM=0: the learned ceiling is ignored, no watcher device (the pre-load room stays)")
 del os.environ["MOE_CACHE_LEARN_ROOM"]
+
+# --- default off (owner 2026-11-25): without MOE_CACHE_REAL_ROOM=1 nothing learned or measured is used; the plan's room is the pre-load room ---
+del os.environ["MOE_CACHE_REAL_ROOM"]
+check(not rr.enabled(), "default: real-room learning is off")
+check(mc.measured_need(mdl, ctx, ("q4_0", "q4_0"), 512) is None, "default off: a stored measurement is not used")
+mc.CACHE_DIR = os.path.join(TMP, "f4_cache")      # holds a learned ceiling of 12000 MiB (stored above)
+a4b, s4b = stage(SM())
+check(abs(a4b.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and not mc.REAL_ROOM.get("device") and not any("before the card paged" in x for x in s4b), "default off: the learned ceiling is ignored, no watcher device (the pre-load room stays)")
+os.environ["MOE_CACHE_REAL_ROOM"] = "1"
 
 # --- critic F2: a stale ceiling is dropped at the start when the room is back ---
 mc.CACHE_DIR = os.path.join(TMP, "f2_cache"); rr.room_learn(mc.CACHE_DIR, "AMD Radeon RX 9070 XT", 10000, 2000)

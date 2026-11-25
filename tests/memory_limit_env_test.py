@@ -49,8 +49,28 @@ os.environ["MOE_CACHE_RAM_GIB"] = "12"
 check(not any(k in ("MOE_CACHE_MAX_RAM_GB", "MOE_CACHE_RAM_GIB") for k, _ in stage([], 17.4 * GIB, True)), "user's MOE_CACHE_RAM_GIB=12: launcher sets neither (the plugin reads the user's value from the inherited environment)")
 os.environ.pop("MOE_CACHE_RAM_GIB")
 D = mc.ram_cap_decision(17.4 * GIB, TOT, windows=True)
-check(mc.avail_limit_gb(None, 1e9) is None and mc.avail_limit_gb(D, None) and abs(mc.avail_limit_gb(D, None) - 13.4 * GIB / 1e9) < 0.01 and mc.avail_limit_gb({"avail": 3 * GIB, "keep": 4 * GIB}, None) is None,
-      "avail_limit_gb: no decision / no cap / nothing left")
+check(mc.avail_limit_gb(None, 1e9) is None and mc.avail_limit_gb(D, None) and abs(mc.avail_limit_gb(D, None) - 13.4 * GIB / 1e9) < 0.01,
+      "avail_limit_gb: no decision / no cap")
+check(abs(mc.avail_limit_gb({"avail": 3 * GIB, "keep": 4 * GIB, "gib": 0.0}, None) - 4 * GIB / 1e9) < 1e-6, "avail_limit_gb: nothing left -> the 4 GiB floor, not None")
+check(abs(mc.avail_limit_gb({"avail": 8 * GIB, "keep": 4 * GIB, "gib": 6.5}, None) - 6.5 * GIB / 1e9) < 1e-6, "avail_limit_gb: under the announced cache size -> that size (6.5 GiB)")
+# a realistic busy 31.1 GiB machine: the limit applies and the floor holds (limit never under max(4 GiB, MOE_CACHE_RAM_GIB))
+for win in (True, False):
+    n = "Windows" if win else "Linux"
+    for av in (17.4, 11.0, 7.5, 5.0):
+        e = stage([], av * GIB, win); ed = dict(e)
+        got = ed.get("MOE_CACHE_MAX_RAM_GB"); rg = float(ed.get("MOE_CACHE_RAM_GIB", 0))
+        check(got is not None and float(got) * 1e9 >= max(4.0, rg) * GIB - 1e6 and float(got) * 1e9 < mc.Machine.mem_cap(M(0, win)),
+              f"{n}: {av} GiB available -> MOE_CACHE_MAX_RAM_GB {got} GB >= max(4 GiB, cache {rg:.2f} GiB) and below the default cap")
+# ONE consistent cap line: the whole-server cap shown is the limit in force
+for win in (True, False):
+    a, _, _ = mc.parse_server(["m.gguf", "--no-pin"])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        r = mc.memory_env_stage(a, "llama-server", "lib.so", "m.gguf", "p", False, "off", M(17.4 * GIB, win))
+    txt = buf.getvalue(); lim = float(dict(r[3])["MOE_CACHE_MAX_RAM_GB"])
+    capln = [l for l in txt.splitlines() if "for the whole server" in l]
+    check(len(capln) == 1 and f"{lim:.1f} GB" in capln[0] and "plugin's own cap is higher" not in txt and "whole-server memory limit" not in txt and abs(r[4] - lim * 1e9) < 1e6,
+          f"one cap line showing the limit in force ({capln[:1]})")
 
 # (b) quality gate: which environment each perplexity / server run gets
 class R:
@@ -61,7 +81,7 @@ def gate(extra, env_in=None, limit=20.0):
     def fake(cmd, env=None, **kw):
         runs.append((cmd, dict(env or {}))); return R()
     saved = (subprocess_run := qg.subprocess.run, qg.machine_limit_gb, sys.argv)
-    qg.subprocess.run, qg.machine_limit_gb = fake, (lambda: limit)
+    qg.subprocess.run, qg.machine_limit_gb = fake, (lambda *_: limit)
     old_env = dict(os.environ); os.environ.update(env_in or {})
     sys.argv = ["quality_gate.py", "--llama-server", "srv", "--perplexity", "ppl", "--model", "m.gguf", "--lib", "/x/libggml-moe-cache.so", "--level", "kv",
                 "--no-tasks", "--text", os.devnull, "--out", os.path.join(os.environ.get("TMPDIR", "/tmp"), "qg1249")] + extra
@@ -90,6 +110,19 @@ runs = gate(["--cache-dir", os.path.join(os.environ.get("TMPDIR", "/tmp"), "qg12
 check(all(e.get("MOE_CACHE_MAX_RAM_GB") == "18" and e.get("MOE_CACHE_RAM_GIB") == "9" for c, e in runs if "MOE_CACHE_GGUF" in e), "the user's own process environment reaches every plugin run unchanged")
 runs = gate(["--cache-dir", os.path.join(os.environ.get("TMPDIR", "/tmp"), "qg1249")], limit=None)
 check(all("MOE_CACHE_MAX_RAM_GB" not in e for c, e in runs if "MOE_CACHE_GGUF" in e), "no known machine limit: nothing set (the plugin keeps its default cap)")
+import json
+_gj = lambda: json.load(open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "qg1249", "gate.json")))
+runs = gate(["--cache-dir", os.path.join(os.environ.get("TMPDIR", "/tmp"), "qg1249")])
+check(_gj().get("max_ram_gb") == "20.000", f"gate.json records the MOE_CACHE_MAX_RAM_GB the plugin runs had ({_gj().get('max_ram_gb')})")
+runs = gate(["--ram-env", "MOE_CACHE_MAX_RAM_GB=15", "--cache-dir", os.path.join(os.environ.get("TMPDIR", "/tmp"), "qg1249")])
+check(_gj().get("max_ram_gb") == "15", "gate.json records a --ram-env cap too")
+# the 4 GiB floor in machine_limit_gb itself (a tiny available figure): never under 4 GiB
+_m = types.SimpleNamespace(mem_total=lambda: TOT, _mem_for_server=lambda r: 5 * GIB, mem_cap=lambda: TOT - 4 * GIB, ram_keep_bytes=lambda t: 4 * GIB)
+_old = qg.sys.modules.get("moe_cache"); qg.sys.modules["moe_cache"] = _m
+try:
+    check(abs(qg.machine_limit_gb() - 4 * GIB / 1e9) < 1e-6 and abs(qg.machine_limit_gb(6.0) - 6 * GIB / 1e9) < 1e-6, "machine_limit_gb: 5 GiB available -> the 4 GiB floor; a 6 GiB announced cache -> 6 GiB")
+finally:
+    qg.sys.modules["moe_cache"] = _old
 lim = qg.machine_limit_gb()
 check(lim is None or lim > 0, f"machine_limit_gb() on this machine: {lim and round(lim, 1)} GB")
 print("PASS (0 failed)" if not FAILS else f"FAIL ({len(FAILS)} failed)")

@@ -3816,6 +3816,7 @@ def gpu_stage(a, ls, win, machine):
     """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
     vram_user = a.vram
     said_gpu = False
+    REAL_ROOM.clear()               # LAUNCHER-1131: no state of an earlier plan in this process (the control page plans many times)
     listing = machine.list_devices(ls) if win else None
     gpu = machine.pick_gpu_full(listing) if win else None
     if win and not a.vram and not machine.nvidia_reports():
@@ -4420,7 +4421,7 @@ def weights_ram_stage(a, model, ctx, cmd, machine, stock_path):
             room0 = (avail or 0) - ram_keep_bytes(total or 0)
             need = WEIGHTS_PLUGIN_MIN_GIB * 2**30 + (RAM_STREAM_GIB * 2**30 if float(lay.get("total_bytes", 0)) > room0 else 0.0)
         kvq = kv_quantized(cmd)
-        d = weights_ram_check(need, avail, total, ctx=int(ctx), ctx_user=bool(getattr(a, "ctx", None)), stock_path=stock_path, cpu_expert_bytes=cpu_exp,
+        d = weights_ram_check(need, avail, total, ctx=int(ctx), ctx_user=bool(getattr(a, "ctx", None)) and not getattr(a, "ctx_from_pick", False), stock_path=stock_path, cpu_expert_bytes=cpu_exp,
                               kv_at=(lambda c: kv_bytes(model, c, kv_q8=kvq)) if str(ngl) != "0" else None, table_bytes=table)
     except Exception as e:
         say(f"moe-cache: could not estimate the RAM the weights need ({type(e).__name__}: {e})", err=True)
@@ -4458,13 +4459,20 @@ def avail_reserve_gib(a, machine, stock=False, model=None):
     return (d["gib"], d["avail"], d["keep"], d) if d else None
 
 
+LIMIT_FLOOR_GIB = 4.0       # LAUNCHER-1249: the whole-server limit is never under this (nor under the announced cache size)
+
+
 def avail_limit_gb(decision, cap):
-    """LAUNCHER-1249: the whole-server memory limit (decimal GB) a ram_cap_decision() implies: available RAM at the start minus the reserve kept for the user's programs.
-    None when that is not below the plugin's own default cap `cap` (bytes, or None = no cap), so a normal start is not changed. Pure."""
+    """LAUNCHER-1249 (default ON, owner 2026-11-25): the whole-server memory limit (decimal GB) a ram_cap_decision() implies: available RAM at the start minus the reserve kept for the
+    user's programs, never under max(4 GiB, the cache size the plan announced via MOE_CACHE_RAM_GIB = decision["gib"]). None when that limit is not below the plugin's own default cap
+    `cap` (bytes, or None = no cap): then nothing is passed and the plugin keeps its cap. When it IS below, a start on a busy machine gets this lower limit (a change from before the
+    release: the plugin used to cap at physical RAM minus 12.5 %). Pure."""
     if not decision:
         return None
     lim = decision["avail"] - decision["keep"]
-    if lim <= 0 or (cap and lim >= cap):
+    floor = max(LIMIT_FLOOR_GIB, float(decision.get("gib") or 0.0)) * 2**30
+    lim = max(lim, floor)
+    if cap and lim >= cap:
         return None
     return lim / 1e9
 
@@ -4485,6 +4493,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
             "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
         gcache = "off"
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
+    limit_env = [None]            # LAUNCHER-1249: the limit passed as MOE_CACHE_MAX_RAM_GB by this plan (decimal GB), shown by the cap line below
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
     elif (ar := avail_reserve_gib(a, machine, stock, model)):
@@ -4502,7 +4511,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
         lim_gb = avail_limit_gb(dec, machine.mem_cap())
         if lim_gb is not None and not a.max_ram and not os.environ.get("MOE_CACHE_MAX_RAM_GB"):
             env.append(("MOE_CACHE_MAX_RAM_GB", f"{lim_gb:.3f}"))
-            say(f"moe-cache: whole-server memory limit {lim_gb:.1f} GB passed to the plugin (RAM available now minus the reserve; the plugin's own cap is higher); --max-ram GB changes it")
+            limit_env[0] = lim_gb
     try:
         lk = live_keep_decision(machine.mem_total(), stock=stock, exact=getattr(a, "exact", False), env_keep=os.environ.get("MOE_CACHE_AVAIL_KEEP_GIB"),
                                 off=os.environ.get("MOE_CACHE_LIVE_FOLLOW"), windows=bool(getattr(machine, "windows", False)))
@@ -4522,6 +4531,8 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    elif limit_env[0] is not None:
+        cap = limit_env[0] * 1e9
     if a.peers and not stock:
         # N2/MM2 (PROTOTYPE): the plugin writes its memory use into this folder once a second and reads the other servers' files; a quiet server gives memory to a busy
         # one. --ram stays this server's own share. A stock llama-server (no plugin) is not in the folder: --share-ram counts it at start.
@@ -4532,6 +4543,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
         say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/reference/platforms.md)")
     if cap:
         say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
+            else "RAM available now minus the reserve for your programs, at least max(4 GiB, the cache size); LAUNCHER-1249, passed to the plugin" if limit_env[0] is not None
             else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
         if a.ram and float(a.ram) * 1e9 > cap:
             say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
@@ -6074,6 +6086,7 @@ def _launch_plan(a, extra, argv, machine):
             raise SystemExit("usage: moe-cache-server MODEL.gguf [options]  (no model given: " +
                              (pick_missing() or "none picked: `moe_cache.py pick` recommends one for this machine") + ")")
         a.model = p[0]
+        a.ctx_from_pick = not a.ctx          # LAUNCHER-1165: a context the picker filled is not the user's own --ctx (the shorter-context hint still shows)
         a.ctx = a.ctx or p[1]
         a.agent = a.agent or p[2]
         say(f"moe-cache: no model given: using the picked one, {a.model} (context {a.ctx}" + (", agent mode" if a.agent else "") + "; moe_cache.py pick)")
@@ -6104,6 +6117,7 @@ def _launch_plan(a, extra, argv, machine):
     if "ctx" in user_flags and user_flags["ctx"] != a.ctx:
         say(f"moe-cache: context {user_flags['ctx']} from the flags after '--' (the GPU plan uses it)")
         a.ctx = user_flags["ctx"]
+        a.ctx_from_pick = False
     if "ncmoe" in user_flags and a.n_cpu_moe is None:
         a.n_cpu_moe = user_flags["ncmoe"]
     ls, model, port = a.llama_server, a.model, a.port
@@ -8475,7 +8489,7 @@ def room_cmd(argv):
     if a.reset:
         print(f"forgot {rr.reset_learned(CACHE_DIR)} file(s) in {CACHE_DIR}")
         return 0
-    print("learning is OFF (MOE_CACHE_LEARN_ROOM=0)" if not rr.enabled() else "learning is on (MOE_CACHE_LEARN_ROOM=0 turns it off)")
+    print("learning is OFF (opt-in: MOE_CACHE_REAL_ROOM=1 turns it on; MOE_CACHE_LEARN_ROOM=0 turns it off again)" if not rr.enabled() else "learning is on (opt-in MOE_CACHE_REAL_ROOM=1; MOE_CACHE_LEARN_ROOM=0 turns it off)")
     print("\n".join(rr.learned_text(CACHE_DIR)))
     return 0
 

@@ -82,9 +82,11 @@ def room_ceiling(cache_dir, device, now=None):
 
 
 def enabled(env=None):
-    """LAUNCHER-1131 (critic F4): MOE_CACHE_LEARN_ROOM=0 turns the whole feature off: no learned ceiling is read, written or used, no load is stored as a measurement or used for a fit, and the
-    server's GPU counters are not read after the start (the pre-load room of LAUNCHER-1133 is a separate, stateless step and stays)."""
-    return (os.environ if env is None else env).get("MOE_CACHE_LEARN_ROOM", "") != "0"
+    """LAUNCHER-1131: OPT-IN (owner 2026-11-25, box main37): the learned ceiling, the paging watcher, the stored load measurements and the measured-need fit run only with MOE_CACHE_REAL_ROOM=1
+    (and MOE_CACHE_LEARN_ROOM is not 0, which still turns it off). By default none of it is read, written or used and the plan's GPU room is the pre-load room of LAUNCHER-1133
+    (a separate, stateless step that stays)."""
+    e = os.environ if env is None else env
+    return e.get("MOE_CACHE_REAL_ROOM", "") == "1" and e.get("MOE_CACHE_LEARN_ROOM", "") != "0"
 
 
 def room_ceiling_info(cache_dir, device, now=None):

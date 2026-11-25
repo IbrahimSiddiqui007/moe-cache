@@ -449,8 +449,9 @@ def server_rows(main, extra, od_port=None):
     rows = []
     if main.state != "idle" or (main.settings or {}).get("model"):
         rows.append(row("main", main, int((main.settings or {}).get("port") or 8080)))
-    for port in sorted(extra):
-        rows.append(row("second server", extra[port], int(port)))
+    ords = ("second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth")
+    for i, port in enumerate(sorted(extra)):
+        rows.append(row((ords[i] if i < len(ords) else f"server {i + 2}") + (" server" if i < len(ords) else ""), extra[port], int(port)))
     if od_port and od_port not in {r["port"] for r in rows}:
         rows.append({"role": "on-demand listener", "model": "", "port": od_port, "url": f"http://127.0.0.1:{od_port}", "state": "waiting", "status": "running"})
     return rows

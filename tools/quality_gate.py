@@ -27,10 +27,10 @@ LOOP_EXTRA = 2
 MEMORY_ENV = ("MOE_CACHE_RAM_GIB", "MOE_CACHE_MAX_RAM_GB")     # the plugin's memory settings: a given value is used by every plugin run of the gate
 
 
-def machine_limit_gb():
+def machine_limit_gb(floor_gib=4.0):
     """LAUNCHER-1249: the launcher's whole-server memory limit for this machine (decimal GB), so the plugin's own cap (physical RAM minus 12.5 %) can never be above it:
     the smaller of its hard cap and (RAM available now minus the reserve for the user's programs), as the launcher's start computes it. None when the launcher
-    module cannot be read or the figures are unknown (the plugin then keeps its default cap). Same code on Linux and Windows."""
+    module cannot be read or the figures are unknown (the RAM-based limit is never under max(4 GiB, floor_gib), the cache size the run announces: same floor as the launcher's start) (the plugin then keeps its default cap). Same code on Linux and Windows."""
     try:
         sys.path.insert(0, os.path.join(ROOT, "bin"))
         try:
@@ -38,7 +38,7 @@ def machine_limit_gb():
         finally:
             sys.path.pop(0)
         total, avail, cap = mc.mem_total(), mc._mem_for_server(None), mc.mem_cap()
-        lim = (avail - mc.ram_keep_bytes(total)) if avail and total else None
+        lim = max(avail - mc.ram_keep_bytes(total), max(4.0, float(floor_gib or 0)) * 2**30) if avail and total else None
         lims = [x for x in (cap, lim) if x and x > 0]
         return min(lims) / 1e9 if lims else None
     except Exception:
@@ -185,13 +185,18 @@ def main():
         plug.update(mem_env)
         plug.update(both_env)
         if "MOE_CACHE_MAX_RAM_GB" not in plug and "MOE_CACHE_MAX_RAM_GB" not in os.environ:
-            lim = machine_limit_gb()
+            try:
+                ann = float(plug.get("MOE_CACHE_RAM_GIB") or os.environ.get("MOE_CACHE_RAM_GIB") or 0)       # the cache size this run announces
+            except ValueError:
+                ann = 0.0
+            lim = machine_limit_gb(ann)
             if lim is not None:
                 plug["MOE_CACHE_MAX_RAM_GB"] = f"{lim:.3f}"
                 print(f"memory: whole-server cap {lim:.1f} GB for the plugin runs (the launcher's limit; MOE_CACHE_MAX_RAM_GB or --ram-env changes it)")
     print(f"quality gate, level {a.level}{' (smoke limits)' if a.smoke else ''}: KLD <= {kld_max}, top-1 >= {top_min} %, tasks >= stock - {tol}; out {a.out}")
     print(f"candidate: env {cand_env}, args {cand_args}")
     res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args, "no_plugin": a.no_plugin, "window": a.window, "chunks": a.chunks}, []
+    res["max_ram_gb"] = (plug.get("MOE_CACHE_MAX_RAM_GB") or os.environ.get("MOE_CACHE_MAX_RAM_GB") or "plugin default") if not a.no_plugin else None     # LAUNCHER-1249: the whole-server cap the plugin runs had (None: no plugin run)
     if not a.no_kl:
         if not a.text:
             a.text = os.path.join(a.out, "text.txt")

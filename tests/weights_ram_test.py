@@ -37,15 +37,15 @@ gguf_plan.kv_bytes = lambda path, ctx, kv_q8=False, n_seq=4: ctx * KV_PER_TOKEN
 
 
 class A:
-    def __init__(self, ctx=None, exact=False):
-        self.ctx, self.exact = ctx, exact
+    def __init__(self, ctx=None, exact=False, from_pick=False):
+        self.ctx, self.exact, self.ctx_from_pick = ctx, exact, from_pick
 
 
-def stage(avail, cmd, ctx=65536, user_ctx=None, exact=False, stock=True, windows=True, total=31.1 * GIB):
+def stage(avail, cmd, ctx=65536, user_ctx=None, exact=False, stock=True, windows=True, total=31.1 * GIB, from_pick=False):
     out = io.StringIO()
     c0 = list(cmd)
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-        d = mc.weights_ram_stage(A(user_ctx, exact), "m.gguf", user_ctx or ctx, cmd, M(avail, total, windows), stock)
+        d = mc.weights_ram_stage(A(user_ctx, exact, from_pick), "m.gguf", user_ctx or ctx, cmd, M(avail, total, windows), stock)
     return d, out.getvalue(), cmd == c0
 
 
@@ -74,6 +74,10 @@ check(d is not None and d["ctx_hint"] == 16384 and "--ctx 16384" in say and "doe
 # 4. the user's own --ctx: kept, no shorter context offered as a pick
 d, say, same = stage(15.5 * GIB, CMD(40), user_ctx=65536)
 check(d is not None and d["ctx_hint"] is None and "your --ctx 65536 is kept" in say and same, "user --ctx: the warning, the context kept, no hint")
+
+# 4b. a context the model picker filled (a.ctx set, ctx_from_pick) is not the user's own --ctx: the shorter-context hint still shows
+d, say, same = stage(15.5 * GIB, CMD(40), user_ctx=65536, from_pick=True)
+check(d is not None and d["ctx_hint"] == 16384 and "--ctx 16384" in say and "is kept" not in say and same, "picker-filled context: the hint shows, not 'your --ctx is kept'")
 
 # 5. --exact: the warning still says what it sees (read-only), nothing changes
 d, say, same = stage(13.4 * GIB, CMD(40), exact=True)
