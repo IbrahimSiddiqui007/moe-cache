@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quality gate for the approximate mode (docs/QUALITY_GATE.md): KL divergence and top-1 agreement against stock, plus the 202-task set.
+"""Quality gate for the approximate mode (docs/reference/quality-gate.md): KL divergence and top-1 agreement against stock, plus the 202-task set.
 
 Replaces token identity for the approximate levels. Standard library only (Linux and Windows).
   quality_gate.py --llama-server BIN --perplexity BIN --model GGUF --lib PLUGIN --level kv|fast|fewer|exact [--smoke]
@@ -13,7 +13,7 @@ import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.r
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 KV = ["-ctk", "q8_0", "-ctv", "q8_0"]
-# level -> (candidate plugin env, candidate llama.cpp args, max mean KLD, min same-top %, tasks tolerance)   (docs/QUALITY_GATE.md)
+# level -> (candidate plugin env, candidate llama.cpp args, max mean KLD, min same-top %, tasks tolerance)   (docs/reference/quality-gate.md)
 LEVELS = {
     "exact": ({}, [], 1e-5, 100.0, 0),
     "kv": ({}, KV, 0.015, 95.0, 2),
@@ -168,7 +168,7 @@ def main():
         if not a.text:
             a.text = os.path.join(a.out, "text.txt")
             with open(a.text, "w", encoding="utf-8") as f:
-                for p in [os.path.join(ROOT, "README.md")] + sorted(os.path.join(ROOT, "docs", x) for x in os.listdir(os.path.join(ROOT, "docs")) if x.endswith(".md")):
+                for p in [os.path.join(ROOT, "README.md")] + sorted(os.path.join(ROOT, "docs", d, x) for d in ("", "guides", "reference", "results") for x in os.listdir(os.path.join(ROOT, "docs", d)) if x.endswith(".md")):
                     f.write(open(p, encoding="utf-8", errors="replace").read())
         base = os.path.join(a.cache_dir or a.out, "base.kld")
         if os.path.isfile(base):

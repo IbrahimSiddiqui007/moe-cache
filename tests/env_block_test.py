@@ -66,7 +66,7 @@ check(s["top_programs"] == [["Claude", 0.8], ["Dia", 0.4], ["Code", 0.3], ["MsMp
 check(s["vram_total_gb"] == 16.0 and s["vram_per_process"][0] == ["moe-cache", 10.9, 0.4], f"VRAM: moe-cache first with its spill ({s['vram_per_process'][0]})")
 check(s["vram_per_process"][1:] == [["dwm", 1.2, 0.0], ["Claude", 0.4, 0.0], ["Dia", 0.2, NR]], f"VRAM: others by size, an inferred figure used when vram_bytes is missing, no spill figure = not recorded ({s['vram_per_process'][1:]})")
 check(s["commit_free_gb"] == 7.5 and s["source"].startswith("gputaskman"), f"commit free and the source named ({s['commit_free_gb']}, {s['source']})")
-check(not rr.validate(s, {**json.load(open(os.path.join(HERE, "..", "docs", "bench_record.schema.json")))["$defs"]["environment"], "$defs": json.load(open(os.path.join(HERE, "..", "docs", "bench_record.schema.json")))["$defs"]}),
+check(not rr.validate(s, {**json.load(open(os.path.join(HERE, "..", "docs", "reference", "bench-record.schema.json")))["$defs"]["environment"], "$defs": json.load(open(os.path.join(HERE, "..", "docs", "reference", "bench-record.schema.json")))["$defs"]}),
       "the snapshot validates against the schema's environment definition")
 
 # ---- 2. no gputaskman: own counters, and what is not known says "not recorded"
@@ -108,7 +108,7 @@ smp.start(); time.sleep(0.15); res = smp.stop()
 check("environment" not in res, "env_every=None switches the block off (nothing in the result)")
 run = rr.run_entry("moe-cache", 1, {"decode_tps": 50.0, "prompt_tps": 900.0}, {**res, "environment": b})
 check(run["environment"] == b, "run_entry keeps the block on the run")
-check(not rr.validate({"environment": b}, {"type": "object", "properties": {"environment": {"$ref": "#/$defs/environment"}}, "$defs": json.load(open(os.path.join(HERE, "..", "docs", "bench_record.schema.json")))["$defs"]}),
+check(not rr.validate({"environment": b}, {"type": "object", "properties": {"environment": {"$ref": "#/$defs/environment"}}, "$defs": json.load(open(os.path.join(HERE, "..", "docs", "reference", "bench-record.schema.json")))["$defs"]}),
       "the run's block validates against the schema")
 
 # ---- 5. the one line (the owner's example, with the figures of this fake)
@@ -158,7 +158,7 @@ sec1, sec0 = rr.results_section(rec2, "T", 1), rr.results_section(rec, "T", 1)
 check("Environment: working desktop (at peak)" in sec1 and "Environment: working desktop" not in sec0, "RESULTS section: an 'Environment:' line only when the block exists")
 a = rr.assemble({"hardware": rec["hardware"], "software": rec["software"], "model": rec["model"]}, rec["settings"], rec["conditions"], rec["protocol"], rec2["runs"], reproduce=rec["reproduce"])
 check(a["conditions"].get("environment", {}).get("ram_used_total_gb") == max(r["environment"]["ram_used_total_gb"] for r in rec2["runs"]), "assemble: conditions.environment = the busiest run's block")
-sch = json.load(open(os.path.join(HERE, "..", "docs", "bench_record.schema.json")))
+sch = json.load(open(os.path.join(HERE, "..", "docs", "reference", "bench-record.schema.json")))
 check(not rr.validate(a, sch), f"a record with the block still validates against schema 1 ({rr.validate(a, sch)[:2]})")
 check(not rr.validate(rec, sch), "an old record without the block still validates (the field is optional)")
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/conversation_bench.py (TEST-699) against a fake llama-server (no model): the history grows turn by turn, the conversation stops before the context
 limit, the server's timings are read, the per-depth-band numbers add up, stock and plugin servers are run in A B B A order, the plugin's counters are
-read per turn, and the record validates against docs/bench_record.schema.json.
+read per turn, and the record validates against docs/reference/bench-record.schema.json.
    python3 tests/conversation_bench_test.py"""
 import hashlib, http.server, json, os, signal, socketserver, sys, tempfile, threading
 
@@ -129,7 +129,7 @@ k = len(ORDER) // 4
 seq = [ORDER[i * k] for i in range(4)]
 check(rc == 0 and len(ORDER) == 4 * k and all(len(set(ORDER[i * k:(i + 1) * k])) == 1 for i in range(4)) and seq == ["stock", "plugin", "plugin", "stock"], f"the order is stock, plugin, plugin, stock ({seq})")
 rec = json.load(open(os.path.join(out, "record.json")))
-check(rr.validate(rec, rr.load_schema()) == [], "the record validates against docs/bench_record.schema.json")
+check(rr.validate(rec, rr.load_schema()) == [], "the record validates against docs/reference/bench-record.schema.json")
 check([r["arm"] for r in rec["runs"]] == ["stock", "moe-cache", "moe-cache", "stock"], "the record keeps the runs in the order they were played")
 check(len(rec["runs"]) == 4 and all("turns" in r and "bands" in r for r in rec["runs"]), "four runs, each with its per-turn and per-band numbers")
 check(set(rec["summary"]) == {"stock", "moe-cache"} and rec["protocol"]["order"] == "ABBA" and rec["protocol"]["prompt_tokens"] > 3000, "summary per arm, ABBA and the depth reached are in the record")

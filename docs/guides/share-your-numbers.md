@@ -1,0 +1,70 @@
+# Share your numbers
+
+The report carries the full benchmark record (VRAM, RAM, CPU, settings, versions; fields and recipes in [BENCHMARK_TEMPLATE.md](../reference/benchmark-template.md)). Anything the machine could not tell is written `not recorded`.
+
+One command measures stock llama.cpp and moe-cache on your machine and writes a report you paste into a GitHub issue. It takes 5-20 minutes, only
+measures (the report itself downloads, uploads and changes nothing; you need a model file, see "Get a model" in the README), and the report holds no prompts, answers, user name, host name or folder names.
+
+**No command line?** Use the control page (Windows: double-click `moe-cache.bat`): select the model in the list, open the **Benchmark** card and press
+**Share my numbers**. It does the steps below for you, shows the report in a box with **Copy** and **Open the issue page**, and uploads nothing.
+
+## Windows (10 / 11)
+
+| Step | What to do |
+|---|---|
+| 1 | **llama.cpp**: included in the kit from v0.3.3 (`llama\` folder, Vulkan). Older kit or another GPU backend: from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases), `llama-bNNNNN-bin-win-vulkan-x64.zip` for AMD, Intel and most NVIDIA cards (tested: b11669, b11966, b12064 and b12207; newer should work). AMD: use Vulkan, not HIP (HIP was slower on the test PC). NVIDIA: the CUDA zip should work but is untested on Windows. Unzip it to `C:\llama` |
+| 2 | **Python 3.8 or newer** (tick "Add python.exe to PATH") and the **moe-cache kit**: right-click the zip > Properties > Unblock, then unzip it |
+| 3 | **A model bigger than your RAM.** When the model fits, the launcher runs stock llama.cpp and the report would only say so. `python bin\moe_cache.py pick` suggests one for your machine and prints the download command (`pip install -U huggingface_hub` first); the README has the table. Models are 20-120 GB: keep the size plus about 10 GB of disk free |
+| 4 | **Leave the PC alone while it runs**: close the browser and games (they hold GPU memory and slow long prompts), plug in a laptop, no other big program |
+| 5 | `python bin\moe_cache.py doctor D:\models\MODEL.gguf` and fix what it lists (AMD: driver 32.0.32015.7029 or newer) |
+| 6 | `python bin\moe_cache.py bench-report D:\models\MODEL.gguf --flush-from D:\other-big-files` (no folder of other big files? leave `--flush-from` out; the report then says WARM) |
+| 7 | Open a [Benchmark report issue](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml), paste the `moe-cache-report-....md` file, tick the privacy box |
+
+`--flush-from` names a folder with other big files (other models, videos, about as much as your RAM). Reading them pushes the model out of
+Windows' file cache, so stock and moe-cache both start cold, as in the README tables. Without it the report says **WARM**: still useful, but not
+comparable with the README rows.
+
+## Linux
+
+`./install.sh` (or your own llama.cpp built with `-DBUILD_SHARED_LIBS=ON`), then `python3 bin/moe_cache.py doctor MODEL.gguf` and
+`bin/moe-cache-bench-report MODEL.gguf`. The cold start needs nothing extra on Linux (no root, no systemd-run).
+
+## What the report says
+
+| Line | Meaning |
+|---|---|
+| decode tok/s | answer speed (128 tokens, greedy); the main number |
+| prompt tok/s | how fast a ~2000-token prompt is read (agents and long documents depend on it) |
+| time to first token | wait before the answer starts |
+| cache hit rate | share of experts found in RAM; the rest were read from the drive |
+| tokens IDENTICAL / DIFFERENT | whether stock and moe-cache wrote the same answer. DIFFERENT can be normal when the two used different GPU/CPU splits (both plans are in the report); report it anyway |
+| COLD / WARM | whether the model was pushed out of the file cache before each run |
+| Details / Record (JSON) | the benchmark card's four lines (expert layers, context, VRAM and RAM peaks, CPU, versions) and the whole record; `not recorded` marks what this machine could not read |
+| Backend | the GPU backend of your llama.cpp (Vulkan, CUDA, ROCm, CPU only); please correct it in the issue if it says UNKNOWN |
+
+The runs go stock, moe-cache, moe-cache, stock (`--pairs 2` repeats that), so both sides see the same warm-up. Coding agents (OpenCode, Hermes, Claude Code): add `--scenario agent` for a 3-turn conversation with 5 s pauses (a tool running); the report then shows
+the wait for the first token of every turn. Options: `--ram GB` (cache size),
+`--ctx`, `--tokens`, `--prompt-tokens`, `--fast` (measures an approximate mode; identity is then n/a), `--force-plugin` (measure a model that fits).
+
+**Fair comparison and Long chat (control page).** The Benchmark card has a **Fair comparison** button (cold start, stock moe-cache moe-cache stock, two pairs; same as `--pairs 2`),
+a **ready-to-measure** panel above it (model against RAM, free disk, battery, other big programs, power plan, temperature, minutes to expect) and every report ends its
+header with a **Verdict**: a difference under 10 %, or inside the spread of the runs themselves, is "within noise: do not claim". **Long chat (recommended)** is
+`--chat`: each run plays one real multi-turn conversation filled to a long context (16k up to 20 GB of RAM, 32k up to 28 GB, else 65k; `--ctx` overrides), the method the
+published numbers use (see [CONVERSATION_BENCH.md](../reference/conversation-bench.md)). It takes 30-120 minutes per pair on a big model; `--max-turns 6` makes a trial. Besides the report
+it writes `...record.json` with every turn (the report itself holds the record without the per-turn lists: an issue takes 65,000 characters); `python bin/moe_cache.py bench-record ingest FILE.record.json`
+adds it to `benchmarks/`.
+
+**Results, memory-limit test, presets (control page).** **Results** opens charts of your own reports and of the board's runs (`benchmarks/runs/`): speed bars with the moe-cache / stock ratio,
+speed by conversation depth, expert cache hit rate, turn by turn, GPU and RAM peaks, and a per-turn table with the SSD read per answered token; click a legend entry to hide a series. The charts use
+the page's colours in both themes. On Linux with a user systemd, **Test as a smaller machine** (or `bench-report --limit-gb 16`) runs both arms inside a hard memory limit with no swap, so a 64 GB
+machine can show what a 16 or 32 GB machine would do; the report says **EMULATED** above the result and in the record (`conditions.memory_limit`). It is not a real smaller computer: the limit counts
+the model's file cache like RAM does, but the drive and CPU are yours. Windows has no such limit for the file cache. The panel above the buttons suggests settings for your RAM (16 GB class: a smaller MoE, 16k;
+32 GB: Flash-Next Q2_0, 65k; 64 GB and more: take a bigger model or test as 32 GB) and **Use** applies them.
+
+**Before you share, and after.** The report box says exactly what was removed from the text (home folder, user and host name, folder paths, with counts); what is in the box is what **Copy**
+copies. **Copy image** (or **Save image**) draws a small result card from the record in the page, in the page's colours: model, machine, four numbers, the verdict, nothing else. When
+you open the issue, a check comments within a minute: "Record check: valid" with the row the board would show for your numbers, or what is wrong with the record (it reads the JSON block as
+text and runs nothing). The maintainer adds a valid record with `python bin/moe_cache.py bench-record ingest-issue NUMBER` (it lands in `benchmarks/runs/` as `DATE_community-NUMBER_ID.json`;
+claims on the board stay hand-made).
+
+Answers look wrong, loop, or the speed is far from the README? See [TROUBLESHOOTING.md](troubleshooting.md) before you open an issue.

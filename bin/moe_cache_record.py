@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""moe_cache_record.py: the one benchmark record (docs/BENCHMARK_TEMPLATE.md, docs/bench_record.schema.json). Linux and Windows; standard library only.
+"""moe_cache_record.py: the one benchmark record (docs/reference/benchmark-template.md, docs/reference/bench-record.schema.json). Linux and Windows; standard library only.
 
   collect   machine, software and model facts as JSON (no run)               python3 bin/moe_cache_record.py collect --model M.gguf --llama-server LS
   monitor   watch a running llama-server (--pid N) or run a command (-- CMD) and sample VRAM, process RAM, available RAM (MemAvailable / ullAvailPhys, not MemFree) and CPU until it ends
@@ -18,7 +18,7 @@ NR = "not recorded"
 RECORD_SCHEMA = 1
 HERE = os.path.dirname(os.path.abspath(__file__))
 IS_WIN = os.name == "nt"
-SCHEMA_PATH = os.path.join(HERE, "..", "docs", "bench_record.schema.json")
+SCHEMA_PATH = os.path.join(HERE, "..", "docs", "reference", "bench-record.schema.json")
 MiB = 1024 * 1024
 
 
@@ -1209,7 +1209,7 @@ def _gib(mib):
 
 
 def details_lines(rec, section=None, date=None, arm="moe-cache"):
-    """The benchmark card's four detail lines (docs/benchmark_card.html, per-row `d`), from the record."""
+    """The benchmark card's four detail lines (docs/results/benchmark-card.html, per-row `d`), from the record."""
     s, sw, p, c = rec["settings"], rec["software"], rec["protocol"], rec["conditions"]
     runs = [r for r in rec["runs"] if r["arm"] == arm and r["ok"]] or [r for r in rec["runs"] if r["ok"]]
     pick = lambda k: max([r[k] for r in runs if isinstance(r.get(k), (int, float))], default=NR)
@@ -1285,7 +1285,7 @@ def issue_body(rec):
 # ---------------------------------------------------------------- validation (a small JSON-Schema subset: type, enum, const, required, properties, items, anyOf, $ref)
 
 def load_schema(path=None):
-    """The schema file (docs/bench_record.schema.json), or None when this install has no docs folder."""
+    """The schema file (docs/reference/bench-record.schema.json), or None when this install has no docs folder."""
     try:
         with open(path or SCHEMA_PATH, encoding="utf-8") as f:
             return json.load(f)
@@ -1440,7 +1440,7 @@ def main(argv=None):
     s.add_argument("--order", default="ABBA", help="ABBA or single"); s.add_argument("--prompt-set"); s.add_argument("--prompt-file"); s.add_argument("--prompt-tokens", type=int)
     s.add_argument("--n-predict", type=int); s.add_argument("--temperature", type=float, default=0.0); s.add_argument("--seed", type=int, default=42); s.add_argument("--sampler")
     s.add_argument("--cache", choices=["cold", "warm"]); s.add_argument("--baseline"); s.add_argument("--other-programs"); s.add_argument("--kit-url"); s.add_argument("--out")
-    v = sub.add_parser("validate", help="check a record against docs/bench_record.schema.json"); v.add_argument("record")
+    v = sub.add_parser("validate", help="check a record against docs/reference/bench-record.schema.json"); v.add_argument("record")
     r = sub.add_parser("card", help="print a record as card lines / row / RESULTS section / issue body"); r.add_argument("record")
     r.add_argument("--as", dest="fmt", choices=["details", "row", "results", "issue", "gaps", "env"], default="details"); r.add_argument("--section"); r.add_argument("--title", default="TITLE")
     e = sub.add_parser("env-from-gtm", help="the environment block (BENCH-1150) from chain's .gtm.jsonl lines, optionally one run's time window")
@@ -1467,7 +1467,7 @@ def main(argv=None):
     if a.cmd == "validate":
         sch = load_schema()
         if not sch:
-            print("validate: docs/bench_record.schema.json not found next to this install"); return 2
+            print("validate: docs/reference/bench-record.schema.json not found next to this install"); return 2
         errs = validate(rec, sch)
         for e in errs:
             print("FAIL " + e)

@@ -3,7 +3,7 @@
 
   tools/env_names_check.py            table: name, files that use it, documented yes/no; then a count
   tools/env_names_check.py --missing  only the undocumented names, one per line (with the first file using it)
-  tools/env_names_check.py --config-only  count a mention only in README.md and docs/CONFIGURATION.md (default: anywhere in README.md and docs/*.md)
+  tools/env_names_check.py --config-only  count a mention only in README.md and docs/reference/configuration.md (default: anywhere in README.md and docs/*.md)
   tools/env_names_check.py --strict   exit 1 when something is undocumented (the default always exits 0: a warning only)
 A name counts as read when it appears in code; names that end in "_" (prefixes built at run time) are skipped.
 """
@@ -33,7 +33,7 @@ def scan(paths, exts):
 
 def main(argv):
     code = scan(CODE_DIRS, None)
-    docs = scan(["README.md", "docs/CONFIGURATION.md"] if "--config-only" in argv else ["README.md", "docs"], (".md",))
+    docs = scan(["README.md", "docs/reference/configuration.md"] if "--config-only" in argv else ["README.md", "docs"], (".md",))
     rows = [(n, sorted(fs), n in docs) for n, fs in sorted(code.items())]
     missing = [r for r in rows if not r[2]]
     if "--missing" in argv:

@@ -241,7 +241,7 @@ def command_word():
 
 def agents_lines(say, found, use, cw, url, want_agent, started):
     """Step 5 when nothing is connected now: no agent found, a plain-chat start (agents need agent mode), or a run that started no server (--dry-run, "show me the
-    commands"). LAUNCHER-1222 (2): names the connect command for the agents found (docs/INSTALL.md step 5) and the short `moe-cache launch --agent` line."""
+    commands"). LAUNCHER-1222 (2): names the connect command for the agents found (docs/guides/install.md step 5) and the short `moe-cache launch --agent` line."""
     names = "|".join(found) if found else "NAME"
     if not found:
         say("     none of hermes, opencode, claude found on this PC" + (f" ({want_agent} is not installed; skipped)" if want_agent not in (None, "all") else "")

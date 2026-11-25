@@ -1,0 +1,134 @@
+<title>moe-cache Windows Bench Card</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one column spec sheet; machine, method, then commands. Stock is grey, moe-cache is the one accent. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --ink: #12161c;
+  --ink-2: #4a5360;
+  --ink-3: #6f7886;
+  --rule: #dde1e7;
+  --stock: #9aa3b0;
+  --plugin: #2a78d6;
+  --mtp: #4a3aa7;
+  --code-bg: #eef1f5;
+  --display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171c; --panel: #1b1f25; --ink: #f2f4f7; --ink-2: #c0c6cf; --ink-3: #8d95a1; --rule: #2d333c;
+    --stock: #6b7380; --plugin: #3987e5; --mtp: #9085e9; --code-bg: #232831; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14171c; --panel: #1b1f25; --ink: #f2f4f7; --ink-2: #c0c6cf; --ink-3: #8d95a1; --rule: #2d333c;
+  --stock: #6b7380; --plugin: #3987e5; --mtp: #9085e9; --code-bg: #232831; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 900px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: grid; gap: 40px; }
+h1, h2 { font-family: var(--display); font-stretch: 80%; text-wrap: balance; margin: 0; line-height: 1.1; }
+h1 { font-size: clamp(30px, 5.5vw, 46px); font-weight: 800; letter-spacing: -0.01em; }
+h2 { font-size: 22px; font-weight: 700; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+header { display: grid; gap: 14px; }
+.lede { color: var(--ink-2); font-size: 17px; }
+.machine { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+section { display: grid; gap: 16px; min-width: 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; display: grid; gap: 4px; align-content: start; }
+.tile b { font-family: var(--display); font-stretch: 75%; font-size: 40px; line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tile span { color: var(--ink-2); font-size: 13.5px; }
+.chart { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 16px 12px; position: relative; min-width: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+svg { display: block; width: 100%; min-width: 560px; height: auto; overflow: visible; }
+svg text { font-family: var(--body); }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 12.5px; padding: 6px 9px; border-radius: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scroll { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); font-weight: 600; }
+td.n, th.n { text-align: right; white-space: nowrap; }
+td .sub { display: block; color: var(--ink-3); font-size: 12.5px; }
+.up { font-weight: 700; }
+.note { color: var(--ink-2); font-size: 14px; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 72ch; }
+pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+code { font-family: var(--mono); font-size: 0.9em; }
+.cmd { display: grid; gap: 6px; min-width: 0; }
+.cmd h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+a { color: var(--plugin); }
+a:focus-visible { outline: 2px solid var(--plugin); outline-offset: 2px; }
+footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Benchmark card · v0.3.9 · no speed figures in this release</div>
+    <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
+        <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. This page describes how its speed is measured; the figures for v0.3.9 are not published yet.</p>
+    <div class="machine">
+      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5 at 6000 MT/s</span><span>Windows 11</span><span>bundled llama.cpp b12651 (ggml 1.0)</span>
+    </div>
+  </header>
+
+  <section aria-label="Speed figures">
+    <p class="note"><b>No speed figures in v0.3.9.</b> The speed measurements are redone on the bundled llama.cpp b12651 build; the figures of the earlier release were taken on an earlier build and are not repeated here. Speed numbers for this release follow in a later release. The earlier card is kept in <a href="archive/benchmark-card-v0.3.8.html">results-archive/benchmark_card_v0.3.8.html</a> (v0.3.8, earlier build, not v0.3.9 numbers).</p>
+  </section>
+
+  <section>
+    <h2>Where it does not help</h2>
+    <ul>
+      <li><b>Models that fit in RAM.</b> If all experts fit on the card the launcher runs plain llama.cpp; if some expert layers stay on the CPU it runs the plugin by default since v0.3.8 (<code>--stock</code> opts out; measured on one laptop with an 8 GB card: not faster than stock, no figure quoted; an earlier figure was not reproduced). With no GPU the plugin runs too (the planner puts every expert layer on the CPU; by design, not measured). Forced through moe-cache on the 16 GB PC, a model that fits in RAM was about the same as stock in our earlier test (no figure quoted in this release), and earlier laptop runs showed stock as fast or faster; no steady gain, so the default stays.</li>
+      <li><b>Short answers at shallow depth.</b> The gain in a conversation comes from reading prompts and from keeping the hot experts in RAM; a short chat on a model that already fits in RAM does not gain.</li>
+      <li><b>CPU kernels.</b> Any gain comes from which experts are in RAM and how they are read, not from faster math: llama.cpp's own CPU kernels run on both sides.</li>
+      <li><b>Small samples.</b> One or two runs per arm on one PC; speed depends on RAM speed, SSD and GPU.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Output quality</h2>
+    <p>The plugin does not change the math: with the same settings its answers are the same as stock's (the identity tests of the older card page). The default long-prompt mode is the exception: its q8_0 KV cache means answers are close but not byte-identical to stock; quality figures are in <a href="../reference/exactness.md">EXACTNESS</a>. <code>--exact</code> turns it off.</p>
+  </section>
+
+  <section>
+    <h2>Method</h2>
+    <ul>
+      <li><b>Cold every run.</b> Before each server start, <code>tools\win_flush_cache.ps1</code> reads 38.5 GB of other files so Windows' file cache no longer holds the model. Stock benefits most from a warm cache, so this is the fair setting for both.</li>
+      <li><b>ABBA order.</b> Stock, moe-cache, moe-cache, stock, so drift (heat, background work) hits both sides equally.</li>
+      <li><b>Same conversation.</b> A seeded script of user turns (small follow-ups, code pastes, logs, a few big pastes), the whole history re-sent every turn, greedy decoding (temperature 0), real answers (up to 256 tokens), until the context is full. The model's own answers become part of the history.</li>
+      <li><b>Same layout.</b> Stock gets the same GPU expert layers, context, flash attention and batch size that the launcher picks for the plugin.</li>
+      <li><b>Text identity</b> is checked separately (stock against plugin, byte for byte, in the identity runs, with <code>--exact</code>), not in the conversation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Commands</h2>
+    <div class="cmd">
+      <h3>The whole A B B A on a Windows PC (one model per call; trial first with -Ctx 8192 -MaxTurns 4)</h3>
+      <pre>powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\bench\conv -Model D:\models\model.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536</pre>
+    </div>
+    <div class="cmd">
+      <h3>moe-cache (launcher defaults; it prints the llama-server command it runs)</h3>
+      <pre>python bin\moe_cache.py server C:\models\model.gguf --llama-server C:\llama-vk\llama-server.exe</pre>
+    </div>
+    <div class="cmd">
+      <h3>Stock llama-server (N = the plugin's CPU expert layers, e.g. 40 for Flash-Next Q2_0)</h3>
+      <pre>llama-server.exe -m C:\models\model.gguf -ngl 99 --n-cpu-moe N -c 65536 -fa on --load-mode mmap -ub 2048</pre>
+    </div>
+    <div class="cmd">
+      <h3>Flush the file cache before each run (reads other big files, writes nothing)</h3>
+      <pre>powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target C:\models\model.gguf -Other "D:\other-models"</pre>
+    </div>
+  </section>
+
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/results/archive/results-windows-desktop.md">docs/results/archive/results-windows-desktop.md</a> (Windows desktop, newest first) and <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/results/archive/results-old-laptop.md">docs/results/archive/results-old-laptop.md</a> (the Linux laptop); older card: <a href="archive/benchmark-card-older.html">benchmark_card_older.html</a>. Result numbers named in this card are sections of RESULTS.md. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+</div>
+
+

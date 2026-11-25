@@ -1,0 +1,73 @@
+# Same tokens as stock: how moe-cache checks it
+
+moe-cache runs MoE models bigger than your RAM inside llama-server (the official one, or the kit's b12651 build with the moe-cache patch set, which is the official source plus patches that are all off until their own switch is set). The plugin itself changes no number: with the same settings the answer is the one stock
+llama.cpp gives for the same model and layer split. The launcher's default long-prompt mode (v0.3.8) stores the KV cache as q8_0, so by default, from 32k context, answers are not byte-identical to stock; `--exact` restores that promise. This page lists how that is checked, when the checks run, and where the promise has limits.
+Numbers and logs: [RESULTS](../results/archive/results-windows-desktop.md) and [RESULTS_OLD_LAPTOP](../results/archive/results-old-laptop.md) (the identity checks of results 1, 10 and 36 are in the laptop file); the approximate modes: [QUALITY_GATE.md](quality-gate.md).
+
+## What "the same" means
+
+| Mode | Promise | How it is checked |
+|---|---|---|
+| `--exact` or `--no-long-prompt`, context below 128k, MTP off (also the default below 32k context, with `--stock`, or when the card has no room for the long-prompt plan) | **token-identical** to stock **under the stated settings**: greedy decoding, same layer split, same llama.cpp build and backend, same KV types (f16 unless you set them) | greedy decoding, stock and plugin servers, every generated token compared (`tests/identity.sh`) |
+| **default at `--ctx 32768` and above, with a GPU and room on the card (the long-prompt mode, since v0.3.8)** | `-ub 4096` with a q8_0 KV cache. Answers are **not byte-identical** to stock: against f16 the KL divergence is 0.014-0.015, the same top token in 94-95 % of positions, and the meaning was kept in 10 of 10 checks at 55k (2026-11-07; a forecast: on our test PC (RX 9070 XT) with IQ3_XXS and llama.cpp b12064, the KL and top-token figures were measured on 4k and 8k contexts, not at 55k). In the same test the long-prompt mode read long prompts faster with answers about the same (figures follow in a later release). `--exact` or `--no-long-prompt` go back to f16. Not applied to a model that fits in RAM (35B at 64k on our test PC: prompts slower with it, one A B B A, forecast) | the long-prompt KL runs of 2026-11-07; `--exact` keeps f16 |
+| default at `--ctx 131072` and above, with a GPU | q8_0 KV cache (`--fast=kv`) is selected automatically (not with `--stock`, `--exact`, your own `-ctk`/`-ctv`, or without a GPU, or with `--no-long-prompt`). It **may change answers**; measured: KL 0.0079, top-1 96.7 %, 190/202 tasks (= stock) on one model at 4k context (one run, no benchmark record) | quality gate ([QUALITY_GATE.md](quality-gate.md)); `--exact` keeps f16 |
+| MTP (speculative decoding with the model's own draft head) | **not guaranteed identical**: with the same split, GLM code text differed under MTP (RESULTS 77) | speed pairs; compare text before relying on it |
+| `--fast`, `--fast=2`, `--fast=fewer`, `--hybrid` | approximate, opt-in only; may change answers | quality gate with limits fixed before measuring ([QUALITY_GATE.md](quality-gate.md)) |
+
+**Strict comparison with stock:** use `--exact` (it also switches the long-prompt mode off), do not pass `--fast*` or `--hybrid`, turn MTP off (`--no-mtp`), set `-ctk f16 -ctv f16` explicitly on both sides, and fix the layer split (`--n-cpu-moe`, same `-ub`). `--exact` alone does not remove every source of difference.
+
+"Same layer split" matters: with long prompts the amount of work that runs on the GPU can change from run to run with the free VRAM, and a layer
+computed on the GPU instead of the CPU can change the last digits and then a token, in stock llama.cpp too. The identity tests fix the split.
+
+## What CI runs, and when
+
+| Workflow | Trigger | Coverage | Blocking |
+|---|---|---|---|
+| `quick` | every push to `main` and `experimental`, and every pull request | build, syntax checks, unit tests, kernel bit-exactness (no model) | yes |
+| `identity` | manual and daily 05:00 UTC | six llama.cpp rows: pinned commits (ggml 0.25 / API 2, ggml 0.26 / API 3, b11966, b12064, b12207, b12651) and llama.cpp **master** rows; small models on CPU runners | pinned rows; master / candidate rows are reported, never blocking |
+| `windows` | manual and nightly 03:30 UTC, or a push to `windows-ci` | the release kit unzipped as a user gets it, official release zip, CPU runner | checked before a release |
+| `sanitize` | manual, weekly (Monday 06:00 UTC), or a push to `sanitize` | address and thread sanitizers | no |
+| `release` | a version tag | builds the kits; publishes only after identity and windows passed on the tagged commit | yes |
+
+None of these runs a GPU: a CPU-only runner cannot exercise GPU kernels or the GPU block, even when a test sends long batches. The list below is what the identity and Windows jobs contain; it runs on those triggers, not on every commit.
+
+| Check | What it catches |
+|---|---|
+| Identity with the cache forced to evict (0.2 GiB) | experts read back from the SSD wrongly, or a stale expert used |
+| Identity on long prompts (512+ token batches) | the long-prompt GPU block and scan-resistant loading |
+| Executor forced on, every expert op **byte-checked** against llama.cpp's own result | any arithmetic difference in the plugin's CPU kernels (`mismatches 0` required) |
+| Logits at batch 8, KL divergence against stock | differences that greedy tokens would hide |
+| Different thread counts for prompts and decode | the switch between two thread pools |
+| Cache smaller than one operation (1 MiB) | the fallbacks when memory is very short |
+| Background reads deliberately delayed | a missing wait: the plugin computing with an expert still loading |
+| Guard mode (evicted pages made inaccessible) | an unintercepted read crashes instead of silently reading zeros |
+| Each read's memory poisoned while in flight | reading a neighbour's half-written page (seen on Windows) |
+| Repeated expert ids, two slots in parallel | the crash a GPU top-k with NaN produced on the PC |
+| Idle release (memory given back while idle) | tokens unchanged after the cache was emptied and refilled |
+| Noise floor: plugin loaded but disabled | proves the comparison itself is deterministic |
+| **Mutant builds**: copies of the plugin with a known bug put back (a missing wait, an old read path, a wrong op number) | each must **fail** its test: proves the tests can see the bug |
+| Sanitizers (address, thread) | memory errors and data races |
+| Windows: the release kit unzipped as a user gets it, the cache running, identity with the file-view cache | the Windows path, from the zip |
+
+## Checked on real hardware
+
+The Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB) runs paired A/B tests for every speed change: A, B, B, A, and the text of every run
+is compared (A vs A, B vs B, A vs B). A change is kept only when it is faster in every pair and the text stays identical (RESULTS 59-73).
+
+## Check it yourself
+
+`python bin/moe_cache.py bench-report MODEL.gguf` runs stock and moe-cache on your machine and prints `tokens IDENTICAL` or `DIFFERENT`
+(DIFFERENT can be normal when the two used different GPU/CPU splits; both plans are in the report). `tests/identity.sh MODEL.gguf` is the strict test
+with a fixed split. Please report what you see: [Benchmark report](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml).
+
+## The kit's patched llama.cpp
+
+Since v0.3.8 the kits bundle our build of llama.cpp (b12207; b12651 since v0.3.9), built from the official source plus `patches/llama.cpp/*.patch` (0004, 0020, 0030, 0040, 0090, 0091, 0092, 0093, 0094). Every patch is built in and **off** (0093 and 0094 are Vulkan error-path fixes that have no switch and only act when an allocation fails): with none of its switches set the build must answer exactly like the unpatched build of the same commit. 0040 only prints (`LLAMA_RESERVE_TOP=N` lists the largest tensors of the reserved graph); it allocates nothing and changes no number. The check runs on every build (`.github/workflows/llama_patched.yml`, called by the release workflow): the unpatched build of the same commit (the `plain` variant), the patched build with all switches off and the patched build with 0004, 0020 and 0040 switched on answer three prompts of 100 tokens at temperature 0 on a small model on CPU, and text and token ids must be byte-identical (`tools/llama_identity_run.sh`; the 0040 arm must also show its printed lines, so it proves the switch was really on). A patch that does change answers when switched on would have to say so in `patches/llama.cpp/README.md`. 0030 (Vulkan queue priority) only matters on a GPU and is not exercised by the CPU run; it changes scheduling, not arithmetic.
+
+## Limits
+
+| Limit | Note |
+|---|---|
+| The identity tests in CI use small models on CPU runners | big models are checked on one PC and by users' reports |
+| The quality gate for the 128k+ default ran at 4k context | a long-context loop test is part of the PC runs; the gate does not prove equal meaning on arbitrary prompts |
+| Different llama.cpp builds or backends (CUDA, Vulkan, HIP) give different digits | compare against stock on the same build |

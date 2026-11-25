@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""moe_cache_claims.py: runs, claims and the board (benchmarks/, docs/BENCHMARK_TEMPLATE.md). Standard library only.
+"""moe_cache_claims.py: runs, claims and the board (benchmarks/, docs/reference/benchmark-template.md). Standard library only.
 
   benchmarks/runs/DATE_MACHINE_SHORTID.json   one bench-record record per run set; append-only, never edited (the raw evidence)
   benchmarks/claims/ID.md                     a number we publish: the statement, the runs behind it, and what it is valid for
@@ -10,7 +10,7 @@
                                 --check only validates and prints the comment for the issue (the board row it would give). Reads text, runs nothing from it.
   claim add|show|list           create a claim from run ids; show one with its computed values; list all with their status
   board                         write BOARD.md and JOURNAL.md (--check: exit 1 if they are out of date)
-  lint [FILES]                  README.md, docs/RESULTS_CURRENT.md and docs/benchmark_card.html: every performance number needs a `<!-- claim:ID -->` of a current claim
+  lint [FILES]                  README.md, docs/results/results-current.md and docs/results/benchmark-card.html: every performance number needs a `<!-- claim:ID -->` of a current claim
   replay CLAIM                  the commands that reproduce a claim; with --record NEW.json compare a new record with the claim inside a noise band
 
 A claim's status is computed, never typed: current / stale (the moe-cache version or the llama.cpp pin moved past what the claim is valid for) / superseded (a
@@ -603,7 +603,7 @@ def lint_file(path, claims, status, root=ROOT, wide=False):
 def cmd_lint(a, bdir):
     claims, runs = load_claims(bdir), load_runs(bdir)
     status, _ = compute_status(claims, runs)
-    files = a.files or (wide_files() if a.wide else [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "RESULTS_CURRENT.md"), os.path.join(ROOT, "docs", "benchmark_card.html")])
+    files = a.files or (wide_files() if a.wide else [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "results", "results-current.md"), os.path.join(ROOT, "docs", "results", "benchmark-card.html")])
     total = 0
     for f in files:
         probs, shown, ok = lint_file(f, claims, status, wide=a.wide)

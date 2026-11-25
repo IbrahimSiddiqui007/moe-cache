@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Render the top of docs/benchmark_card.html (title, headline numbers, decode chart) to PNGs for the README (GitHub shows no HTML pages inline):
-docs/benchmark_card.png (light) and docs/benchmark_card-dark.png. Run it after every change to the card (the README rule: numbers, card, image in one step).
+"""Render the top of docs/results/benchmark-card.html (title, headline numbers, decode chart) to PNGs for the README (GitHub shows no HTML pages inline):
+docs/results/benchmark-card.png (light) and docs/results/benchmark-card-dark.png. Run it after every change to the card (the README rule: numbers, card, image in one step).
 
     python3 tools/card_image.py [--chrome PATH] [--sections 3] [--width 940]
 
@@ -8,7 +8,7 @@ Needs Google Chrome or Chromium (headless) and Pillow. The card is copied to a t
 import argparse, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CARD = os.path.join(HERE, "..", "docs", "benchmark_card.html")
+CARD = os.path.join(HERE, "..", "docs", "results", "benchmark-card.html")
 
 
 def find_chrome():
@@ -52,8 +52,8 @@ def main():
     if not a.chrome:
         sys.exit("no Chrome / Chromium found: pass --chrome PATH")
     html = open(CARD, encoding="utf-8").read()
-    for theme, name in (("light", "benchmark_card.png"), ("dark", "benchmark_card-dark.png")):
-        out = os.path.join(HERE, "..", "docs", name)
+    for theme, name in (("light", "benchmark-card.png"), ("dark", "benchmark-card-dark.png")):
+        out = os.path.join(HERE, "..", "docs", "results", name)
         w, h = render(a.chrome, html, theme, a.sections, a.width, out)
         print(f"{os.path.normpath(out)}: {w}x{h + 24} px ({theme})")
 

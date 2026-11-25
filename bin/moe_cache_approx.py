@@ -2,11 +2,11 @@
 """QUALITY-970: the opt-in `--approx safe|careful|aggressive` tiers of moe-cache-server.
 
 Off by default. A tier is a named group of switches that already exist (q8_0 KV cache, the model's own MTP draft head, --fast, --fast=2); each mode in it carries
-the quality gate it must pass (docs/QUALITY_GATE.md, the thresholds are copied here and a test keeps them equal), and the models it was measured on.
+the quality gate it must pass (docs/reference/quality-gate.md, the thresholds are copied here and a test keeps them equal), and the models it was measured on.
 The startup canary re-measures the tier on a short text against the exact setting of the same model and steps the tier down when the KL divergence is past
 the gate. Standard library only. Everything here that decides (resolve, canary_decide, parse) is pure, so tests/approx_test.py runs without a model.
 
-A canary guards, it never proves: passing it does not make a mode a default (docs/QUALITY_GATE.md: defaults need the full gate and the owner's decision).
+A canary guards, it never proves: passing it does not make a mode a default (docs/reference/quality-gate.md: defaults need the full gate and the owner's decision).
 """
 import json, os, re, subprocess, hashlib, time
 
@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TIER_ORDER = ["exact", "safe", "careful", "aggressive"]       # lowest to highest; the canary steps down this list
 
-# gate level -> (max mean KLD, min same-top %, tasks tolerance). The same numbers as LEVELS in tools/quality_gate.py and the table in docs/QUALITY_GATE.md.
+# gate level -> (max mean KLD, min same-top %, tasks tolerance). The same numbers as LEVELS in tools/quality_gate.py and the table in docs/reference/quality-gate.md.
 GATE_LEVELS = {
     "exact": (1e-5, 100.0, 0),
     "kv": (0.015, 95.0, 2),
@@ -60,7 +60,7 @@ TIERS = {
 # default and nothing else; tests/token_modes_test.py proves the default enables exactly the "won" rows and that --exact enables none.
 TOKEN_MODES = [
     {"id": "kv8", "what": "q8_0 KV cache from 128k context on a GPU machine", "switch": "--fast=kv (default from 128k)", "status": "won",
-     "reason": "speed at 256k on a 16 GB card: no run record (not measured at 128k or above); gate level kv passed at 4k (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
+     "reason": "speed at 256k on a 16 GB card: no run record (not measured at 128k or above); gate level kv passed at 4k (KL 0.0045-0.015, docs/reference/quality-gate.md); owner 2026-10-30"},
     {"id": "long-prompt", "what": "long-prompt mode from 32k context: -ub 4096 with the q8_0 KV cache, where the memory plan has room", "switch": "--long-prompt (default from 32k)", "status": "won",
      "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: speed figures follow in a later release (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
     {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",
@@ -170,7 +170,7 @@ def resolve(tier, model_name, off=(), unverified=False, user_fast=None, records=
         elif st == "unverified" and not unverified:
             bad.append(f"{m} (no gate record for this model)")
     if bad:
-        raise ApproxError(f"--approx {tier}: refused: " + "; ".join(bad) + ". Modes need a gate record for the model (docs/QUALITY_GATE.md). Drop one with --approx-off MODE, "
+        raise ApproxError(f"--approx {tier}: refused: " + "; ".join(bad) + ". Modes need a gate record for the model (docs/reference/quality-gate.md). Drop one with --approx-off MODE, "
                           "or --approx-unverified to run it anyway (the control page shows a red badge)")
     ids = [m["id"] for m in modes]
     fast = ("1" if "fast1" in ids else "2" if "fast2" in ids else None)
@@ -178,7 +178,7 @@ def resolve(tier, model_name, off=(), unverified=False, user_fast=None, records=
     if fast and user_fast and user_fast != fast:
         lines.append(f"moe-cache: --approx {tier}: your --fast={user_fast} wins over the tier's expert mode (--fast={fast}); the tier's gate no longer describes this run")
         fast = None
-    lines.append(f"moe-cache: --approx {tier}: {t['plain']}. Gate: {t['gate']} level (docs/QUALITY_GATE.md). Modes: " + "; ".join(f"{m['id']} [{m['status']}]" for m in modes))
+    lines.append(f"moe-cache: --approx {tier}: {t['plain']}. Gate: {t['gate']} level (docs/reference/quality-gate.md). Modes: " + "; ".join(f"{m['id']} [{m['status']}]" for m in modes))
     for m in modes:
         if m["status"] == "unverified":
             lines.append(f"moe-cache: --approx-unverified: {m['id']} has NO gate record for this model: it runs, nobody measured its quality here")

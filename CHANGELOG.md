@@ -442,7 +442,7 @@
 - Quality yardstick on the PC: 202 tasks, Flash-Next IQ3_XXS 193 right, IQ2_XS 187 (RESULTS 60): IQ3_XXS when accuracy matters, IQ2_XS for speed.
 - **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
   Granite, Qwen3.6 and Qwen3.5-122B (bigger than RAM); executor byte check 0 mismatches; Flash-Next through the launcher and a chat. Steps:
-  [docs/WINDOWS.md](docs/WINDOWS.md); status in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Windows stays **experimental**.
+  [docs/WINDOWS.md](docs/guides/windows.md); status in [docs/COMPATIBILITY.md](docs/reference/platforms.md). Windows stays **experimental**.
 - Launcher finds the GPU on Windows with AMD and Intel cards (the planner knew only nvidia-smi and Linux sysfs, so it saw no GPU and kept every expert on
   the CPU): it reads `llama-server --list-devices` and picks the adapter with the most dedicated VRAM in the registry, not the first listed (the iGPU).
 - **Windows: the plugin releases the model-file pages llama.cpp leaves in llama-server's working set** (I37). llama.cpp's Windows loader never unmaps the
@@ -541,7 +541,7 @@
   first request starts the launcher in agent mode for the remembered model, requests (streaming included) pass through, and the model stops after 15 idle
   minutes (`--idle`). The API key and the localhost-only CORS rule are checked in front, so a web page cannot wake the model; `/v1/models` and `/props`
   answer without starting it. `--install-autostart` starts it at login (systemd --user unit; Windows Startup-folder shortcut, no admin). `connect
-  hermes|opencode` now defaults to the on-demand port. [docs/AGENTS.md](docs/AGENTS.md#without-starting-a-server-by-hand-on-demand)
+  hermes|opencode` now defaults to the on-demand port. [docs/AGENTS.md](docs/guides/agents.md#without-starting-a-server-by-hand-on-demand)
 - on-demand opens its port at once: it bound the port only after the launcher's dry run had checked the options (16.5 s on the Windows PC), so an
   agent that connected meanwhile was refused. Now that agent waits and is answered when the check is done. The free-port check before it took 1 s
   on Windows (a refused local connect is retried until the timeout); its timeout is now 0.25 s.
@@ -550,7 +550,7 @@
   on-demand model start pays it again).
 - **`--agent`** (RESULTS 51): context 65536, `--jinja` tool calls, stable `--alias`, at most 8 context checkpoints per slot with a 1 GiB reserve, config blocks printed
   when ready; `--api-key` for other machines. **`connect hermes|opencode [--write]`** writes the agent's config (Hermes through `hermes config set`, OpenCode by merging
-  `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/AGENTS.md),
+  `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/guides/agents.md),
   including their GUIs on Linux and Windows).
 - **Warm agent sessions**: every idle conversation of 2k+ tokens is saved with its checkpoints, one file per slot, and the two longest are restored at the next start
   (first turn after a restart 9.0 s / 6.2 s instead of ~45 s / 23 s; `--no-warm` turns it off). RESULTS 51-52.
@@ -573,7 +573,7 @@
   (`mtp_decide()`), Status shows "+ MTP"; MTP benchmark runs are compared only with MTP runs. docs/GUI.md has screenshots.
 - `moe-cache-server --ui` or `python bin\moe_cache.py ui`: a local page at http://127.0.0.1:8070 on Linux and Windows. Models with the planner's verdict and reasons, start and stop,
   live tok/s, hit rate, SSD reads, RAM and VRAM (also for AMD/Intel on Windows), the log, llama-server's chat page; Connect OpenCode / Hermes buttons with a preview;
-  warnings read from the log; measured speeds from RESULTS next to the verdict; warm-session state. `bin\moe-cache-ui.bat` starts it with one click on Windows. See [docs/GUI.md](docs/GUI.md).
+  warnings read from the log; measured speeds from RESULTS next to the verdict; warm-session state. `bin\moe-cache-ui.bat` starts it with one click on Windows. See [docs/GUI.md](docs/guides/gui.md).
   The VRAM setting defaults to auto (it used the free VRAM of the moment the page loaded).
 
 ### `--fast`, profiles and speed
@@ -617,7 +617,7 @@
   to the verdict for the models measured before; quant from the GGUF header (Ollama); warm-session state in the Agents tab; `bin\moe-cache-ui.bat`
   for Windows (one click: finds Python, the plugin DLL and llama-server; `--shortcut` adds a Start-menu entry); the page shows what the launcher
   decided (incl. the Windows/AMD rules: experts on the CPU, `--ctx-checkpoints 0`) and predicts those rules in the plan; `tests/ui_live.py` runs the page with Granite in CI (Linux and Windows).
-- **Control page, step 1** (GUI1; `moe-cache-server --ui`, or `moe_cache.py ui`; [docs/GUI.md](docs/GUI.md)): a local page at
+- **Control page, step 1** (GUI1; `moe-cache-server --ui`, or `moe_cache.py ui`; [docs/GUI.md](docs/guides/gui.md)): a local page at
   http://127.0.0.1:8070, standard-library Python on Linux and Windows. Lists the GGUF models in `~/models` (`C:\models` on Windows), added folders and
   Ollama's store with the planner's verdict and its reasons (fits in RAM: stock / does not fit: moe-cache / all experts on the GPU; idea I33), starts
   and stops the server through the launcher, and shows live tok/s, cache hit rate, SSD reads, RAM and VRAM, llama-server's chat page and the log.

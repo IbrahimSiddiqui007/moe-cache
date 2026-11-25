@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The model catalogue (models.json): its shape and sources, the one fit rule (8/16/24 GB GPUs x 16/32/64 GB RAM x 32k/64k/256k context), pick and launch
-reading it, `moe_cache.py models`, and that docs/MODELS.md is what tools/gen_models_md.py makes from it. No model, no llama-server, no network.
+reading it, `moe_cache.py models`, and that docs/reference/models.md is what tools/gen_models_md.py makes from it. No model, no llama-server, no network.
    python3 tests/models_catalogue_test.py"""
 import contextlib, io, json, os, re, subprocess, sys, tempfile
 
@@ -132,7 +132,7 @@ r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "
 check("moe_cache.py models" in r.stdout + r.stderr, "moe_cache.py help lists models")
 
 # ---- the doc and the tools ----
-check(gen.main(["--check"]) == 0, "docs/MODELS.md is what tools/gen_models_md.py makes from models.json")
+check(gen.main(["--check"]) == 0, "docs/reference/models.md is what tools/gen_models_md.py makes from models.json")
 changed = json.loads(json.dumps(doc)); changed["models"][0]["quant"] = "Q9_X"
 check(gen.apply(open(gen.DOC, encoding="utf-8").read(), gen.render(changed)) != open(gen.DOC, encoding="utf-8").read(), "the doc check notices a changed JSON")
 src = open(os.path.join(HERE, "tools", "check_model_links.py"), encoding="utf-8").read()

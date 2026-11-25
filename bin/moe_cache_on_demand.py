@@ -464,7 +464,7 @@ class Pool:
         """MM1 (PROTOTYPE): several servers alive at once, each with a fixed share of the ONE memory cap, of the VRAM and its own CPU cores. Falls back to
         one at a time (swap) when the floors do not fit. The arguments are for tests; by default the machine's cap, free VRAM and cores are read."""
         import moe_cache_concurrent as cc
-        log("on-demand --concurrent is a PROTOTYPE: static split, not speed-tested with two models at once (docs/PLATFORMS.md)")
+        log("on-demand --concurrent is a PROTOTYPE: static split, not speed-tested with two models at once (docs/reference/platforms.md)")
         try:
             if cap is None:
                 cap = mc.mem_cap() or mc.mem_for_server(None)

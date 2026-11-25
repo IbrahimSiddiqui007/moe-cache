@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for testing. The fields are explained in [docs/BENCHMARK_TEMPLATE.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/BENCHMARK_TEMPLATE.md) (Windows and Linux recipes, how to pick a model bigger than your RAM); the short version is [docs/SHARE_YOUR_NUMBERS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/SHARE_YOUR_NUMBERS.md).
+        Thank you for testing. The fields are explained in [docs/reference/benchmark-template.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/reference/benchmark-template.md) (Windows and Linux recipes, how to pick a model bigger than your RAM); the short version is [docs/guides/share-your-numbers.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/guides/share-your-numbers.md).
         Run `python bin/moe_cache.py bench-report MODEL.gguf --pairs 2` and paste the `.md` file it writes. A value you could not measure stays `not recorded`: never guess it.
   - type: textarea
     id: report

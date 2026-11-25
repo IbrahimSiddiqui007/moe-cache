@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SERVER-005: `moe-cache-server MODEL --print-systemd` fills docs/moe-cache-server.service with the user's paths and memory limits. No model, nothing started.
+"""SERVER-005: `moe-cache-server MODEL --print-systemd` fills docs/reference/moe-cache-server.service with the user's paths and memory limits. No model, nothing started.
    python3 tests/print_systemd_test.py"""
 import os, re, subprocess, sys, tempfile
 

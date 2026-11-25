@@ -29,7 +29,7 @@ chk "make_release.sh calls tools/release_copy_src.sh" 'grep -q "tools/release_co
 chk "make_release.sh has no bare 'cp src/*'" '! grep -q "cp src/\*" tools/make_release.sh'
 chk "the helper is not shipped inside the tarball's tools/" 'grep -q "dist/\$N/tools/release_copy_src.sh" tools/make_release.sh'
 # 5 the whole tarball step on a copy of this tree with the compile stubbed (build.sh makes a dummy plugin): both tarballs are built, and what must not be in them is not
-#   (src/top: experimental native top; docs/internal: design notes; the release scripts themselves)
+#   (src/top: experimental native top; docs/internal: design notes (moved out of the public repo); the release scripts themselves)
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
   mkdir -p "$T/tree"; git ls-files -z | while IFS= read -r -d '' f; do [ -e "$f" ] && mkdir -p "$T/tree/$(dirname "$f")" && cp -p "$f" "$T/tree/$f"; done
   printf '#!/bin/bash\no=${BUILD_DIR:-build}; mkdir -p $o && echo stub > $o/libggml-moe-cache.so\n' > "$T/tree/build.sh"; chmod +x "$T/tree/build.sh"
@@ -41,7 +41,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; th
     b=$(basename "$tb" .tar.gz); tar -tzf "$tb" > "$T/$b.list"
     chk "$b: no src/top (the experimental native top is not shipped)" '! grep -q "/src/top" "$T/$b.list"'
     chk "$b: no docs/internal (design notes are not shipped)" '! grep -q "/docs/internal" "$T/$b.list"'
-    chk "$b: the control page, the plugin sources and the public docs are in" 'grep -q "/ui/index.html$" "$T/$b.list" && grep -q "/src/mc_common.inl$" "$T/$b.list" && grep -q "/docs/QUICKSTART.md$" "$T/$b.list"'
+    chk "$b: the control page, the plugin sources and the public docs are in" 'grep -q "/ui/index.html$" "$T/$b.list" && grep -q "/src/mc_common.inl$" "$T/$b.list" && grep -q "/docs/guides/quickstart.md$" "$T/$b.list"'
     chk "$b: BUILD_COMMIT carries the commit handed down (0.3.9 draft shipped it empty)" '[ "$(tar -xzOf "$tb" "$b/BUILD_COMMIT")" = abcdef012 ]'
     chk "$b: entries carry the handed-down date, not -2^63 (0.3.9 draft)" '[ -z "$(TZ=UTC tar --full-time -tvzf "$tb" 2>&1 | grep -v " 2023-11-14 22:13:20 ")" ]'
     chk "$b: the release scripts are not shipped" '! grep -q "/tools/make_release.sh$\|/tools/release_copy_src.sh$" "$T/$b.list"'

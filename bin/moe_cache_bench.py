@@ -3,7 +3,7 @@
 order stock, moe-cache, moe-cache, stock (per pair), with the launcher's own defaults, and writes one report to paste into a GitHub issue
 (moe-cache-report-YYYYMMDD-HHMM.md + .json). It only measures: nothing is downloaded, uploaded or changed, and the report holds no prompts, answers,
 user name, host name or folder names. Standard library only; the same code on both systems (no systemd-run: the cache size is the launcher's --ram).
-docs/SHARE_YOUR_NUMBERS.md is the recipe."""
+docs/guides/share-your-numbers.md is the recipe."""
 import argparse, contextlib, datetime, io, json, os, platform, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -651,7 +651,7 @@ def report_md(d, record_json=None):
              ]
     if d["notes"]:
         lines += ["", "Notes:"] + [f"- {n}" for n in d["notes"]]
-    if d.get("record"):         # the benchmark record (docs/BENCHMARK_TEMPLATE.md): the card's detail lines, then the whole record for the issue form
+    if d.get("record"):         # the benchmark record (docs/reference/benchmark-template.md): the card's detail lines, then the whole record for the issue form
         lines += ["", "Details (benchmark card format):", ""] + ["- " + l for l in rec.details_lines(d["record"])]
         gaps = rec.not_recorded_fields(d["record"])
         if gaps:
@@ -662,7 +662,7 @@ def report_md(d, record_json=None):
 
 
 def build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, conditions):
-    """The benchmark record for this bench-report (docs/BENCHMARK_TEMPLATE.md): machine, software, model, settings, conditions, protocol, per-run metrics."""
+    """The benchmark record for this bench-report (docs/reference/benchmark-template.md): machine, software, model, settings, conditions, protocol, per-run metrics."""
     env = rec.collect_environment(a.model, None, listing=devices, version_line=llama, backend=d["backend"], identity={"quant": None if d["model"].get("quant") in (None, "-") else d["model"]["quant"]}, model_url=a.model_url)
     env["software"]["moe_cache_version"] = mc.VERSION
     moe_run = next((r for r in runs if r["mode"] == "moe-cache" and r.get("log_facts")), None) or next((r for r in runs if r.get("log_facts")), {})
@@ -695,7 +695,7 @@ def build_chat_record(a, d, chat_runs, devices, llama, cond):
 
 def bench_report(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py bench-report", description="measure stock llama-server and moe-cache on this machine and write a report "
-                                 "to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md). Measures only; nothing is uploaded.")
+                                 "to paste into a GitHub issue (docs/guides/share-your-numbers.md). Measures only; nothing is uploaded.")
     ap.add_argument("model")
     ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--ram", help="GB the cache may use (as `server`); default: what is free")

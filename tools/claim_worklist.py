@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The to-do list for claim markers (DOCS-621): every line of README.md and docs/benchmark_card.html that shows a performance number and has no
+"""The to-do list for claim markers (DOCS-621): every line of README.md and docs/results/benchmark-card.html that shows a performance number and has no
 current `<!-- claim:ID -->`, with the numbers the lint saw, the line's text, and the claims whose title or text contains one of those numbers
 (candidates, to be checked by a person; a match on a number alone is not proof). Read-only; it changes no file.
-   python3 tools/claim_worklist.py [FILE ...] > worklist.md        (default: README.md and docs/benchmark_card.html)
+   python3 tools/claim_worklist.py [FILE ...] > worklist.md        (default: README.md and docs/results/benchmark-card.html)
 Uses bin/moe_cache_claims.py (the same rules as `bench-record lint`)."""
 import html, os, re, sys
 
@@ -20,7 +20,7 @@ def norm(n):
 
 
 def main(argv):
-    files = argv or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "RESULTS_CURRENT.md"), os.path.join(ROOT, "docs", "benchmark_card.html")]
+    files = argv or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "results", "results-current.md"), os.path.join(ROOT, "docs", "results", "benchmark-card.html")]
     claims, runs = mc.load_claims(mc.BENCH), mc.load_runs(mc.BENCH)
     status, _ = mc.compute_status(claims, runs)
     blob = {i: norm(str(c)) for i, c in claims.items()}

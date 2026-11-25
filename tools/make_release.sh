@@ -17,7 +17,7 @@ if [ -z "$MOE_CACHE_RELEASE_EXPORT" ]; then
   MOE_CACHE_RELEASE_EXPORT=1 "$X/tools/make_release.sh" "$V"
   mkdir -p dist; cp "$X"/dist/moe-cache-v"$V"*-linux-x86_64.tar.gz "$X"/dist/SHA256SUMS dist/
   echo "built from commit $(git rev-parse --short HEAD) -> dist/"; ( cd dist && cat SHA256SUMS )
-  echo "note: SHA256SUMS detects corruption only. Releases built by the GitHub workflow also carry a build attestation (see docs/SECURITY.md)."
+  echo "note: SHA256SUMS detects corruption only. Releases built by the GitHub workflow also carry a build attestation (see docs/reference/security.md)."
   exit 0
 fi
 [[ "${MOE_CACHE_BUILD_COMMIT:-}" =~ ^[0-9a-f]{9}(-dirty)?$ ]] || { echo "FAIL: MOE_CACHE_BUILD_COMMIT not set by the outer run (got '${MOE_CACHE_BUILD_COMMIT:-}')"; exit 1; }

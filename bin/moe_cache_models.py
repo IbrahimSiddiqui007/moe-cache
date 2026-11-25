@@ -59,7 +59,7 @@ def lines(spec, use, ctx, rs, hidden):
         out.append(f"      {r['fit']['reason']}")
     if hidden:
         out.append(f"({hidden} more do not fit this PC: --all lists them)")
-    out.append("pick one for a use: moe_cache.py pick --use agents|chat|docs [--model ID]; the whole catalogue: models.json, docs/MODELS.md")
+    out.append("pick one for a use: moe_cache.py pick --use agents|chat|docs [--model ID]; the whole catalogue: models.json, docs/reference/models.md")
     return out
 
 

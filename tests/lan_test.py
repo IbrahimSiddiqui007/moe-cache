@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SERVER-016 (--lan) and GUI-012 (--ui-lan), without a second computer: the address rules (bin/moe_cache_lan.py), the launcher's --lan on a dry run with fake
-addresses (MOE_CACHE_LAN_ADDRS), and the page server with a fake remote client. docs/LAN_ACCESS.md has the threat table these checks follow.
+addresses (MOE_CACHE_LAN_ADDRS), and the page server with a fake remote client. docs/guides/lan-access.md has the threat table these checks follow.
    python3 tests/lan_test.py"""
 import json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 

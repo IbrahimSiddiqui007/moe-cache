@@ -3,7 +3,7 @@
 #   REF       branch, tag or SHA of this repository (pushes nothing; the exact commit is exported with git archive)
 #   --model   also run the steps that load the small Granite model (what windows.yml's identity steps do), max 15 min
 #   --no-pc   only the laptop part (cross-build of the DLL, kit and compile checks), nothing is sent to the PC
-# What runs where (see docs/internal/PC_CI.md):
+# What runs where (see the maintainers' private note PC_CI):
 #   laptop  = windows.yml's `dll` job: mingw-w64 cross-build of the plugin DLL, the Windows test programs and the kit (GitHub does this on Linux too)
 #   PC      = windows.yml's `windows` job: the tests on real Windows (tools/pc_ci_windows.ps1); `--model` adds the Granite steps
 # Not covered: identity.yml (Linux, builds llama.cpp three times) and windows.yml's `installer` job (changes the real PATH / Start menu): GitHub only.
