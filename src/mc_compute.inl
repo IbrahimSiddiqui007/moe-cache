@@ -322,7 +322,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                                   if (times) { e1s::exit_graph(); s.last_exit_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); const uint64_t f = state_t::process_faults(); s.last_exit_faults = f; if (s.entry_faults) s.in_faults += f - s.entry_faults; if (e1) { const uint64_t cp = state_t::cpu_ns(false), ct = state_t::cpu_ns(true); s.e1_last_cpu = cp; s.e1_last_tcpu = ct; if (s.e1_ent_cpu) { s.e1_in_cpu_ns += cp - s.e1_ent_cpu.load(); s.e1_in_tcpu_ns += ct - s.e1_ent_tcpu.load(); } } } } } total_guard{ s, t_in, seg_times, e1 };
     struct graph_scope_t { state_t & s; bool on;
                            graph_scope_t(state_t & st) : s(st), on(st.rb_on) { if (on) { s.graph_enter(); } }
-                           ~graph_scope_t() { if (on) { s.graph_leave(); } } } graph_scope{ s };   // BO-2: the idle rebalance stops while a graph runs
+                           ~graph_scope_t() { if (on) { s.graph_leave(); } } } graph_scope{ s };   // the idle rebalance stops while a graph runs
     if (!c->cpu) {
         c->cpu = ggml_backend_dev_init(CPU().dev, nullptr);
     }
@@ -486,10 +486,15 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             s.cur_scan = s.scan_tokens > 0 && n_tok >= s.scan_tokens;
             if (s.trace_f && n_tok == 1) {
                 int16_t hdr[2] = { (int16_t) s.tensors[tidx[0]]->layer, (int16_t) n_used };
-                fwrite(hdr, sizeof(int16_t), 2, s.trace_f);
-                for (int64_t u = 0; u < n_used; u++) {
+                bool bad = fwrite(hdr, sizeof(int16_t), 2, s.trace_f) != 2;     // (int16 ids: expert counts per layer stay far below 32767 in real models)
+                for (int64_t u = 0; u < n_used && !bad; u++) {
                     const int16_t e = (int16_t) *(const int32_t *) ((const char *) ids->data + u * ids->nb[0]);
-                    fwrite(&e, sizeof(int16_t), 1, s.trace_f);
+                    bad = fwrite(&e, sizeof(int16_t), 1, s.trace_f) != 1;
+                }
+                if (bad) {      // the trace is analysis data only: stop writing rather than leave a half-written record; the handle is closed here, so finish() finds none
+                    fprintf(stderr, "moe-cache: expert-id trace: a write failed; the trace stops here, what was written is kept\n");
+                    std::fclose(s.trace_f);     // close before clearing the pointer, or the handle would leak for the rest of the run
+                    s.trace_f = nullptr;
                 }
             }
             {
@@ -505,11 +510,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 int64_t blk_changed = 0;                // picks this block changed: added to the current decode step below
                 std::vector<int32_t> eff((size_t) (n_used * n_tok));
                 for (int64_t t = 0; t < n_tok; t++) {
-                    std::vector<char> taken((size_t) t0.n_expert, 0);
                     for (int64_t u = 0; u < n_used; u++) {
                         const int32_t e = *(const int32_t *) ((const char *) ids->data + u * ids->nb[0] + t * ids->nb[1]);
                         eff[(size_t) (t * n_used + u)] = e;
-                        if (e >= 0 && e < (int32_t) taken.size()) taken[(size_t) e] = 1;
                     }
                     // B3: the lowest-ranked picks are given up whether or not they are in RAM (at least half of the picks always stay)
                     const int keep_fewer = s.fewer > 0 ? (int) std::max<int64_t>(n_used - s.fewer, (n_used + 1) / 2) : (int) n_used;
@@ -527,26 +530,10 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                         if (e < 0 || e >= (int32_t) t0.n_expert) continue;
                         s.route_considered++;
                         if (s.nodes[(size_t) (t0.node0 + e)].resident) continue;     // in RAM (or already being read): use it
-                        int32_t best = -1;
-                        if (s.route_mode == 2) {
-                            uint64_t best_epoch = 0;
-                            for (int32_t c = 0; c < (int32_t) t0.n_expert; c++) {
-                                const node_t & nd2 = s.nodes[(size_t) (t0.node0 + c)];
-                                if (!taken[(size_t) c] && nd2.resident && !nd2.loading && (best < 0 || (uint64_t) nd2.epoch > best_epoch)) {
-                                    best = c;
-                                    best_epoch = (uint64_t) nd2.epoch;
-                                }
-                            }
-                        }
+                        // skip only: the "subst" mode (a different resident expert in its place: wrong weights, no gate) was removed (owner 2026-11-20)
                         if (e < (int32_t) used.size() && used[(size_t) e] > 0) used[(size_t) e]--;
-                        eff[(size_t) (t * n_used + u)] = best;
-                        if (best >= 0) {
-                            taken[(size_t) best] = 1;
-                            if (best < (int32_t) used.size()) used[(size_t) best]++;
-                            s.route_substituted++;
-                        } else {
-                            s.route_skipped++;
-                        }
+                        eff[(size_t) (t * n_used + u)] = -1;
+                        s.route_skipped++;
                         blk_changed++;
                     }
                 }
@@ -561,17 +548,6 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                               s.graphs.load() >= c->gpu_retry_at && !(s.route_mode || s.fewer > 0);
             exec_jobs += s.prepare_group(tidx, used, exec_graph || pipe);
             piped = piped || pipe;
-            if (s.lookahead && n_tok == 1) {
-                const ggml_tensor * xin = node->src[1];
-                if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {
-                    std::vector<float> xv((size_t) xin->ne[0]);
-                    memcpy(xv.data(), xin->data, xv.size() * sizeof(float));
-                    const int layer = s.tensors[tidx[0]]->layer;
-                    if (layer >= 0) {
-                        s.pf_submit([&s, layer, xv = std::move(xv), n_used = (int) n_used] { s.predict_and_prefetch(layer, xv, n_used); });
-                    }
-                }
-            }
             if (!s.profile_path.empty() && ++s.groups_since_save >= 100000) {
                 s.groups_since_save = 0;
                 s.save_profile();

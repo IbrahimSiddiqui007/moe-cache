@@ -8,13 +8,13 @@ seeded script of user turns (small follow-ups, code pastes, tool-output-like log
 
   run       one conversation against one server       python3 tools/conversation_bench.py run --url http://127.0.0.1:8080 --arm moe-cache --ctx 65536 --out run1.json
   ab        stock and plugin servers that are both up   ... ab --stock-url U1 --plugin-url U2 --ctx 65536 --out-dir DIR      (order stock, plugin, plugin, stock)
-  assemble  run files (in the order they were run) -> ONE bench record (docs/bench_record.schema.json) and the readable tables
+  assemble  run files (in the order they were run) -> ONE bench record (docs/reference/bench-record.schema.json) and the readable tables
   table     print the tables of a run file or a record
 
 Per turn: tokens added, depth before and after, prompt and decode tok/s (the server's own timings), tokens reused from the cache, time to first token, and
 the plugin's hits_dec / misses_dec of that turn when --stats-pid and --stats-log are given (the plugin must run with MOE_CACHE_STATS_SIGNAL=1; its
 stderr goes to the log). Per depth band (a quarter of the context each): the same, summed over the turns that start in that band.
-A value the server did not give is null in the run file and "not recorded" in the record; nothing is guessed. Standard library only. Docs: docs/CONVERSATION_BENCH.md."""
+A value the server did not give is null in the run file and "not recorded" in the record; nothing is guessed. Standard library only. Docs: docs/reference/conversation-bench.md."""
 import argparse, datetime, hashlib, http.client, json, os, random, re, signal, statistics, subprocess, sys, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +23,7 @@ sys.path.insert(0, HERE)
 
 CHARS_PER_TOKEN = 3.0       # deliberately low: a turn is judged too big a little early, never too late
 MARGIN = 48                 # tokens of slack for the chat template around a turn
+CPT_MARGIN = 1.03           # TEST-905: without /tokenize the sizes follow the characters per token seen so far, plus this 3 % margin
 MIN_PROMPT_N = 64           # a turn that read fewer new tokens does not enter the prompt-speed mean (timer noise)
 MIN_PREDICTED_N = 16        # the same for decode speed
 SYSTEM = "You are a careful coding assistant working in the user's repository. Answer briefly."
@@ -333,9 +334,10 @@ def delta(s0, s1, key):
 
 def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="conversation-bench", timeout=1800, stats=None, max_turns=None,
                      script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None, drive=None, answer_hint=False, min_median=MIN_MEDIAN_ANSWER,
-                     system=None, temperature=0.0, empty_marker="(no visible answer)", hint_text=None, keep_answers=True):
+                     system=None, temperature=0.0, empty_marker="(no visible answer)", hint_text=None, keep_answers=True, ignore_eos_from_depth=None):
     """Play the conversation; returns the run dict (turns, bands, stop reason). monitor_pid: llama-server's pid, sampled during the whole run for VRAM, process
-    RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py)."""
+    RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py). ignore_eos_from_depth: from this many tokens of depth on every
+    answer is forced to max_tokens with ignore_eos, so the deep bands have decode turns (TEST-1184)."""
     smp = None
     if monitor_pid:
         try:
@@ -348,6 +350,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
     hint = ANSWER_HINT if hint_text is None else hint_text
     turns, history = [], [{"role": "system", "content": SYSTEM if system is None else system}]
     prev_total, n, stop = 0, 0, "max turns reached"
+    cpt = CHARS_PER_TOKEN       # TEST-905: lowered to the densest characters-per-token ratio the server's own prompt counts showed (never raised above the default)
     use_tokenize = True
     t_start = time.time()
     while max_turns is None or n < max_turns:
@@ -361,7 +364,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             if real is None and use_tokenize:
                 use_tokenize = False                       # no /tokenize: the guess below, and it is not asked again
                 log("  (the server has no /tokenize: turns are sized by characters, with the safety net of a context-full answer)")
-            est = (real + MARGIN) if real is not None else (len(full) / CHARS_PER_TOKEN + MARGIN)
+            est = (real + MARGIN) if real is not None else (len(full) / cpt * CPT_MARGIN + MARGIN)
             if prev_total + est + max_tokens <= ctx:
                 pick = cand; break
             if script:
@@ -377,6 +380,8 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             body["chat_template_kwargs"] = {"enable_thinking": False}
         if ignore_eos:
             body["ignore_eos"] = True
+        if ignore_eos_from_depth is not None and prev_total >= ignore_eos_from_depth:   # TEST-1184: deep turns get full-length answers even with the global ignore_eos off
+            body["ignore_eos"] = True
         s0 = stats.snapshot() if stats else None
         r = chat(url, body, api_key, timeout)
         if is_context_error(r["error"]) and turns:         # safety net: the size estimate was a little low; this is the end of the context, not a failure of the run (a refusal of the very first turn stays an error: the context is too small)
@@ -387,6 +392,8 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
         s1 = stats.snapshot() if stats else None
         tm, us = r["timings"] or {}, r["usage"] or {}
         prompt_len = (tm["prompt_n"] + tm.get("cache_n", 0)) if "prompt_n" in tm else us.get("prompt_tokens")
+        if prompt_len and not use_tokenize:
+            cpt = min(cpt, sum(len(m["content"]) for m in history) / prompt_len)     # chars of this request / the tokens the server counted for it
         pred_n = tm.get("predicted_n", us.get("completion_tokens"))
         row = {"turn": n, "kind": pick["kind"], "user_chars": len(pick["text"]), "error": r["error"],
                "tokens_added": (prompt_len - prev_total) if prompt_len is not None else None,
@@ -401,8 +408,10 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
                "gpu_blocks": delta(s0, s1, "gpu_segments"),
                "gpu_up_saved_gb": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "gpu_up_saved")),
                "ssd_wait_s": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "ns_ssd_wait")),
+               "evict_dec_s": (lambda d: round(d / 1e9, 4) if d is not None else None)(delta(s0, s1, "ns_evict_dec")),   # DECODE-123: seconds inside evict() during this turn's decode steps
+               "evict_s": (lambda d: round(d / 1e9, 4) if d is not None else None)(delta(s0, s1, "ns_evict")),
                "answer_chars": len(r["text"]), "answer_sha256": hashlib.sha256(r["text"].encode("utf-8")).hexdigest()[:16],
-               "finish_reason": r.get("finish_reason"), "reasoning_chars": r.get("reasoning_chars", 0)}
+               "finish_reason": r.get("finish_reason"), "reasoning_chars": r.get("reasoning_chars", 0), "ignore_eos": bool(body.get("ignore_eos"))}
         if keep_answers:
             row["answer_head"] = r["text"][:400]          # the first 400 characters of the visible answer: what the 1-2 token answers actually say
         turns.append(row)
@@ -423,7 +432,9 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
     run["bands"] = bands(turns, ctx)
     run["thinking"] = not no_think
     run["answer_hint"] = bool(answer_hint)
+    run["ignore_eos_from_depth"] = ignore_eos_from_depth
     run["answer_stats"] = answer_stats(turns, min_median)
+    run["answer_stats"]["warnings"] += empty_decode_band_warnings(run["bands"])    # TEST-1184: a band whose answers are all too short has no decode number
     for w in run["answer_stats"]["warnings"]:
         log("WARNING: " + w)
     if smp is not None:
@@ -546,6 +557,13 @@ def bands(turns, ctx):
     return out
 
 
+def empty_decode_band_warnings(bands_list):
+    """TEST-1184: one warning per depth band that has turns but no decode turns (none of its answers reached MIN_PREDICTED_N tokens, so its decode tok/s is empty)."""
+    return [f"band {b['band']}: {b['turns']} turns but none generated >= {MIN_PREDICTED_N} tokens, so its decode tok/s is empty (answers too short; "
+            f"use --ignore-eos-from-depth {b['lo']} to force full-length answers from that depth on, the same on every arm)"
+            for b in bands_list if b["turns"] > 0 and b["decode_turns"] == 0]
+
+
 def overall(run):
     """Whole-run numbers for the record: weighted prompt and decode tok/s, median ttft, cache reuse."""
     ts = [t for t in run["turns"] if not t["error"]]
@@ -560,6 +578,39 @@ def overall(run):
             "decode_tps": sum(t["predicted_n"] for t in dt) / (sum(t["predicted_ms"] for t in dt) / 1000) if dt else None,
             "ttft_s": statistics.median(tt) if tt else None,
             "cache_hit_pct": 100 * sum(t["cache_n"] for t in ts if t["cache_n"] is not None) / tot if tot else None}
+
+
+def spread_table(runs):
+    """Run by run: wall time, whole-run prompt and decode tok/s, then per arm the spread between its runs ((max - min) / mean, %) for the whole run and per
+    depth band. Two runs per arm are a rough spread only: with A B B A, A's runs (1 and 4) bracket the drift and B's (2 and 3) are adjacent."""
+    def sp(xs):
+        xs = [x for x in xs if x is not None]
+        return None if len(xs) < 2 or not sum(xs) else 100 * (max(xs) - min(xs)) / (sum(xs) / len(xs))
+    ov = [overall(r) for r in runs]
+    rows = ["| run | arm | wall s | turns | final depth | prompt tok/s | decode tok/s | first token s (median) | stopped |", "|---|---|---|---|---|---|---|---|---|"]
+    for i, (r, o) in enumerate(zip(runs, ov), 1):
+        rows.append(f"| {i} | {r['arm']} | {_f(r.get('wall_s'))} | {len(r['turns'])} | {_f(r.get('final_depth', r.get('prompt_tokens')))} | {_f(o['prompt_tps'])} | {_f(o['decode_tps'])} | "
+                    f"{_f(o['ttft_s'], 2)} | {r.get('stop_reason', '-')} |")
+    arms = []
+    for r in runs:
+        if r["arm"] not in arms:
+            arms.append(r["arm"])
+    rows += ["", "Spread between the runs of one arm, (max - min) / mean in %:", "",
+             "| arm | runs | wall s | prompt tok/s | decode tok/s | " + " | ".join(f"decode {b['band']}" for b in runs[0]["bands"]) + " |",
+             "|---|---|---|---|---|" + "---|" * len(runs[0]["bands"])]
+    for a in arms:
+        idx = [i for i, r in enumerate(runs) if r["arm"] == a]
+        bs = [sp([runs[i]["bands"][k]["decode_tps"] for i in idx]) for k in range(len(runs[0]["bands"]))]
+        rows.append(f"| {a} | {len(idx)} | {_f(sp([runs[i].get('wall_s') for i in idx]))} | {_f(sp([ov[i]['prompt_tps'] for i in idx]))} | {_f(sp([ov[i]['decode_tps'] for i in idx]))} | "
+                    + " | ".join(_f(b) for b in bs) + " |")
+    if len(arms) == 2:
+        ia, ib = [[i for i, r in enumerate(runs) if r["arm"] == a] for a in arms]
+        mean = lambda xs: (sum(x for x in xs if x is not None) / len([x for x in xs if x is not None])) if [x for x in xs if x is not None] else None
+        ratio = lambda k: (lambda a, b: None if not a or b is None else 100 * (b - a) / a)(mean([ov[i][k] for i in ia]), mean([ov[i][k] for i in ib]))
+        rows += ["", f"{arms[1]} against {arms[0]}, mean of each arm's runs, in %: prompt {_f(ratio('prompt_tps'))}, decode {_f(ratio('decode_tps'))}. "
+                 "Read it against the spread rows above: a difference inside the runs' own spread is not distinguishable from noise. This is a rough spread from two runs per arm (A's runs 1 and 4 bracket the drift, B's 2 and 3 are adjacent), "
+                 "and it is the same plan only when both arms start from one stored plan (--prep); separate tuning walks add noise it does not contain."]
+    return "\n".join(rows)
 
 
 def _f(x, n=1):
@@ -615,8 +666,11 @@ def build_record(runs, a):
     # the plugin this record names is the one the moe-cache server ran (MOE_CACHE_LIB of its own command line), never a file search next to the launcher
     lib = next((r["settings"]["environment"]["MOE_CACHE_LIB"] for r in runs if isinstance(r.get("settings"), dict)
                 and isinstance(r["settings"].get("environment"), dict) and r["settings"]["environment"].get("MOE_CACHE_LIB")), None)
-    env = rr.collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url, lib=lib if lib and os.path.isfile(lib) else None) \
-        if (a.model or a.llama_server) else rr.collect_environment(None, None, listing="", version_line="", backend=a.backend, lib=lib if lib and os.path.isfile(lib) else None)
+    # the GPU this record names is the one the run used (--device of its command line), not the first listed device (the integrated GPU on a desktop with one)
+    dev = rr.device_from_command(getattr(a, "command_line", None) or getattr(a, "server_cmd", None)
+                                 or next((r["settings"]["command_line"] for r in runs if isinstance(r.get("settings"), dict) and isinstance(r["settings"].get("command_line"), str)), ""))
+    env = rr.collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url, lib=lib if lib and os.path.isfile(lib) else None, device=dev) \
+        if (a.model or a.llama_server) else rr.collect_environment(None, None, listing="", version_line="", backend=a.backend, lib=lib if lib and os.path.isfile(lib) else None, device=dev)
     if lib and not os.path.isfile(lib):
         env["software"].update(plugin_file=os.path.basename(lib.replace("\\", "/")), plugin_sha256_prefix=rr.NR)
     elif not lib:
@@ -646,7 +700,7 @@ def build_record(runs, a):
     depths = [r["final_depth"] for r in runs if r["final_depth"] is not None]
     proto = {"arms": sorted(counts), "order": order, "runs_per_arm": max(counts.values()), "prompt_set": f"conversation script, seed {r0['seed']}, filled to a {r0['ctx']}-token context",
              "prompt_sha256": r0["user_turns_sha256"], "prompt_tokens": max(depths) if depths else rr.NR,
-             "n_predict": r0["max_tokens"], "temperature": 0, "seed": 42, "sampler": "greedy, cache_prompt on, chat template of the model" + ("" if r0.get("thinking") is None else (", thinking " + ("on" if r0["thinking"] else "off") + (", answer hint on" if r0.get("answer_hint") else ", answer hint off")))}
+             "n_predict": r0["max_tokens"], "temperature": 0, "seed": 42, "sampler": "greedy, cache_prompt on, chat template of the model" + ("" if r0.get("thinking") is None else (", thinking " + ("on" if r0["thinking"] else "off") + (", answer hint on" if r0.get("answer_hint") else ", answer hint off"))) + (f", ignore_eos from depth {r0['ignore_eos_from_depth']} tokens (forced full-length answers: deep decode is not comparable with runs without it)" if r0.get("ignore_eos_from_depth") is not None else "")}
     given = getattr(a, "command_line", None) or getattr(a, "server_cmd", None)
     if given:
         st = rr.settings_from(given, env={}, log_lines=None)
@@ -702,6 +756,8 @@ def _run_args(p):
     p.add_argument("--no-keep-answers", action="store_true", help="do not save the first 400 characters of every answer in the run")
     p.add_argument("--min-median-answer", type=int, default=MIN_MEDIAN_ANSWER, help="warn when the median answer is under this many tokens (default %d)" % MIN_MEDIAN_ANSWER)
     p.add_argument("--ignore-eos", action="store_true", help="make every answer exactly --max-tokens long (the model may ramble)")
+    p.add_argument("--ignore-eos-from-depth", type=int, default=None, help="depth in tokens from which every answer is forced to --max-tokens long with ignore_eos, "
+                   "so deep bands have decode turns; set it the same on every arm")
     p.add_argument("--stats-pid", type=int, help="llama-server's pid, to read the plugin's counters (needs --stats-log and MOE_CACHE_STATS_SIGNAL=1)")
     p.add_argument("--stats-log", help="the server's stderr log file")
     p.add_argument("--monitor-pid", type=int, help="llama-server's pid: VRAM, process RAM, free RAM and CPU peaks are sampled during the run (the bench-report sampler)")
@@ -751,7 +807,7 @@ def _one(a, url, arm, log=print):
         cmd = ""
     run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, no_think, a.ignore_eos, log, a.monitor_pid,
                            model_drive(cmd) if os.name == "nt" else None, hint, a.min_median_answer,
-                           NEUTRAL_SYSTEM if a.system == "neutral" else a.system, a.temperature, a.empty_marker, a.hint, not a.no_keep_answers)
+                           NEUTRAL_SYSTEM if a.system == "neutral" else a.system, a.temperature, a.empty_marker, a.hint, not a.no_keep_answers, a.ignore_eos_from_depth)
     try:
         import moe_cache_record as rr
         lines = []
@@ -791,8 +847,13 @@ def main(argv=None):
     p.add_argument("--model", help="the model .gguf (hashes and quant are read from it)"); p.add_argument("--llama-server"); p.add_argument("--backend"); p.add_argument("--model-url")
     p.add_argument("--command-line"); p.add_argument("--baseline"); p.add_argument("--other-programs"); p.add_argument("--cache", choices=["cold", "warm"])
     p = sub.add_parser("table"); p.add_argument("file"); p.add_argument("--turns", action="store_true", help="also the per-turn table of every run")
+    p = sub.add_parser("spread"); p.add_argument("file", help="a bench record (assemble's output) or a run file")
     a = ap.parse_args(argv)
 
+    if a.cmd == "spread":
+        d = json.load(open(a.file, encoding="utf-8"))
+        print(spread_table(d["runs"] if "runs" in d else [d]))
+        return 0
     if a.cmd == "run":
         run = _one(a, a.url, a.arm)
         text = json.dumps(run, indent=1)

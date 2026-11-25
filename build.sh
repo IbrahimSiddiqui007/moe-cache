@@ -6,12 +6,19 @@
 #                  Output: build/win/ or BUILD_DIR (e.g. BUILD_DIR=build/win-api3 GGML_API=3 keeps an API 2 and an API 3 DLL side by side). Tested on Windows 11 + AMD (llama.cpp b11669, API 3) and on the MSI Claw.
 # The ggml headers are included in third_party/, so no llama.cpp source is needed. They match ggml 0.25.1 (llama.cpp commit 7fe450e19).
 #   GGML_API=3     build against the ggml 0.26 headers (backend API 3, llama.cpp commit 23b0202a1) instead of 0.25.1 (API 2)
+#   GGML_API=4     build against the ggml 1.0 headers (llama.cpp commit 46eb1742d, backend API still 3, but the op numbers moved: separate build, tagged moe-cache-api=4; needed for Inkling 2 and other new architectures)
 #   BUILD_DIR      output directory (default build; use another one to keep an API 2 and an API 3 build side by side)
 set -e
 cd "$(dirname "$0")"
 HDR=third_party/ggml; OUT="${BUILD_DIR:-build}"
-# GGML_API must be 2 or 3 (or unset = 2): any other value (GGML_API=4, a typo) used to build silently against the API 2 headers
-case "${GGML_API:-2}" in 2) ;; 3) HDR=third_party/ggml-v3 ;; *) echo "build.sh: GGML_API must be 2 or 3 (got '$GGML_API'); unset means 2" >&2; exit 1 ;; esac
+# GGML_API must be 2, 3 or 4 (or unset = 2): any other value (GGML_API=4, a typo) used to build silently against the API 2 headers
+case "${GGML_API:-2}" in 2) ;; 3) HDR=third_party/ggml-v3 ;; 4) HDR=third_party/ggml-v4; MOE_CACHE_CXXFLAGS="-DMC_API_TAG=4 ${MOE_CACHE_CXXFLAGS:-}" ;; *) echo "build.sh: GGML_API must be 2, 3 or 4 (got '$GGML_API'); unset means 2" >&2; exit 1 ;; esac
+# the git commit goes into the plugin's start-up line (log text only). A source tree without .git (a release) uses its BUILD_COMMIT file; none = "unknown" (LAUNCHER-1281)
+MC_COMMIT=""; if [ -e .git ]; then MC_COMMIT="$(git rev-parse --short=9 HEAD 2>/dev/null || true)"; fi     # git only for a checkout of its own: a kit unpacked inside another repo must not name that repo's commit
+if [ -n "$MC_COMMIT" ] && [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then MC_COMMIT="$MC_COMMIT-dirty"; fi
+[ -n "$MC_COMMIT" ] || MC_COMMIT="$(head -c 40 BUILD_COMMIT 2>/dev/null | tr -cd 'a-f0-9-dirty')"
+case "$MC_COMMIT" in *[!a-z0-9-]*|"") MC_COMMIT=unknown ;; esac
+MOE_CACHE_CXXFLAGS="-DMC_BUILD_COMMIT=$MC_COMMIT ${MOE_CACHE_CXXFLAGS:-}"
 if [ "$1" = "--windows" ]; then
   # MINGW_CXX: the compiler (default x86_64-w64-mingw32-g++; a UCRT one such as x86_64-w64-mingw32ucrt-g++ matches official llama.cpp's C runtime)
   W="${BUILD_DIR:-build/win}"; M=x86_64-w64-mingw32; CXX="${MINGW_CXX:-$M-g++}"; mkdir -p "$W"
@@ -25,8 +32,8 @@ if [ "$1" = "--windows" ]; then
   $M-dlltool -d $W/ggml-base.def -l $W/libggml-base.dll.a -D ggml-base.dll
   $M-dlltool -d $W/ggml.def -l $W/libggml.dll.a -D ggml.dll
   # -static links the mingw threads runtime in: a DLL that needs libwinpthread-1.dll does not load on a normal Windows machine (found on the Claw)
-  $CXX -shared ${MOE_CACHE_CXXFLAGS:-} -o $W/ggml-moe-cache.dll $W/plugin.o $W/libggml-base.dll.a $W/libggml.dll.a -static -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols
-  echo "built $W/ggml-moe-cache.dll (tested on Windows 11 + AMD, llama.cpp b11669, b11966, b12064 and b12207)"
+  $CXX -shared ${MOE_CACHE_CXXFLAGS:-} -o $W/ggml-moe-cache.dll $W/plugin.o $W/libggml-base.dll.a $W/libggml.dll.a -static -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols -Wl,--no-insert-timestamp
+  echo "built $W/ggml-moe-cache.dll (tested on Windows 11 + AMD, llama.cpp b11669, b11966, b12064, b12207 and, in CI, b12651)"
   exit 0
 fi
 # MOE_CACHE_CXXFLAGS: extra compiler flags (CI uses it for a test-only mutant build)

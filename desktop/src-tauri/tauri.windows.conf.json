@@ -1,8 +1,0 @@
-{
-  "bundle": {
-    "resources": {
-      "resources/moe-cache/": "moe-cache/",
-      "resources/python/": "python/"
-    }
-  }
-}

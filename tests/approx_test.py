@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QUALITY-970: --approx safe|careful|aggressive. Tier-to-switch mapping, gate records and refusals, gate numbers equal to tools/quality_gate.py and docs/QUALITY_GATE.md,
+"""QUALITY-970: --approx safe|careful|aggressive. Tier-to-switch mapping, gate records and refusals, gate numbers equal to tools/quality_gate.py and docs/reference/quality-gate.md,
 canary logic (step-down, unreadable measurement) and the launcher's canary stage with a fake llama-perplexity. No model, no GPU.
    python3 tests/approx_test.py"""
 import json, os, stat, sys, tempfile
@@ -19,10 +19,10 @@ def check(ok, what):
 # --- the gate numbers are the contract's numbers ---
 for lvl, (kmax, tmin, tol) in ax.GATE_LEVELS.items():
     check(qg.LEVELS[lvl][2:] == (kmax, tmin, tol), f"gate level {lvl} equals tools/quality_gate.py")
-doc = open(os.path.join(HERE, "docs", "QUALITY_GATE.md"), encoding="utf-8").read()
+doc = open(os.path.join(HERE, "docs", "reference", "quality-gate.md"), encoding="utf-8").read()
 for lvl, (kmax, tmin, tol) in ax.GATE_LEVELS.items():
     if lvl != "exact":
-        check(f"| `{lvl}` |" in doc and f"| {kmax:.3f} | {int(tmin)} % | {tol} |" in doc, f"gate level {lvl} is in docs/QUALITY_GATE.md with the same numbers")
+        check(f"| `{lvl}` |" in doc and f"| {kmax:.3f} | {int(tmin)} % | {tol} |" in doc, f"gate level {lvl} is in docs/reference/quality-gate.md with the same numbers")
 
 # --- resolve: mapping, refusal, off, unverified, user --fast ---
 R = lambda tier, model="Qwen3.8-Flash-Next-IQ3_XXS.gguf", **k: ax.resolve(tier, model, records=k.pop("records", []), **k)

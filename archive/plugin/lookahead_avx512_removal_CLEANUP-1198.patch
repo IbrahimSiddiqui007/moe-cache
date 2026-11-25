@@ -1,0 +1,1119 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 783e37c..c082fb6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,7 @@
+ 
+ | Area | Change |
+ |---|---|
++| Plugin cleanup | **Removed two switched-off, slower experiments: the lookahead prefetch (`MOE_CACHE_LOOKAHEAD*`: -25 %, -12 %, -74 % decode on three models) and the AVX-512 IQ kernels (`MOE_CACHE_AVX512`: 0.60-0.77x of llama.cpp's on a Zen 4)**. Both were off by default, so no default changes; the plugin no longer reads those variables, and the stats snapshot has no `pf_*` fields. A patch copy is in `archive/plugin/`. |
+ | Bundled llama.cpp | **Pin moved from b12207 to llama.cpp b12651** (commit f5e6915c2, released 2026-11-23; contains #32807 `copy all experts of a host weight shared by several nodes`; ggml 1.0.0, backend API 4; a first draft used the untagged commit 5bacb7c, b12651 is 9 commits newer). Needed for Inkling 2 Mini. The kits bundle OUR build of that commit (every patch built in and off); the temperature-0 identity check now compares it with an unpatched build of the same commit that CI builds itself. The Windows kit ships `ggml-moe-cache-api4.dll` next to the api2 and api3 ones. On our test PC (27B, 128k, one run per arm, forecast) decode speed of this kit stayed within 5 % of the previous kit in every band; no prompt-speed claim is made for the new build; the older b12207 official build stays available with `LLAMA_SERVER`; the manual `official` release fallback now downloads the official b12651 assets. |
+ | Browser apps on another local port | With llama.cpp b12651, `--cors-origins localhost` (what the launcher sets for a plain server) means the same origin only: a browser chat app on another local port (e.g. `http://localhost:3000`) is answered 403 until you pass `--cors-origins http://localhost:3000` after `--`. The control page, agents (Hermes, OpenCode, Claude) and `curl` send no Origin and are unaffected. Found by the key check on the pin branch (CI identity run 45082151697); checked in CI, not by a real browser app. |
+ | Models | **Inkling 2 Mini / Small (looped architecture) can be launched**: the plugin builds against the ggml 1.0 headers, the launcher recognises ggml 1.0 and the `inkling2_loop` architecture, and for such a model it places experts by how often they are read (the layers that run once go to the CPU first; a loop layer is read several times per token), uses a small `-ub 128` micro-batch (the position bias grows with context) and says each choice and its source. Your own `--n-cpu-moe`, `-ot`, `-ub` and `--exact` win. b12651 is the build the launcher's Inkling note names as carrying the support (an older llama-server answers '!!!!' and the launcher says so). For such a model the launcher also adds `--no-op-offload` (the staging copy of the shared loop-layer experts does not fit a small card); `MOE_CACHE_INKLING_OP_OFFLOAD=1` or your own `--no-op-offload` setting keeps your choice. The correct answer was checked on one 8 GB laptop (CUDA, one short prompt) with an earlier llama.cpp build that carries the support; it has not been checked on the bundled b12651 kit as a release result, and no speed figure is claimed for this model in this release. |
+diff --git a/bin/moe_cache_monitor.py b/bin/moe_cache_monitor.py
+index 16a6aa3..7c02378 100644
+--- a/bin/moe_cache_monitor.py
++++ b/bin/moe_cache_monitor.py
+@@ -223,7 +223,6 @@ class Monitor:
+                      "ssd_waits": max(0, s.get("n_ssd_wait", 0) - p.get("n_ssd_wait", 0)),
+                      "cpu": min(1.0, max(0, s.get("ns_cpu", 0) - p.get("ns_cpu", 0)) / dns_total) if dns_total > 0 else None,    # share of the cache's time spent in the CPU expert executor
+                      "evict": max(0, s.get("evictions", 0) - p.get("evictions", 0)) / dt,
+-                     "pf_used": max(0, s.get("pf_used", 0) - p.get("pf_used", 0)), "pf_wasted": max(0, s.get("pf_wasted", 0) - p.get("pf_wasted", 0)),
+                      "gpu_up_gbs": max(0, s.get("gpu_up_bytes", 0) - p.get("gpu_up_bytes", 0)) / dt / 1e9}
+                 a1, a0 = s.get("approx") or {}, p.get("approx") or {}
+                 if a1:                  # picks the plugin changed per second (given up + replaced + dropped by "fewer experts")
+@@ -258,7 +257,7 @@ class Monitor:
+             if ap:
+                 self.approx_live = {"mode": {1: "skip", 2: "subst"}.get(ap.get("route")), "considered": ap.get("considered", 0), "given_up": ap.get("skipped", 0), "replaced": ap.get("substituted", 0),
+                                     "fewer": ap.get("fewer", 0), "fewer_considered": ap.get("fewer_considered", 0), "fewer_dropped": ap.get("fewer_dropped", 0), "live": True, "t": round(t, 1)}
+-            self.snapshot_extra = {k: s.get(k) for k in ("policy", "evictions", "resident_bytes", "budget", "gpu_segments", "fallbacks", "exec_ops", "exec_fused", "pf_issued", "pf_used", "pf_wasted") if k in s}
++            self.snapshot_extra = {k: s.get(k) for k in ("policy", "evictions", "resident_bytes", "budget", "gpu_segments", "fallbacks", "exec_ops", "exec_fused") if k in s}
+             if s.get("ex"):
+                 self.snapshot_extra["threads"] = s["ex"].get("threads")
+ 
+diff --git a/docs/CONFIGURATION.md b/docs/CONFIGURATION.md
+index 12680e8..f520e46 100644
+--- a/docs/CONFIGURATION.md
++++ b/docs/CONFIGURATION.md
+@@ -152,10 +152,6 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_LAYERS` | Limits the cache to a range of layers, written `lo-hi` (for example `10-40`). Anything not in that form is ignored. | all layers | advanced |
+ | `MOE_CACHE_LINUX_VIEW_DROP` | Linux only. When the plugin lets go of a model-file mapping, `pageout` also drops those pages from the system file cache at once. Any other value keeps the default (pages stay cached but are first in line to be reclaimed). | Off (pages stay in the file cache, marked cold) | internal/testing |
+ | `MOE_CACHE_LINUX_VIEW_RANDOM` | Linux only. If set to anything (even empty), model-file mappings are tagged "random access" so the kernel reads ahead less. The code calls it an A/B test setting from the first prototype. | Off | internal/testing |
+-| `MOE_CACHE_LOOKAHEAD_CAP` | With lookahead prefetch on, the most experts per layer that are not yet in RAM and get read ahead. Numbers below 1 become 1. Ignored unless `MOE_CACHE_LOOKAHEAD` is on. | 2 | advanced |
+-| `MOE_CACHE_LOOKAHEAD_ECORES` | With lookahead prefetch on, runs the helper threads on the efficiency cores of a hybrid Intel CPU (Linux; on Windows the launcher passes the efficiency-core mask). `0` turns that off; any other value keeps it on. Ignored unless `MOE_CACHE_LOOKAHEAD` is on. | On | advanced |
+-| `MOE_CACHE_LOOKAHEAD_GUESS` | With lookahead prefetch on, how many experts per layer are looked at when guessing what comes next. 0 (or less) means the number the model uses per token. Ignored unless `MOE_CACHE_LOOKAHEAD` is on. | 0 (the model's experts per token) | advanced |
+-| `MOE_CACHE_LOOKAHEAD_THREADS` | With lookahead prefetch on, the number of helper threads that read experts ahead. Clamped to 1..32. Ignored unless `MOE_CACHE_LOOKAHEAD` is on. | 4 | advanced |
+ | `MOE_CACHE_MODELS_JSON` | Path of a models list file to use instead of the bundled `models.json` in the repository root (the parent of `bin/`, not next to the launcher script). The code comment says it is for tests. | Unset or empty (the bundled `models.json`) | internal/testing |
+ | `MOE_CACHE_POOL_CLAIM` | How many work chunks each plugin worker thread grabs at a time from the shared queue. Clamped to 1..64. A non-number counts as 1. | 1 | internal/testing |
+ | `MOE_CACHE_POOL_TINY` | When on, a job of a single chunk runs directly on the calling thread, with no wake-up of the worker threads. Set `0` (or `off`/`false`/`no`) to turn that shortcut off. | On | internal/testing |
+@@ -178,7 +174,6 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_HF_BASE` | Web address the model downloader (`bin/moe_cache_download.py`) fetches model files from, instead of `https://huggingface.co`. The code comment says it is for tests. | `https://huggingface.co` | internal/testing |
+ | `MOE_CACHE_API_KEY` | Name of the variable that `moe_cache.py connect` writes into the config of Hermes and Qwen Code so the agent sends the server's API key. Set by `connect`; you do not set it yourself. | set by connect | set by the launcher |
+ | `MOE_CACHE_ASYNC_IN` | Upload the input rows of the GPU path asynchronously. `1` on, `0` off. Unset: on for AMD GPUs on Vulkan only (PC micro-benchmark 210 to 137 us per layer; no gain on NVIDIA or Intel). | unset (AMD on Vulkan only) | advanced |
+-| `MOE_CACHE_AVX512` | Linux only (preload). `1` turns on the plugin's AVX-512 kernels for IQ2_XXS / IQ3_XXS weights. They are bit-exact (self-check at start; one mismatch switches them off for the run) but measured slower than llama.cpp's own AVX2 function on a Zen 4 7950X: 0.60-0.77x (RESULTS 54). Not useful on Zen 4; not measured on Intel AVX-512. Not on Windows. | off | advanced |
+ | `MOE_CACHE_DIRECT` | `1` / `0` forces reading experts straight into place (when the alignment allows) on or off. Unset: on when the model does not fit in the memory limit. | unset (decided from the model size) | advanced |
+ | `MOE_CACHE_EXEC_CHUNK` | Weight rows per chunk of the expert pool. 128 decoded 3.9 % faster than 32 on the PC (every paired run); the arithmetic per row is unchanged. | 128 | advanced |
+ | `MOE_CACHE_EXEC_MAXCOL` | Largest batch (in tokens, 1 to 8) the expert executor takes; bigger batches go the other way. | built-in limit | advanced |
+diff --git a/docs/TECHNIQUES.md b/docs/TECHNIQUES.md
+index b39a3ba..51bf43f 100644
+--- a/docs/TECHNIQUES.md
++++ b/docs/TECHNIQUES.md
+@@ -20,7 +20,7 @@ Audit of 2026-10-10; rows re-checked against the code on 2026-11-03 (defaults of
+ | GPU for long prompts | on, batches of 32+ tokens | runs the expert block of big batches on the GPU; since 2026-11-02 the block also does the router-weight multiply and add chain (`MOE_CACHE_GPU_SUM`, default on) and outputs go straight to the GPU (`MOE_CACHE_HOST_OUT`, default on) | 42 to 166 prompt tok/s in October; 440-640 tok/s on the Windows PC with v0.3.5 | does not read llama.cpp's `--no-op-offload`, so with that flag stock and plugin can differ; since 2026-10-26 (I4, default) it uploads only the experts the batch uses (`MOE_CACHE_GPU_PACK=0` = whole tensors); on Windows an evicted expert is never uploaded (decommitted memory) | keep, document |
+ | CPU pinning (hybrid Intel) | on | one thread per performance core | +15 to +22 % | only Intel hybrid CPUs; strict pinning hurts when other heavy processes run | keep |
+ | Planner placement | with the launcher | chooses `--n-cpu-moe` and `-ub` from free VRAM and context; since 2026-11-02 `-ub 2048` above 32k context (1024 for gpt-oss), 39 CPU layers at 64k on Flash-Next | +60 % over all-on-CPU (16.2 to 25.9); `-ub 2048` at 64k: prompts 455 vs 415 tok/s at `-ub 1024`, decode 26.1-26.8 vs 25.6 | NVIDIA, and AMD/Intel on Linux (sysfs) or Windows (`--list-devices`, since e36344b). | keep |
+-| Lookahead prefetch | off | predicts next layer's experts from router weights | -25 %, -12 %, -74 % on three models | wasted reads on SSD-bound models | off, code stays |
++| Lookahead prefetch | off | predicts next layer's experts from router weights | -25 %, -12 %, -74 % on three models | wasted reads on SSD-bound models | code removed 2026-11-23 (CLEANUP-1198; patch in archive/plugin/) |
+ | L3 helper thread | removed (2026-10-15) | pulled later tensors of a group into L3 | -19 % | contention | removed |
+ | Huge pages | removed (2026-10-15) | `MADV_HUGEPAGE` on the arena | no gain | none | removed |
+ | n-gram speculative decoding | not used | llama.cpp feature | flat to -25 % on MoE | verifying several tokens wakes extra experts | do not use |
+@@ -30,5 +30,5 @@ Audit of 2026-10-10; rows re-checked against the code on 2026-11-03 (defaults of
+ | Starter usage profiles | on with the launcher (`--no-starter` off) | with no profile yet, the launcher copies the shipped one for the model family | first request 2.1x faster (Flash-Next) | built from one developer's prompts | keep |
+ | Hybrid GPU bank (`--hybrid`) | off (opt-in, experimental) | the most used experts live in free GPU memory and are computed there while the CPU does the rest | Flash-Next on 8 GB 13.1 -> 17.4 tok/s, KL 0.0043 | not identical to stock; needs a profile | opt-in only |
+ | IQ3_XXS gather kernel | on for Intel CPUs only; `MOE_CACHE_IQ3_KERNEL=1` forces it on any AVX2 CPU | bit-identical dot product inside the executor | 1.24x on Intel; 0.58-0.64x on a Zen 4 7950X, so off on AMD | slower where gathers are slow | keep (Intel only) |
+-| AVX-512 IQ kernels | Linux preload only, `MOE_CACHE_AVX512=1` | bit-exact | 0.60-0.77x of llama.cpp's on Zen 4 | slower than AVX2 on Zen 4; not on Windows | killed on Zen 4 |
++| AVX-512 IQ kernels | Linux preload only, `MOE_CACHE_AVX512=1` | bit-exact | 0.60-0.77x of llama.cpp's on Zen 4 | slower than AVX2 on Zen 4; not on Windows | code removed 2026-11-23 (CLEANUP-1198; patch in archive/plugin/) |
+ | Compressed RAM cache | not built | | zstd on 1 GiB of IQ2_XS expert data: 97.4 % of original size | no | rejected |
+diff --git a/src/fast_iq3.h b/src/fast_iq3.h
+index c1ef7b6..5b6a8ff 100644
+--- a/src/fast_iq3.h
++++ b/src/fast_iq3.h
+@@ -4,7 +4,11 @@
+ // (tests/kernel_variants.cpp: 0 mismatches in 5,120 dots; 1.14x on an i7-13620H with AVX-VNNI, 1.12x without).
+ // Used only on Intel CPUs: gathers are slow on AMD Zen 2/3, where the library function stays.
+ #pragma once
+-#include "fast_iq_avx512.h"   // block layouts and lookup tables
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <immintrin.h>
++#include "iq_tables.h"   // block layouts and lookup tables
+ 
+ namespace fastk3 {
+ 
+@@ -26,8 +30,8 @@ inline const uint64_t * signs_table() {   // 8 sign bytes (+1 / -1) per 7-bit in
+ }
+ 
+ #define FASTK3_IQ3_BODY(VNNI) \
+-    const fastk512::block_iq3_xxs * x = (const fastk512::block_iq3_xxs *) vx; \
+-    const fastk512::block_q8_K    * y = (const fastk512::block_q8_K *) vy; \
++    const fastk::block_iq3_xxs * x = (const fastk::block_iq3_xxs *) vx; \
++    const fastk::block_q8_K    * y = (const fastk::block_q8_K *) vy; \
+     const uint64_t * SIGNS = signs_table(); \
+     const int nb = n / 256; \
+     const __m128i shifts = _mm_setr_epi32(0, 7, 14, 21), m127 = _mm_set1_epi32(127); \
+diff --git a/src/fast_iq_avx512.h b/src/fast_iq_avx512.h
+deleted file mode 100644
+index 1c038d3..0000000
+--- a/src/fast_iq_avx512.h
++++ /dev/null
+@@ -1,126 +0,0 @@
+-// AVX-512 dot products for IQ2_XXS x Q8_K and IQ3_XXS x Q8_K (llama.cpp's block layouts), written for CPUs with AVX-512BW (Zen 4, Ice Lake and newer).
+-//
+-// STATUS: bit-exact on a Zen 4 7950X (AVX-512) but 0.60-0.77x of llama.cpp's own function there (RESULTS 54); not measured on Intel. They are never used unless MOE_CACHE_AVX512=1, and even then only after a self-check that
+-// compares them bit-for-bit with llama.cpp's own function on random data (see avx512_selfcheck in the plugin). tests/kernel_variants.cpp and
+-// tools/friend_test.sh run the same comparison and time both versions.
+-//
+-// Why the result is identical to llama.cpp's AVX2 function: the integer arithmetic (unsigned grid x signed activation, summed in 16 bit, times the
+-// block scale, summed in 32 bit) is exact in any order; the 32-bit sums of one 256-weight block are brought to the same eight lanes as the AVX2
+-// version and enter the float accumulator with the same fused multiply-add and the same final horizontal sum.
+-//
+-// What is different: eight grid entries are fetched with one gather instead of two; the 64 sign bits of 64 weights become one mask register and the
+-// signs are applied with a masked subtraction (the AVX2 code does eight table lookups and a byte-sign instruction per 64 weights).
+-#pragma once
+-#include <cstddef>
+-#include <cstdint>
+-#include <cstring>
+-#include <immintrin.h>
+-#include "iq_tables.h"
+-
+-#define FASTK512 __attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,avx2,fma,f16c")))
+-#define FASTK512_VNNI __attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,avx512vnni,avx2,fma,f16c")))
+-
+-namespace fastk512 {
+-
+-struct block_iq2_xxs { uint16_t d; uint16_t qs[32]; };           // 256 weights, 66 bytes
+-struct block_iq3_xxs { uint16_t d; uint8_t qs[96]; };            // 256 weights, 98 bytes: 64 grid indices, then 32 bytes of signs and scales
+-struct block_q8_K { float d; int8_t qs[256]; int16_t bsums[16]; };
+-
+-FASTK512 static inline float hsum8(__m256 x) {
+-    __m128 r = _mm256_extractf128_ps(x, 1);
+-    r = _mm_add_ps(r, _mm256_castps256_ps128(x));
+-    r = _mm_add_ps(r, _mm_movehl_ps(r, r));
+-    r = _mm_add_ss(r, _mm_movehdup_ps(r));
+-    return _mm_cvtss_f32(r);
+-}
+-
+-// 64-bit mask of the negative weights of 32 weights: four 7-bit sign fields in the low 28 bits of w, each expanded by ksigns (bit j = weight j negative)
+-static inline uint32_t sign_mask32(uint32_t w) {
+-    return (uint32_t) fastk::KSIGNS_IQ2XS[w & 127] | ((uint32_t) fastk::KSIGNS_IQ2XS[(w >> 7) & 127] << 8) |
+-           ((uint32_t) fastk::KSIGNS_IQ2XS[(w >> 14) & 127] << 16) | ((uint32_t) fastk::KSIGNS_IQ2XS[(w >> 21) & 127] << 24);
+-}
+-
+-#define FASTK_ACC_PLAIN(acc, dot, sc) _mm512_add_epi32((acc), _mm512_madd_epi16((dot), (sc)))
+-#define FASTK_ACC_VNNI(acc, dot, sc) _mm512_dpwssd_epi32((acc), (dot), (sc))
+-
+-#define FASTK_DEFINE_IQ2_XXS(NAME, ATTR, ACC)                                                                                                         \
+-ATTR static void NAME(int n, float * s, const void * vx, const void * vy) {                                                                           \
+-    const block_iq2_xxs * x = (const block_iq2_xxs *) vx;                                                                                             \
+-    const block_q8_K * y = (const block_q8_K *) vy;                                                                                                   \
+-    const int nb = n / 256;                                                                                                                           \
+-    const __m128i pick = _mm_setr_epi8(0, 1, 2, 3, 8, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1);                                                     \
+-    __m256 accumf = _mm256_setzero_ps();                                                                                                              \
+-    for (int i = 0; i < nb; i++) {                                                                                                                    \
+-        const float d = _cvtsh_ss(x[i].d) * y[i].d;                                                                                                   \
+-        const uint16_t * q2 = x[i].qs;                                                                                                                \
+-        const int8_t * q8 = y[i].qs;                                                                                                                  \
+-        __m512i acc = _mm512_setzero_si512();                                                                                                         \
+-        for (int ib = 0; ib < 4; ib++) {                                                                                                              \
+-            uint32_t a[4];                                                                                                                            \
+-            memcpy(a, q2, 16);                                                                                                                        \
+-            q2 += 8;                                                                                                                                  \
+-            const __m128i raw = _mm_loadu_si128((const __m128i *) a);                                                                                 \
+-            const __m256i idx = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(raw, pick));                                                                    \
+-            const __m512i grid = _mm512_i32gather_epi64(idx, (const long long *) fastk::IQ2XXS_GRID, 8);                                              \
+-            const __mmask64 neg = (__mmask64) sign_mask32(a[1]) | ((__mmask64) sign_mask32(a[3]) << 32);                                              \
+-            const __m512i q = _mm512_loadu_si512((const void *) q8);                                                                                  \
+-            q8 += 64;                                                                                                                                 \
+-            const __m512i qs = _mm512_mask_sub_epi8(q, neg, _mm512_setzero_si512(), q);                                                               \
+-            const __m512i dot = _mm512_maddubs_epi16(grid, qs);                                                                                       \
+-            const __m512i sc = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_set1_epi16((short) (2 * (a[1] >> 28) + 1))),                          \
+-                                                  _mm256_set1_epi16((short) (2 * (a[3] >> 28) + 1)), 1);                                              \
+-            acc = ACC(acc, dot, sc);                                                                                                                  \
+-        }                                                                                                                                             \
+-        const __m256i sum = _mm256_add_epi32(_mm512_castsi512_si256(acc), _mm512_extracti64x4_epi64(acc, 1));                                         \
+-        accumf = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(sum), accumf);                                                                 \
+-    }                                                                                                                                                 \
+-    *s = 0.125f * hsum8(accumf);                                                                                                                      \
+-}
+-
+-#define FASTK_DEFINE_IQ3_XXS(NAME, ATTR, ACC)                                                                                                         \
+-ATTR static void NAME(int n, float * s, const void * vx, const void * vy) {                                                                           \
+-    const block_iq3_xxs * x = (const block_iq3_xxs *) vx;                                                                                             \
+-    const block_q8_K * y = (const block_q8_K *) vy;                                                                                                   \
+-    const int nb = n / 256;                                                                                                                           \
+-    __m256 accumf = _mm256_setzero_ps();                                                                                                              \
+-    for (int i = 0; i < nb; i++) {                                                                                                                    \
+-        const float d = _cvtsh_ss(x[i].d) * y[i].d;                                                                                                   \
+-        const uint8_t * q3 = x[i].qs;                                                                                                                 \
+-        const uint8_t * gas = x[i].qs + 64;                                                                                                           \
+-        const int8_t * q8 = y[i].qs;                                                                                                                  \
+-        __m512i acc = _mm512_setzero_si512();                                                                                                         \
+-        for (int ib = 0; ib < 4; ib++) {                                                                                                              \
+-            uint32_t a[2];                                                                                                                            \
+-            memcpy(a, gas, 8);                                                                                                                        \
+-            gas += 8;                                                                                                                                 \
+-            const __m512i idx = _mm512_cvtepu8_epi32(_mm_loadu_si128((const __m128i *) q3));                                                          \
+-            q3 += 16;                                                                                                                                 \
+-            const __m512i grid = _mm512_i32gather_epi32(idx, (const int *) fastk::IQ3XXS_GRID, 4);                                                    \
+-            const __mmask64 neg = (__mmask64) sign_mask32(a[0]) | ((__mmask64) sign_mask32(a[1]) << 32);                                              \
+-            const __m512i q = _mm512_loadu_si512((const void *) q8);                                                                                  \
+-            q8 += 64;                                                                                                                                 \
+-            const __m512i qs = _mm512_mask_sub_epi8(q, neg, _mm512_setzero_si512(), q);                                                               \
+-            const __m512i dot = _mm512_maddubs_epi16(grid, qs);                                                                                       \
+-            const __m512i sc = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_set1_epi16((short) (2 * (a[0] >> 28) + 1))),                          \
+-                                                  _mm256_set1_epi16((short) (2 * (a[1] >> 28) + 1)), 1);                                              \
+-            acc = ACC(acc, dot, sc);                                                                                                                  \
+-        }                                                                                                                                             \
+-        const __m256i sum = _mm256_add_epi32(_mm512_castsi512_si256(acc), _mm512_extracti64x4_epi64(acc, 1));                                         \
+-        accumf = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(sum), accumf);                                                                 \
+-    }                                                                                                                                                 \
+-    *s = 0.25f * hsum8(accumf);                                                                                                                       \
+-}
+-
+-FASTK_DEFINE_IQ2_XXS(dot_iq2_xxs, FASTK512, FASTK_ACC_PLAIN)
+-FASTK_DEFINE_IQ2_XXS(dot_iq2_xxs_vnni, FASTK512_VNNI, FASTK_ACC_VNNI)
+-FASTK_DEFINE_IQ3_XXS(dot_iq3_xxs, FASTK512, FASTK_ACC_PLAIN)
+-FASTK_DEFINE_IQ3_XXS(dot_iq3_xxs_vnni, FASTK512_VNNI, FASTK_ACC_VNNI)
+-
+-static inline bool cpu_has_avx512() {
+-    return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512dq");
+-}
+-static inline bool cpu_has_avx512_vnni() {
+-    return cpu_has_avx512() && __builtin_cpu_supports("avx512vnni");
+-}
+-
+-}  // namespace fastk512
+diff --git a/src/iq_tables.h b/src/iq_tables.h
+index 45b427f..91d137b 100644
+--- a/src/iq_tables.h
++++ b/src/iq_tables.h
+@@ -1,8 +1,13 @@
+ // Lookup tables of llama.cpp's IQ2_XXS and IQ3_XXS quantisations and the sign table (MIT license, from ggml/src/ggml-common.h, commit 23b0202a1).
+-// Generated by hand-extraction; used by the AVX-512 dot products in fast_iq_avx512.h.
++// Generated by hand-extraction; used by the IQ3_XXS dot product in fast_iq3.h.
+ #pragma once
+ #include <cstdint>
+ namespace fastk {
++
++struct block_iq2_xxs { uint16_t d; uint16_t qs[32]; };           // 256 weights, 66 bytes (llama.cpp's block layouts)
++struct block_iq3_xxs { uint16_t d; uint8_t qs[96]; };            // 256 weights, 98 bytes: 64 grid indices, then 32 bytes of signs and scales
++struct block_q8_K { float d; int8_t qs[256]; int16_t bsums[16]; };
++
+ static const uint64_t IQ2XXS_GRID[256] = {
+ 0x0808080808080808, 0x080808080808082b, 0x0808080808081919, 0x0808080808082b08,
+     0x0808080808082b2b, 0x0808080808190819, 0x0808080808191908, 0x08080808082b0808,
+diff --git a/src/mc_common.inl b/src/mc_common.inl
+index 224ca1f..2b1c20a 100644
+--- a/src/mc_common.inl
++++ b/src/mc_common.inl
+@@ -124,8 +124,7 @@ struct node_t {
+     uint32_t last_tok = 0;         // classlru: decode token of the last use of any kind (age for the victim choice)
+     uint8_t  cls = 0;              // classlru: which class list the node sits in (always 0 with the plain LRU policy)
+     bool     resident = false;
+-    bool     loading = false;      // a lookahead read is still filling this expert
+-    bool     prefetched = false;   // loaded ahead of time and not used yet
++    bool     loading = false;      // a background read (rebalance) is still filling this expert
+     bool     mapped = false;       // not resident, but its range maps the model file (cache smaller than one op, see map_from_file)
+ };
+ 
+@@ -290,55 +289,6 @@ std::vector<int> mask_cpus(const char * m) {
+     return out;
+ }
+ 
+-// router dot product: eight independent sums so the compiler can vectorise without -ffast-math; AVX2 version picked at run time.
+-// Used only to guess the next layer's experts (lookahead prefetch), never for the model's output.
+-static inline __attribute__((always_inline)) float dot_f32_body(const float * a, const float * b, size_t n) {
+-    float acc[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+-    size_t i = 0;
+-    for (; i + 8 <= n; i += 8) {
+-        for (int k = 0; k < 8; k++) {
+-            acc[k] += a[i + k] * b[i + k];
+-        }
+-    }
+-    float sum = 0.0f;
+-    for (; i < n; i++) {
+-        sum += a[i] * b[i];
+-    }
+-    for (int k = 0; k < 8; k++) {
+-        sum += acc[k];
+-    }
+-    return sum;
+-}
+-// ThreadSanitizer builds use it too (I9): target_clones makes an ifunc resolver, which the loader runs while it relocates a preloaded plugin,
+-// before any constructor, so before libtsan is set up; the resolver is instrumented and its __tsan_func_entry crashed (segfault, empty log)
+-#if defined(__SANITIZE_THREAD__)
+-#define MC_TSAN 1
+-#elif defined(__has_feature)
+-#if __has_feature(thread_sanitizer)
+-#define MC_TSAN 1
+-#endif
+-#endif
+-#if (defined(_WIN32) || defined(MC_TSAN)) && defined(__x86_64__)
+-// mingw has no ifunc, so no target_clones: the same two versions, picked once with the CPU's feature bits
+-__attribute__((target("avx2,fma"))) float dot_f32_avx2(const float * a, const float * b, size_t n) {
+-    return dot_f32_body(a, b, n);
+-}
+-float dot_f32_default(const float * a, const float * b, size_t n) {
+-    return dot_f32_body(a, b, n);
+-}
+-float dot_f32(const float * a, const float * b, size_t n) {
+-    static const bool avx2 = [] { __builtin_cpu_init(); return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"); }();
+-    return avx2 ? dot_f32_avx2(a, b, n) : dot_f32_default(a, b, n);
+-}
+-#else
+-#if defined(__linux__) && defined(__x86_64__)
+-__attribute__((target_clones("avx2,fma", "default")))
+-#endif
+-float dot_f32(const float * a, const float * b, size_t n) {
+-    return dot_f32_body(a, b, n);
+-}
+-#endif
+-
+ struct io_job_t {
+     char * dst;
+     size_t off;
+diff --git a/src/mc_compute.inl b/src/mc_compute.inl
+index 7be271f..48fd6a7 100644
+--- a/src/mc_compute.inl
++++ b/src/mc_compute.inl
+@@ -548,17 +548,6 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
+                               s.graphs.load() >= c->gpu_retry_at && !(s.route_mode || s.fewer > 0);
+             exec_jobs += s.prepare_group(tidx, used, exec_graph || pipe);
+             piped = piped || pipe;
+-            if (s.lookahead && n_tok == 1) {
+-                const ggml_tensor * xin = node->src[1];
+-                if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {
+-                    std::vector<float> xv((size_t) xin->ne[0]);
+-                    memcpy(xv.data(), xin->data, xv.size() * sizeof(float));
+-                    const int layer = s.tensors[tidx[0]]->layer;
+-                    if (layer >= 0) {
+-                        s.pf_submit([&s, layer, xv = std::move(xv), n_used = (int) n_used] { s.predict_and_prefetch(layer, xv, n_used); });
+-                    }
+-                }
+-            }
+             if (!s.profile_path.empty() && ++s.groups_since_save >= 100000) {
+                 s.groups_since_save = 0;
+                 s.save_profile();
+diff --git a/src/mc_exec.inl b/src/mc_exec.inl
+index a92f531..97bc01d 100644
+--- a/src/mc_exec.inl
++++ b/src/mc_exec.inl
+@@ -97,8 +97,8 @@ ggml_vec_dot_t fast_iq3_dot() {
+         if (!tt || !tt->vec_dot) {
+             return (ggml_vec_dot_t) nullptr;
+         }
+-        std::vector<fastk512::block_iq3_xxs> w(8);
+-        std::vector<fastk512::block_q8_K> a(8);
++        std::vector<fastk::block_iq3_xxs> w(8);
++        std::vector<fastk::block_q8_K> a(8);
+         uint32_t r = 54321;
+         auto rnd = [&]() { r = r * 1664525u + 1013904223u; return r >> 8; };
+         for (int trial = 0; trial < 64; trial++) {
+@@ -222,7 +222,7 @@ bool exec_view_op(ggml_op op) {
+ 
+ // true when every expert op of the graph is a single-token decode step that the executor can reproduce exactly
+ bool exec_eligible(state_t & s, ggml_cgraph * cg) {
+-    if (!s.exec_on || (s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
++    if (!s.exec_on || s.repack_tag || s.gpu_min_tokens == 1) {
+         return false;
+     }
+     const int n = ggml_graph_n_nodes(cg);
+@@ -720,9 +720,6 @@ int exec_fuse_partner(state_t & s, ggml_cgraph * cg, int i, int n_nodes) {
+     return -1;
+ }
+ 
+-// set by the AVX-512 kernel block further down (C linkage: independent of the namespace the kernels live in)
+-extern "C" { int (*moe_cache_iq512_probe)(void) = nullptr; }
+-
+ // One line that says what is really active, and why not when something is off (several speed-ups depend on how the plugin was loaded).
+ void print_capabilities(state_t & s) {
+     std::string o = "moe-cache: active:";
+@@ -731,8 +728,8 @@ void print_capabilities(state_t & s) {
+     o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
+     if (!s.exec_on) {
+         o += " executor=off(MOE_CACHE_EXEC=0)";
+-    } else if ((s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
+-        o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
++    } else if (s.repack_tag || s.gpu_min_tokens == 1) {
++        o += std::string(" executor=off(") + (s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
+     } else {
+         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") +
+              (s.exec_chunk != 128 ? ", " + std::to_string(s.exec_chunk) + " rows per chunk" : "") + ")";
+@@ -742,7 +739,6 @@ void print_capabilities(state_t & s) {
+                                                                 : upstream_q2_0_enabled() ? "executor(column sums, exact to llama.cpp's #30447)" : "off(llama.cpp's own)")
+                                                                : preload ? "on(interposed)" : "executor only(not preloaded)");
+     o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0 or MOE_CACHE_IQ3_KERNEL=0, no AVX2, or not Intel: MOE_CACHE_IQ3_KERNEL=1 forces it on)");
+-    o += std::string(" iq_avx512=") + (mcenv::env_on("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
+ #endif
+ #ifdef _WIN32
+     cpu_traits(GGML_TYPE_F32);   // resolves the lookup once
+diff --git a/src/mc_interpose.inl b/src/mc_interpose.inl
+index 71e1b5c..dd2ee54 100644
+--- a/src/mc_interpose.inl
++++ b/src/mc_interpose.inl
+@@ -38,89 +38,6 @@ extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t
+     orig(n, s, bs, vx, bx, vy, by, nrc);
+ }
+ 
+-// ---- AVX-512 IQ2_XXS / IQ3_XXS dot products (MOE_CACHE_AVX512=1; off by default) ----
+-// See src/fast_iq_avx512.h. They are only used after a self-check that compares them bit-for-bit with llama.cpp's own function on random data;
+-// a single mismatch switches them off for the whole run. MOE_CACHE_AVX512=1 on a CPU without AVX-512 does nothing.
+-#include <random>
+-#include "fast_iq_avx512.h"
+-namespace {
+-typedef void (*iq_dot_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+-
+-int iq512_decide(iq_dot_t o2, iq_dot_t o3) {      // 0 off, 1 AVX-512, 2 AVX-512 + VNNI
+-    const char * e = getenv("MOE_CACHE_AVX512");
+-    if (!(e && atoi(e) != 0) || !o2 || !o3) {
+-        return 0;
+-    }
+-    if (!fastk512::cpu_has_avx512()) {
+-        fprintf(stderr, "moe-cache: MOE_CACHE_AVX512=1 but this CPU has no AVX-512 (BW, VL, DQ): not used\n");
+-        return 0;
+-    }
+-    const bool vnni = fastk512::cpu_has_avx512_vnni();
+-    std::mt19937 rng(12345);
+-    alignas(64) static fastk512::block_iq2_xxs w2[8];
+-    alignas(64) static fastk512::block_iq3_xxs w3[8];
+-    alignas(64) static fastk512::block_q8_K a[8];
+-    bool ok = true;
+-    for (int trial = 0; trial < 200 && ok; trial++) {
+-        for (auto & b : w2) { for (auto & q : b.qs) q = (uint16_t) rng(); b.d = (uint16_t) (0x2800 + rng() % 0x1000); }
+-        for (auto & b : w3) { for (auto & q : b.qs) q = (uint8_t) rng(); b.d = (uint16_t) (0x2800 + rng() % 0x1000); }
+-        for (auto & b : a) { b.d = 0.001f * (float) (1 + rng() % 100); for (auto & q : b.qs) q = (int8_t) ((int) (rng() % 255) - 127); }
+-        const int n = 8 * 256;
+-        float r2, r3, f2, f3;
+-        o2(n, &r2, 0, w2, 0, a, 0, 1);
+-        o3(n, &r3, 0, w3, 0, a, 0, 1);
+-        fastk512::dot_iq2_xxs(n, &f2, w2, a);
+-        fastk512::dot_iq3_xxs(n, &f3, w3, a);
+-        ok = memcmp(&r2, &f2, 4) == 0 && memcmp(&r3, &f3, 4) == 0;
+-        if (ok && vnni) {
+-            fastk512::dot_iq2_xxs_vnni(n, &f2, w2, a);
+-            fastk512::dot_iq3_xxs_vnni(n, &f3, w3, a);
+-            ok = memcmp(&r2, &f2, 4) == 0 && memcmp(&r3, &f3, 4) == 0;
+-        }
+-    }
+-    if (!ok) {
+-        fprintf(stderr, "moe-cache: AVX-512 IQ kernels FAILED the bit-exact self-check: using llama.cpp's kernels (please report this CPU)\n");
+-        return 0;
+-    }
+-    fprintf(stderr, "moe-cache: AVX-512 IQ2_XXS / IQ3_XXS kernels on (%s, self-check passed)\n", vnni ? "AVX-512 + VNNI" : "AVX-512");
+-    return vnni ? 2 : 1;
+-}
+-
+-int iq512_mode() {
+-    static const int mode = iq512_decide((iq_dot_t) dlsym(RTLD_NEXT, "ggml_vec_dot_iq2_xxs_q8_K"), (iq_dot_t) dlsym(RTLD_NEXT, "ggml_vec_dot_iq3_xxs_q8_K"));
+-    return mode;
+-}
+-}  // namespace
+-
+-static int iq512_probe_trampoline() { return iq512_mode(); }
+-static const int iq512_registered = (moe_cache_iq512_probe = &iq512_probe_trampoline, 0);
+-
+-extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_iq2_xxs_q8_K(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
+-    static iq_dot_t orig = (iq_dot_t) dlsym(RTLD_NEXT, "ggml_vec_dot_iq2_xxs_q8_K");
+-    if (!orig) {
+-        interpose_no_orig("ggml_vec_dot_iq2_xxs_q8_K");
+-    }
+-    const int m = iq512_mode();
+-    if (m && nrc == 1 && n > 0 && n % 256 == 0) {
+-        if (m == 2) fastk512::dot_iq2_xxs_vnni(n, s, vx, vy); else fastk512::dot_iq2_xxs(n, s, vx, vy);
+-        return;
+-    }
+-    orig(n, s, bs, vx, bx, vy, by, nrc);
+-}
+-
+-extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_iq3_xxs_q8_K(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
+-    static iq_dot_t orig = (iq_dot_t) dlsym(RTLD_NEXT, "ggml_vec_dot_iq3_xxs_q8_K");
+-    if (!orig) {
+-        interpose_no_orig("ggml_vec_dot_iq3_xxs_q8_K");
+-    }
+-    const int m = iq512_mode();
+-    if (m && nrc == 1 && n > 0 && n % 256 == 0) {
+-        if (m == 2) fastk512::dot_iq3_xxs_vnni(n, s, vx, vy); else fastk512::dot_iq3_xxs(n, s, vx, vy);
+-        return;
+-    }
+-    orig(n, s, bs, vx, bx, vy, by, nrc);
+-}
+-
+ // ---- llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache: see gpu_cache_mode() ----
+ // Its uploads read the expert bytes straight from the weight memory, where only the experts we hold in RAM exist. Make them resident first.
+ extern "C" MOE_CACHE_EXPORT void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+diff --git a/src/mc_state.inl b/src/mc_state.inl
+index 534669d..32e2640 100644
+--- a/src/mc_state.inl
++++ b/src/mc_state.inl
+@@ -43,7 +43,7 @@ void remove_crash_report();
+ #include "mc_state_rebalance_members.h"
+ #include "mc_state_exec.h"
+ #include "mc_state_times.h"
+-#include "mc_state_prefetch.h"
++#include "mc_state_io_members.h"
+ #include "mc_state_budget.h"
+ #include "mc_state_profile_members.h"
+ #include "mc_state_counters.h"
+@@ -55,13 +55,12 @@ void remove_crash_report();
+ #include "mc_state_scan.h"
+ #include "mc_state_tables.h"
+ #include "mc_state_rbstats.h"
+-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_rbstats_t {
++struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_io_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_rbstats_t {
+     bool   cache_on = false;
+     bool   stats = false;
+     int    lo = 0, hi = 1 << 30;
+     // "all" for the default range (hi = 2^30 means no upper bound; the log printed "layers 0-1073741824", T7)
+     std::string layer_range() const { return lo == 0 && hi >= (1 << 30) ? std::string("all") : std::to_string(lo) + "-" + std::to_string(hi); }
+-    // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
+     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
+     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
+ #ifdef _WIN32
+@@ -233,9 +232,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
+             for (int64_t i = 0; i < n; i++) {
+                 const char * nm = gguf_get_tensor_name(g, i);
+                 file_tensors[nm] = { data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i) };
+-                if (strstr(nm, "ffn_gate_inp") || strstr(nm, "ffn_norm") || strstr(nm, "post_attention_norm")) {
+-                    tmeta[nm] = { (int) gguf_get_tensor_type(g, i), data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i), (int) si };
+-                }
+                 file_shard[nm] = (int) si;
+             }
+             gguf_free(g);
+@@ -712,29 +708,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
+         if (const char * v = getenv("MOE_CACHE_COALESCE_MIB")) {
+             coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;
+         }
+-        if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
+-            lookahead = mcenv::flag_value(v, false);
+-            la_exec = strcmp(v, "2") == 0;
+-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_GUESS")) {
+-                la_guess = atoi(g);
+-            }
+-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_CAP")) {
+-                la_cap = std::max(1, atoi(g));
+-            }
+-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_ECORES")) {
+-                la_ecores = strcmp(g, "0") != 0;
+-            }
+-            if (lookahead) {
+-                int nt = 4;
+-                if (const char * t = getenv("MOE_CACHE_LOOKAHEAD_THREADS")) {
+-                    nt = std::max(1, std::min(32, atoi(t)));
+-                }
+-                for (int i = 0; i < nt; i++) {
+-                    pf_threads.emplace_back([this] { pf_main(); });
+-                }
+-                fprintf(stderr, "moe-cache: lookahead prefetch on (%d helper threads)\n", nt);
+-            }
+-        }
+ #ifdef __linux__
+         if (getenv("MOE_CACHE_STATS_SIGNAL")) {
+             if (plat::wake_pipe_create(g_stats_pipe)) {
+diff --git a/src/mc_state_io.inl b/src/mc_state_io.inl
+index 4729e29..2958624 100644
+--- a/src/mc_state_io.inl
++++ b/src/mc_state_io.inl
+@@ -1,4 +1,4 @@
+-// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): background expert reads, lookahead prefetch, the stats snapshot, the reader pool.
++// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): background expert reads, the stats snapshot, the reader pool.
+     // ---- executor: background expert reads ----
+     void reader_main() {
+         static thread_local char * bounce = nullptr;
+@@ -61,80 +61,6 @@
+         }
+     }
+ 
+-    // ---- lookahead prefetch ----
+-    void pf_submit(std::function<void()> fn) {
+-        {
+-            std::lock_guard<std::mutex> lk(pf_mu);
+-            pf_q.push_back(std::move(fn));
+-        }
+-        pf_cv.notify_one();
+-    }
+-
+-    void pf_main() {
+-#ifdef __linux__
+-        if (la_ecores) {
+-            std::ifstream f("/sys/devices/cpu_atom/cpus");
+-            std::string txt;
+-            if (f && std::getline(f, txt)) {
+-                cpu_set_t set;
+-                CPU_ZERO(&set);
+-                size_t i = 0;
+-                bool any = false;
+-                while (i < txt.size()) {
+-                    int a = atoi(txt.c_str() + i), b = a;
+-                    while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
+-                    if (i < txt.size() && txt[i] == '-') {
+-                        i++;
+-                        b = atoi(txt.c_str() + i);
+-                        while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
+-                    }
+-                    for (int c = a; c <= b && c < CPU_SETSIZE; c++) { CPU_SET(c, &set); any = true; }
+-                    while (i < txt.size() && !isdigit((unsigned char) txt[i])) { i++; }
+-                }
+-                if (any) {
+-                    sched_setaffinity(0, sizeof(set), &set);
+-                }
+-            }
+-        }
+-#elif defined(_WIN32)
+-        // no sysfs: the launcher passes the efficiency cores as a mask (GetLogicalProcessorInformationEx, lowest efficiency class; processor group 0)
+-        if (la_ecores) {
+-            if (const char * m = getenv("MOE_CACHE_ECORE_MASK")) {
+-                DWORD_PTR set = 0;
+-                int skipped = 0;
+-                for (int c : mask_cpus(m)) {
+-                    if (c < 64) {
+-                        set |= (DWORD_PTR) 1 << c;
+-                    } else {
+-                        skipped++;
+-                    }
+-                }
+-                static bool noted = false;
+-                if (skipped > 0 && !noted) {
+-                    noted = true;       // one line, once: the mask named CPUs this thread cannot be pinned to (Windows processor group 0 only)
+-                    fprintf(stderr, "moe-cache: note: CPUs at 64 and above in the efficiency-core mask are skipped (%d of them; Windows processor group 0 only)\n", skipped);
+-                }
+-                if (set) {
+-                    SetThreadAffinityMask(GetCurrentThread(), set);
+-                }
+-            }
+-        }
+-#endif
+-        for (;;) {
+-            std::function<void()> fn;
+-            {
+-                std::unique_lock<std::mutex> lk(pf_mu);
+-                pf_cv.wait(lk, [this] { return pf_stop || !pf_q.empty(); });
+-                if (pf_stop && pf_q.empty()) {
+-                    return;
+-                }
+-                fn = std::move(pf_q.front());
+-                pf_q.pop_front();
+-            }
+-            fn();
+-        }
+-    }
+-
+     plat::file_t buffered_file(int shard) {
+         std::lock_guard<std::mutex> lk(fds_buf_mu);
+         if (!fds_buf[shard].ok()) {
+@@ -143,186 +69,6 @@
+         return fds_buf[shard];
+     }
+ 
+-    bool read_floats(const std::string & name, size_t n, std::vector<float> & out) {
+-        auto it = tmeta.find(name);
+-        if (it == tmeta.end()) {
+-            return false;
+-        }
+-        const tmeta_t & m = it->second;
+-        const ggml_type ty = (ggml_type) m.type;
+-        if (ty != GGML_TYPE_F32 && ty != GGML_TYPE_F16 && ty != GGML_TYPE_BF16) {
+-            return false;
+-        }
+-        const size_t esz = ggml_type_size(ty);
+-        if (m.size != n * esz) {
+-            return false;
+-        }
+-        std::vector<char> raw(m.size);
+-        const plat::file_t f = buffered_file(m.shard);
+-        size_t done = 0;
+-        while (done < m.size) {
+-            const ptrdiff_t got = plat::file_pread(f, raw.data() + done, m.size - done, (uint64_t) (m.off + done));
+-            if (got <= 0) {
+-                return false;
+-            }
+-            done += (size_t) got;
+-        }
+-        out.resize(n);
+-        for (size_t i = 0; i < n; i++) {
+-            if (ty == GGML_TYPE_F32) {
+-                memcpy(&out[i], raw.data() + i * 4, 4);
+-            } else if (ty == GGML_TYPE_F16) {
+-                ggml_fp16_t h;
+-                memcpy(&h, raw.data() + i * 2, 2);
+-                out[i] = ggml_fp16_to_fp32(h);
+-            } else {
+-                ggml_bf16_t h;
+-                memcpy(&h, raw.data() + i * 2, 2);
+-                out[i] = ggml_bf16_to_fp32(h);
+-            }
+-        }
+-        return true;
+-    }
+-
+-    router_t * get_router(int layer, size_t n_embd, size_t n_exp) {
+-        std::lock_guard<std::mutex> lk(router_mu);
+-        auto it = routers.find(layer);
+-        if (it != routers.end()) {
+-            return it->second.ok ? &it->second : nullptr;
+-        }
+-        router_t & r = routers[layer];
+-        char nm[160];
+-        snprintf(nm, sizeof(nm), "blk.%d.ffn_gate_inp.weight", layer);
+-        r.ok = read_floats(nm, n_embd * n_exp, r.w);
+-        snprintf(nm, sizeof(nm), "blk.%d.ffn_gate_inp.bias", layer);
+-        read_floats(nm, n_exp, r.bias);
+-        snprintf(nm, sizeof(nm), "blk.%d.ffn_norm.weight", layer);
+-        if (!read_floats(nm, n_embd, r.normw)) {
+-            snprintf(nm, sizeof(nm), "blk.%d.post_attention_norm.weight", layer);
+-            read_floats(nm, n_embd, r.normw);
+-        }
+-        return r.ok ? &r : nullptr;
+-    }
+-
+-    // reserve cache room for the given experts of a layer (without evicting anything the current group needs) and read them in the background
+-    void reserve_and_read(int layer, const std::vector<int> & guess, int cap = -1) {
+-        if (cap < 0) {
+-            cap = la_cap;
+-        }
+-        std::vector<std::pair<io_job_t, int>> todo;
+-        {
+-            std::lock_guard<std::mutex> lk(mu);
+-            auto lt = layer_tensors.find(layer);
+-            if (lt == layer_tensors.end() || lt->second.empty()) {     // empty: the layer's model was unloaded (forget_range)
+-                return;
+-            }
+-            int fresh = 0;
+-            for (int e : guess) {
+-                {
+-                    const tinfo_t & t0 = *tensors[lt->second[0]];
+-                    if (e < 0 || e >= t0.n_expert || nodes[t0.node0 + e].resident) {
+-                        continue;                 // out of range, or already in RAM: nothing to read
+-                    }
+-                }
+-                if (++fresh > cap) {
+-                    break;
+-                }
+-                for (int ti_i : lt->second) {
+-                    tinfo_t & ti = *tensors[ti_i];
+-                    const int s = ti.node0 + e;
+-                    if (nodes[s].resident) {
+-                        continue;
+-                    }
+-                    while (resident_bytes + ti.nb2 > budget) {
+-                        int v = pick_victim();
+-                        if (v < 0) {
+-                            break;
+-                        }
+-                        evict(v);
+-                    }
+-                    if (resident_bytes + ti.nb2 > budget || !commit_for(ti, e)) {
+-                        pf_skipped++;
+-                        continue;
+-                    }
+-                    node_t & n = nodes[s];
+-                    n.resident = true;
+-                    __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE);      // the executor reads this flag without the lock
+-                    n.prefetched = true;
+-                    n.epoch = epoch;
+-                    resident_bytes += ti.nb2;
+-                    if (ti.view) { view_bytes += ti.nb2; }
+-                    push_mru(s);
+-                    todo.push_back({ io_job_t{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }, s });
+-                    pf_issued++;
+-                }
+-            }
+-        }
+-        for (auto & td : todo) {
+-            pf_submit([this, j = td.first, s = td.second] {
+-                static thread_local char * bounce = nullptr;
+-                static thread_local size_t bounce_size = 0;
+-                const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
+-                if (bounce_size < need) {
+-                    plat::aligned_free_page(bounce);
+-                    bounce = (char *) plat::aligned_alloc_page(need);
+-                    if (!bounce) {
+-                        fprintf(stderr, "moe-cache: out of memory for a read buffer\n");
+-                        abort();
+-                    }
+-                    bounce_size = need;
+-                }
+-                read_job(j, bounce);
+-                {
+-                    std::lock_guard<std::mutex> lk(mu);
+-                    __atomic_store_n(&nodes[s].loading, false, __ATOMIC_RELEASE);   // publishes the expert's bytes to the executor (reads without mu)
+-                }
+-                load_cv.notify_all();
+-            });
+-        }
+-    }
+-
+-    // x = the input of the experts of this layer; predict which experts the next layer will pick and start reading them
+-    void predict_and_prefetch(int layer, const std::vector<float> & x, int n_used) {
+-        const int nl = layer + 1;
+-        size_t n_exp = 0;
+-        {
+-            std::lock_guard<std::mutex> lk(mu);
+-            auto lt = layer_tensors.find(nl);
+-            if (lt == layer_tensors.end() || lt->second.empty()) {
+-                return;
+-            }
+-            n_exp = (size_t) tensors[lt->second[0]]->n_expert;
+-        }
+-        const size_t n_embd = x.size();
+-        router_t * rn = get_router(nl, n_embd, n_exp);
+-        if (!rn) {
+-            return;
+-        }
+-        router_t * rc = get_router(layer, n_embd, n_exp);
+-        std::vector<float> xs(n_embd);
+-        const bool scale = rc && rn->normw.size() == n_embd && rc->normw.size() == n_embd;
+-        for (size_t i = 0; i < n_embd; i++) {
+-            xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
+-        }
+-        std::vector<float> logit(n_exp);
+-        for (size_t e = 0; e < n_exp; e++) {
+-            const float * w = rn->w.data() + e * n_embd;
+-            logit[e] = (rn->bias.size() == n_exp ? rn->bias[e] : 0.0f) + dot_f32(w, xs.data(), n_embd);
+-        }
+-        const size_t G = std::min<size_t>(n_exp, la_guess > 0 ? (size_t) la_guess : (size_t) n_used);
+-        std::vector<int> idx(n_exp);
+-        for (size_t e = 0; e < n_exp; e++) { idx[e] = (int) e; }
+-        std::partial_sort(idx.begin(), idx.begin() + G, idx.end(), [&](int a, int b) { return logit[a] > logit[b]; });
+-        idx.resize(G);
+-        {
+-            std::lock_guard<std::mutex> lk(mu);
+-            auto & fl = pred_flags[nl];
+-            fl.assign(n_exp, 0);
+-            for (int e : idx) { fl[(size_t) e] = 1; }
+-        }
+-        reserve_and_read(nl, idx);
+-    }
+-
+     // MOE_CACHE_EXEC_TIMES summary; called before the pool is destroyed
+     void print_exec_times() {
+     if (exec_on && pool && pool->times && pool->n_runs) {
+@@ -382,14 +128,13 @@
+             char b[2200];
+             snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,"
+                      "\"resident_bytes\":%llu,\"budget\":%llu,\"ns_prep\":%llu,\"ns_read\":%llu,\"ns_cpu\":%llu,\"ns_total\":%llu,\"graphs\":%llu,"
+-                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu,\"policy\":\"%s\",\"cls_promotions\":%llu,\"cls_demotions\":%llu,\"rb_rounds\":%llu,\"rb_reads\":%llu,\"rb_bytes\":%llu,\"rb_swaps\":%llu,\"rb_cancelled\":%llu,\"rb_dec_hits\":%llu,\"rb_dec_miss\":%llu,\"rb_pre_hits\":%llu,\"rb_pre_miss\":%llu",
++                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu,\"policy\":\"%s\",\"cls_promotions\":%llu,\"cls_demotions\":%llu,\"rb_rounds\":%llu,\"rb_reads\":%llu,\"rb_bytes\":%llu,\"rb_swaps\":%llu,\"rb_cancelled\":%llu,\"rb_dec_hits\":%llu,\"rb_dec_miss\":%llu,\"rb_pre_hits\":%llu,\"rb_pre_miss\":%llu",
+                      (unsigned long long) hits, (unsigned long long) misses, (unsigned long long) hits_dec, (unsigned long long) misses_dec, (unsigned long long) bytes,
+                      (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) resident_bytes, (unsigned long long) budget,
+                      (unsigned long long) ns_prep, (unsigned long long) ns_read, (unsigned long long) ns_cpu, (unsigned long long) ns_total, (unsigned long long) graphs,
+                      (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs, (unsigned long long) gpu_segments,
+                      (unsigned long long) gpu_split_blocks, (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
+-                     (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
+-                     (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
++                     (unsigned long long) sibling_loads,
+                      (unsigned long long) small_mapped, (unsigned long long) small_over, classlru ? "classlru" : "lru", (unsigned long long) cls_promotions, (unsigned long long) cls_demotions,
+                      (unsigned long long) rb_rounds, (unsigned long long) rb_reads, (unsigned long long) rb_bytes_read, (unsigned long long) rb_swaps, (unsigned long long) rb_cancelled,
+                      (unsigned long long) rb_dec_hits, (unsigned long long) rb_dec_miss, (unsigned long long) rb_pre_hits, (unsigned long long) rb_pre_miss);
+@@ -564,14 +309,6 @@
+             g_idle_event = nullptr;
+         }
+ #endif
+-        {
+-            std::lock_guard<std::mutex> lk(pf_mu);
+-            pf_stop = true;
+-        }
+-        pf_cv.notify_all();
+-        for (auto & t : pf_threads) {
+-            t.join();
+-        }
+         {
+             std::lock_guard<std::mutex> lk(wmu);
+             stop = true;
+@@ -631,11 +368,6 @@
+             if (read_fallbacks) {
+                 fprintf(stderr, "moe-cache: reads that needed the buffered fallback: %llu\n", (unsigned long long) read_fallbacks);
+             }
+-            if (lookahead) {
+-                fprintf(stderr, "moe-cache: lookahead: prefetched %llu experts, used %llu, wasted %llu, late %llu; prediction recall %.1f%% (%llu of %llu), skipped %llu\n",
+-                        (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
+-                        pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
+-            }
+             if (exec_on) {
+                 // ", checked N, mismatches M" stays right after "itself": CI greps that exact sequence (identity.yml, executor byte-check)
+                 fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s%s\n", (unsigned long long) exec_ops,
+diff --git a/src/mc_state_io_members.h b/src/mc_state_io_members.h
+new file mode 100644
+index 0000000..fff8ca7
+--- /dev/null
++++ b/src/mc_state_io_members.h
+@@ -0,0 +1,19 @@
++// CLEANUP-002 / CLEANUP-1198: coalesce settings, the snapshot / save / idle threads, the load-finished wait and the layer index (the lookahead prefetch that lived here was removed)
++// A data-only base of state_t (src/mc_state.inl): the members moved here unchanged, so every s.name and every method of state_t still reads them by the same name.
++#pragma once
++
++struct state_io_t {
++    size_t coalesce_bytes = (size_t) 16 << 20;          // MOE_CACHE_COALESCE_MIB=N (default 16, 0 = off): neighbouring expert reads merged up to N MiB
++                                                        // (synchronous reads; Flash-Next prompts: 2.5 -> 3.4 GB/s, prefill +14-24 %)
++    std::atomic<uint64_t> coalesced{0};                 // expert reads merged into the previous one
++    size_t max_nb2_all = 0;                             // largest expert slice, for the bounce buffers
++    std::thread stats_th;                                // snapshot thread (MOE_CACHE_STATS_SIGNAL: SIGUSR1 / event): joined in the destructor
++#ifdef _WIN32
++    std::thread save_th;                                 // profile save on request: joined in the destructor
++#endif
++    std::thread idle_th;                                 // idle release on request (SIGUSR2 / Local\moe-cache-idle-<pid>): joined in the destructor
++    bool   idle_released = false;                       // idle_release() ran and no graph came since: the next graph sets the working-set minimum again
++    uint64_t idle_releases = 0;
++    std::condition_variable load_cv;                    // used with mu: a background read finished
++    std::unordered_map<int, std::vector<int>> layer_tensors;   // layer -> indices into tensors
++};
+diff --git a/src/mc_state_lru.inl b/src/mc_state_lru.inl
+index 979b913..442b2cf 100644
+--- a/src/mc_state_lru.inl
++++ b/src/mc_state_lru.inl
+@@ -113,10 +113,6 @@
+             }
+         }
+         evict_age_sum += epoch - nodes[s].epoch;   // how many groups ago this expert was last used
+-        if (nodes[s].prefetched) {
+-            nodes[s].prefetched = false;
+-            pf_wasted++;
+-        }
+         unlink(s);
+         nodes[s].resident = false;
+         nodes[s].mapped = false;       // the pages were given back (guard mode: made inaccessible); a later fallback maps them again
+@@ -207,19 +203,7 @@
+                 last_dec_layer = dl;
+             }
+         }
+-        std::vector<int> wait_list;       // experts a lookahead read is still filling
+-        if (lookahead && cur_decode) {
+-            auto pf = pred_flags.find(tensors[tidx[0]]->layer);
+-            if (pf != pred_flags.end()) {
+-                for (size_t e = 0; e < cnt.size() && e < pf->second.size(); e++) {
+-                    if (cnt[e]) {
+-                        pf_pred_total++;
+-                        pf_pred_hit += pf->second[e] ? 1 : 0;
+-                    }
+-                }
+-                pred_flags.erase(pf);
+-            }
+-        }
++        std::vector<int> wait_list;       // experts a background read (rebalance) is still filling
+         groups++;
+         (cur_decode ? g_saw_dec : g_saw_pre) = true;
+         if (auto_mode && (groups % (async ? 4 : 32)) == 1) {
+@@ -311,11 +295,6 @@
+                     hits++;
+                     if (cur_decode) { hits_dec++; }
+                     if (cur_decode ? rb_armed_dec : rb_armed_pre) { (cur_decode ? rb_dec_hits : rb_pre_hits)++; }
+-                    if (n.prefetched) {
+-                        n.prefetched = false;
+-                        pf_used++;
+-                        if (n.loading) { pf_late++; }
+-                    }
+                     if (n.loading) { wait_list.push_back(s); }
+                     if (!cur_scan) {          // a long prompt uses (nearly) everything: it does not make an expert "recently used"
+                         touch_use(s, true);
+diff --git a/src/mc_state_prefetch.h b/src/mc_state_prefetch.h
+deleted file mode 100644
+index 18c6568..0000000
+--- a/src/mc_state_prefetch.h
++++ /dev/null
+@@ -1,36 +0,0 @@
+-// CLEANUP-002: lookahead prefetch, helper threads, router tables and sibling/coalesce settings
+-// A data-only base of state_t (src/mc_state.inl): the members moved here unchanged, so every s.name and every method of state_t still reads them by the same name.
+-#pragma once
+-
+-struct state_prefetch_t {
+-    bool   lookahead = false;
+-    bool   la_exec = false;                             // MOE_CACHE_LOOKAHEAD=2: lookahead together with the executor (it waits on the same loading flags)
+-    size_t coalesce_bytes = (size_t) 16 << 20;          // MOE_CACHE_COALESCE_MIB=N (default 16, 0 = off): neighbouring expert reads merged up to N MiB
+-                                                        // (synchronous reads; Flash-Next prompts: 2.5 -> 3.4 GB/s, prefill +14-24 %)
+-    std::atomic<uint64_t> coalesced{0};                 // expert reads merged into the previous one
+-    int    la_guess = 0;                                // experts looked at per layer (0 = the number used per token)
+-    int    la_cap = 2;                                  // at most this many experts not yet in RAM are prefetched per layer
+-    bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
+-    size_t max_nb2_all = 0;                             // largest expert slice, for the helper threads' bounce buffers
+-    std::vector<std::thread> pf_threads;
+-    std::thread stats_th;                                // snapshot thread (MOE_CACHE_STATS_SIGNAL: SIGUSR1 / event): joined in the destructor
+-#ifdef _WIN32
+-    std::thread save_th;                                 // profile save on request: joined in the destructor
+-#endif
+-    std::thread idle_th;                                 // idle release on request (SIGUSR2 / Local\moe-cache-idle-<pid>): joined in the destructor
+-    bool   idle_released = false;                       // idle_release() ran and no graph came since: the next graph sets the working-set minimum again
+-    uint64_t idle_releases = 0;
+-    std::mutex pf_mu;
+-    std::condition_variable pf_cv;
+-    std::deque<std::function<void()>> pf_q;
+-    bool   pf_stop = false;
+-    std::condition_variable load_cv;                    // used with mu: a lookahead read finished
+-    std::unordered_map<int, std::vector<int>> layer_tensors;   // layer -> indices into tensors
+-    struct tmeta_t { int type; size_t off; size_t size; int shard; };
+-    std::unordered_map<std::string, tmeta_t> tmeta;     // router and norm tensors of the GGUF
+-    struct router_t { std::vector<float> w, bias, normw; bool ok = false; };
+-    std::unordered_map<int, router_t> routers;
+-    std::mutex router_mu;
+-    std::unordered_map<int, std::vector<char>> pred_flags;     // layer -> experts predicted for it (under mu)
+-    std::atomic<uint64_t> pf_issued{0}, pf_used{0}, pf_wasted{0}, pf_late{0}, pf_pred_total{0}, pf_pred_hit{0}, pf_skipped{0};
+-};
+diff --git a/src/mc_state_rebalance.inl b/src/mc_state_rebalance.inl
+index 3d799fd..3459b9a 100644
+--- a/src/mc_state_rebalance.inl
++++ b/src/mc_state_rebalance.inl
+@@ -3,7 +3,7 @@
+     // with the highest decayed use count that are not resident into free room, or into the room of the resident experts with the lowest count
+     // (rb_choose in mc_rebalance.h decides, with a margin so nothing swaps back and forth). Only which experts are resident changes, never what is
+     // computed. One expert (its gate, up and down tensors) is made resident and read at a time; when a graph starts the thread stops after that
+-    // expert: a graph that needs the expert being read waits on its "loading" flag like for any lookahead read, and the experts the thread read are
++    // expert: a graph that needs the expert being read waits on its "loading" flag like for any background read, and the experts the thread read are
+     // ordinary cache entries. Called with no lock held unless said.
+ 
+     // be_compute entry / exit (the RAII guard in mc_compute.inl): a graph is running, the rebalance must not start another expert
+diff --git a/tests/identity.sh b/tests/identity.sh
+index c7f83aa..bb783b2 100755
+--- a/tests/identity.sh
++++ b/tests/identity.sh
+@@ -19,7 +19,7 @@ PRE=(); [ -n "$LIMIT" ] && PRE=(systemd-run --user --scope -q -p MemoryMax=${LIM
+ TMP=$(mktemp -d); trap 'kill $SPID 2>/dev/null || true; [ -n "$IDENT_KEEP" ] && mkdir -p "$IDENT_KEEP" && cp "$TMP"/* "$IDENT_KEEP"/ 2>/dev/null; rm -rf "$TMP"' EXIT
+ COMMON=(-m "$MODEL" ${DEVICE:+--device $DEVICE} -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -np "$NP" -fa on --load-mode mmap --no-warmup --port $PORT --seed 42)
+ # IDENT_EXTRA="--moe-cache-mib 2000": more llama-server arguments for both servers (e.g. llama.cpp's GPU expert cache)
+-# IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1 MOE_CACHE_AVX512=1": more environment for the plugin server only
++# IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1": more environment for the plugin server only
+ [ -n "$IDENT_EXTRA" ] && COMMON+=($IDENT_EXTRA)
+ wait_up() { for i in $(seq 300); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health)" = 200 ] && return 0; sleep 2; done; echo "server did not start"; return 1; }
+ if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health"; then echo "port $PORT is already in use (a leftover server?): stop it first, the comparison would be wrong"; exit 1; fi
+diff --git a/tests/kernel_variants.cpp b/tests/kernel_variants.cpp
+index ee1e7a6..7119d34 100644
+--- a/tests/kernel_variants.cpp
++++ b/tests/kernel_variants.cpp
+@@ -4,7 +4,7 @@
+ //   /tmp/kernel_variants <dir with libggml-base.so.0 and libggml-cpu.so.0> [check]
+ // Windows (cross-built: x86_64-w64-mingw32-g++ -O2 -std=c++17 -Isrc tests/kernel_variants.cpp -o kernel_variants.exe -static):
+ //   kernel_variants.exe <llama.cpp release folder with ggml-base.dll and ggml-cpu-*.dll> [check]
+-// Block layouts and lookup tables come from src/ (no llama.cpp source tree needed). On CPUs with AVX-512 it also checks and times src/fast_iq_avx512.h.
++// Block layouts and lookup tables come from src/ (no llama.cpp source tree needed).
+ //
+ // Why the results are identical: every variant does the same integer arithmetic (u8 grid x s8 activation -> s16 -> x scale -> s32; sums of
+ // integers are exact in any order), and the float part is the same fused multiply-add per 256-weight block in the same order with the same
+@@ -13,11 +13,10 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+-#include "fast_iq_avx512.h"
+ #include "fast_iq3.h"
+-using block_iq2_xxs = fastk512::block_iq2_xxs;
+-using block_iq3_xxs = fastk512::block_iq3_xxs;
+-using block_q8_K = fastk512::block_q8_K;
++using block_iq2_xxs = fastk::block_iq2_xxs;
++using block_iq3_xxs = fastk::block_iq3_xxs;
++using block_q8_K = fastk::block_q8_K;
+ #define QK_K 256
+ #define iq2xxs_grid fastk::IQ2XXS_GRID
+ #define iq3xxs_grid fastk::IQ3XXS_GRID
+@@ -164,11 +163,6 @@ static TGT void iq3xxs(int n, float * s, size_t, const void * vx, size_t, const
+     *s = 0.25f * hsum8(accumf);
+ }
+ 
+-static void w512_iq2(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq2_xxs(n, s, x, y); }
+-static void w512_iq2v(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq2_xxs_vnni(n, s, x, y); }
+-static void w512_iq3(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq3_xxs(n, s, x, y); }
+-static void w512_iq3v(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq3_xxs_vnni(n, s, x, y); }
+-
+ struct traits_cpu { void (*from_float)(const float *, void *, int64_t); dot_fn vec_dot; int vec_dot_type; int64_t nrows; };
+ struct Variant { const char * name; dot_fn fn; };
+ 
+@@ -220,24 +214,13 @@ int main(int argc, char ** argv) {
+         { "iq2_xxs", 16, { { "scalar-lookup+madd", iq2xxs<false, false> }, { "gather", iq2xxs<true, false> }, { "vnni", iq2xxs<false, true> }, { "gather+vnni", iq2xxs<true, true> } } },
+         { "iq3_xxs", 18, { { "scalar-lookup+madd", iq3xxs<false, false> }, { "gather", iq3xxs<true, false> }, { "vnni", iq3xxs<false, true> }, { "gather+vnni", iq3xxs<true, true> }, { "plugin fast_iq3 vnni", fastk3::vec_dot_iq3_xxs_vnni }, { "plugin fast_iq3 avx2", fastk3::vec_dot_iq3_xxs_avx2 } } },
+     };
+-    printf("cpu: avx2=%d avx_vnni=%d avx512(bw,vl,dq)=%d avx512_vnni=%d\n", (int) __builtin_cpu_supports("avx2"), (int) __builtin_cpu_supports("avxvnni"),
+-           (int) fastk512::cpu_has_avx512(), (int) fastk512::cpu_has_avx512_vnni());
++    printf("cpu: avx2=%d avx_vnni=%d\n", (int) __builtin_cpu_supports("avx2"), (int) __builtin_cpu_supports("avxvnni"));
+     if (!__builtin_cpu_supports("avxvnni")) {   // AMD Zen 4 has AVX-512 VNNI but not the AVX (VEX) form: those variants would crash
+         for (auto & c : cases) {
+             c.v.erase(std::remove_if(c.v.begin(), c.v.end(), [](const Variant & x) { return strstr(x.name, "vnni") != nullptr; }), c.v.end());
+         }
+         printf("no AVX-VNNI on this CPU: the AVX-VNNI variants are skipped\n");
+     }
+-    if (fastk512::cpu_has_avx512()) {
+-        cases[0].v.push_back({ "avx512", w512_iq2 });
+-        cases[1].v.push_back({ "avx512", w512_iq3 });
+-        if (fastk512::cpu_has_avx512_vnni()) {
+-            cases[0].v.push_back({ "avx512+vnni", w512_iq2v });
+-            cases[1].v.push_back({ "avx512+vnni", w512_iq3v });
+-        }
+-    } else {
+-        printf("no AVX-512 on this CPU: the AVX-512 variants are skipped\n");
+-    }
+     const int64_t n = 4096, nrows = 64;
+     std::mt19937 rng(1);
+     std::normal_distribution<float> nd(0.f, 1.f);
+diff --git a/tools/friend_test.sh b/tools/friend_test.sh
+index 1748329..bfb8c42 100755
+--- a/tools/friend_test.sh
++++ b/tools/friend_test.sh
+@@ -70,10 +70,6 @@ if [ -n "$MODEL" ]; then
+     else
+       IDENT_EXTRA="--moe-cache-mib 1000" IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1" run "$HERE/tests/identity.sh" "$MODEL" --tokens 32 | tail -4
+     fi
+-    if grep -q -E 'avx512(f|bw)' /proc/cpuinfo; then
+-      say "-- stock vs plugin with the AVX-512 IQ kernels (only useful for IQ2_XXS / IQ3_XXS models)"
+-      IDENT_PLUGIN_ENV="MOE_CACHE_AVX512=1" run "$HERE/tests/identity.sh" "$MODEL" --tokens 32 | tail -4
+-    fi
+   fi
+ fi
+ 
+diff --git a/ui/index.html b/ui/index.html
+index f7cfda0..dae8229 100644
+--- a/ui/index.html
++++ b/ui/index.html
+@@ -1949,7 +1949,7 @@ function monPanels() {
+   monKv("moncount", [["MTP accepted / drafted", m.generated ? `${m.accepted} / ${m.generated} (${pct(m.rate)})` : ""],
+     ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up${a.replaced ? ", " + a.replaced + " replaced" : ""} of ${a.considered} looked at (${a.live ? "live" : "at last stop"})` : ""],
+     ["fewer experts", a.fewer ? `${a.fewer}: ${a.fewer_dropped} dropped of ${a.fewer_considered || "?"} looked at` : ""],
+-    ["evictions", ex.evictions], ["prefetch used / issued / wasted", ex.pf_issued != null ? `${ex.pf_used} / ${ex.pf_issued} / ${ex.pf_wasted}` : ""], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
++    ["evictions", ex.evictions], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
+     ["cache resident / budget", ex.resident_bytes != null ? fmtGiB(ex.resident_bytes) + " / " + fmtGiB(ex.budget) : ""], ["requests running / queued", (d.metrics || {}).requests_processing != null ? `${d.metrics.requests_processing} / ${d.metrics.requests_deferred || 0}` : ""]]);
+   const rq = (d.requests || []).slice().reverse();
+   $("monreq").innerHTML = '<tr><th>time</th><th class="num">prompt tok</th><th class="num">prompt t/s</th><th class="num">decoded</th><th class="num">decode t/s</th><th class="num">MTP</th></tr>' +

@@ -50,8 +50,21 @@ class MiniGGUF:
                             skip(n * sz); return []      # only small numeric arrays (per-layer values) are used
                         if n * sz > fsize - f.tell(): raise ValueError(f"{path}: GGUF header array past the end of the file")
                         return list(struct.unpack("<" + str(n) + fmt[1:], f.read(n * sz)))
-                    if et == 8:           # string arrays (the tokenizer) are not used: skip them
-                        for _ in range(n): skip(rd("<Q"))
+                    if et == 8:           # string arrays (the tokenizer) are not used: skip them by walking the lengths in 1 MiB blocks (one read per block, not one seek + one 8-byte read per entry — the LAUNCHER-1186 fix, ported from gguf_plan)
+                        pos = f.tell()
+                        if n * 8 > fsize - pos:
+                            raise ValueError(f"{path}: GGUF header array past the end of the file")
+                        buf, base = b"", pos
+                        for _ in range(n):
+                            if pos + 8 - base > len(buf):
+                                f.seek(pos)
+                                buf, base = f.read(1 << 20), pos
+                                if len(buf) < 8:
+                                    raise ValueError(f"{path}: GGUF header array past the end of the file")
+                            pos += 8 + struct.unpack_from("<Q", buf, pos - base)[0]
+                            if pos > fsize:
+                                raise ValueError(f"{path}: GGUF header length past the end of the file")
+                        f.seek(pos)
                         return []
                     raise ValueError(f"{path}: GGUF array of type {et}")   # arrays of arrays: no writer makes them; they would recurse
                 raise ValueError(f"unknown GGUF value type {t}")
@@ -125,9 +138,16 @@ def _compute(a):
     arch = str(val("general.architecture"))
     if not val(f"{arch}.expert_count"):        # a dense model has no expert_count key at all (the old int(None) raised TypeError before the check below)
         raise PlanError("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF")
-    n_blocks = int(val(f"{arch}.block_count")); n_exp = int(val(f"{arch}.expert_count")); n_used = int(val(f"{arch}.expert_used_count"))
+    n_blocks = int(val(f"{arch}.block_count")); n_exp = int(val(f"{arch}.expert_count"))
+    n_used_v = val(f"{arch}.expert_used_count")
+    if n_used_v is None:        # a MoE header without expert_used_count raised int(None) instead of a message
+        raise PlanError(f"{a.model}: the header has no {arch}.expert_used_count: cannot plan the experts")
+    n_used = int(n_used_v)
     nextn = int(val(f"{arch}.nextn_predict_layers", 0) or 0); n_main = n_blocks - nextn
-    kv_heads = int(val(f"{arch}.attention.head_count_kv", 0) or val(f"{arch}.attention.head_count"))
+    kv_heads_v = val(f"{arch}.attention.head_count_kv", 0) or val(f"{arch}.attention.head_count")
+    if kv_heads_v is None:      # a malformed header with neither attention key raised a raw TypeError from int(None); say what is wrong instead
+        raise PlanError(f"{a.model}: the header has no {arch}.attention.head_count[_kv]: cannot size the KV cache")
+    kv_heads = int(kv_heads_v)
     heads = int(val(f"{arch}.attention.head_count")); embd = int(val(f"{arch}.embedding_length"))
     if heads <= 0: raise PlanError(f"{a.model}: the header says {arch}.attention.head_count = {heads}; cannot size the KV cache")
     key_len = int(val(f"{arch}.attention.key_length", embd // heads)); val_len = int(val(f"{arch}.attention.value_length", key_len))
@@ -135,12 +155,12 @@ def _compute(a):
     n_attn = n_main // interval if interval else n_main
 
     def all_tensors():
-        m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", a.model)
+        m = re.search(r"-(\d+)-of-(\d+)\.gguf$", a.model)      # any digit width, like shards() below — a -1-of-3 name was sharded by tune() but read as a single (first) shard here
         if not m:
             return list(r.tensors)
         out = []
         for i in range(1, int(m[2]) + 1):
-            part = a.model[:m.start()] + f"-{i:05d}-of-{m[2]}.gguf"
+            part = a.model[:m.start()] + f"-{i:0{len(m[1])}d}-of-{m[2]}.gguf"
             out += list(r.tensors if part == a.model else open_gguf(part).tensors)
         return out
 

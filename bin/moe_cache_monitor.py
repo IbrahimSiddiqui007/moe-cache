@@ -30,7 +30,7 @@ RELEASE_RE = re.compile(r"stop processing: n_tokens = (\d+)")
 NEWPROMPT_RE = re.compile(r"new prompt,.*?task\.n_tokens = (\d+)")
 TOTAL_RE = re.compile(r"\btotal time =\s*([\d.]+) ms /\s*(\d+) tokens")
 MTP_RE = re.compile(r"draft acceptance rate = ([\d.]+)\s*\(\s*(\d+) accepted /\s*(\d+) generated")
-APPROX_RE = re.compile(r"moe-cache: approximate routing \((skip|subst)\): (\d+) low-ranked picks looked at, (\d+) given up, (\d+) replaced")
+APPROX_RE = re.compile(r"moe-cache: approximate routing \((skip|subst)\): (\d+) low-ranked picks looked at, (\d+) given up(?:, (\d+) replaced)?")      # "subst" / "replaced": logs of plugins before 2026-11-20
 FEWER_RE = re.compile(r"moe-cache: approximate: fewer experts \(MOE_CACHE_FEWER=(\d+)\): (\d+) of the lowest-ranked picks")
 LLAMA_RE = re.compile(r"^(?:[\d.]+ [A-Z] |srv |slot |llama_|load_tensors|print_info|main:|common_|ggml_|sched|clip_|build:|system info|init:|prompt eval|eval time|total time|request:|que |set_|update_slots|Device |[a-z_]+: )")
 LEVEL_RE = re.compile(r"^[\d.]+ ([A-Z]) ")
@@ -92,7 +92,19 @@ def plan_from_args(argv):
            "kv_k": val("-ctk", "--cache-type-k"), "kv_v": val("-ctv", "--cache-type-v"), "split_mode": val("-sm", "--split-mode"), "mmproj": val("--mmproj")}
     out["cpu_moe_all"] = "--cpu-moe" in argv or "-cmoe" in argv
     out["flash_attn"] = val("-fa", "--flash-attn")
+    out["kv_approx"] = kv_approx_text(out["kv_k"], out["kv_v"])
     return {k: v for k, v in out.items() if v not in (None, False)}
+
+
+EXACT_KV = ("f16", "bf16", "f32")
+
+
+def kv_approx_text(kv_k, kv_v):
+    """LAUNCHER-1063 / QUALITY-014: a KV cache stored below 16 bit is approximate (answers can differ from an f16 cache). The plain mark, with the types; None for f16 / bf16 / f32."""
+    k, v = (kv_k or "f16").lower(), (kv_v or "f16").lower()
+    if k in EXACT_KV and v in EXACT_KV:
+        return None
+    return "approximate: " + (f"K and V {k}" if k == v else f"K {k} / V {v}") + " (not identical to an f16 KV cache)"
 
 
 def split_command(cmd):
@@ -174,7 +186,7 @@ class Monitor:
                 self.pending_req["mtp"] = float(m.group(1))
             m = APPROX_RE.search(line)
             if m:
-                self.approx = {"mode": m.group(1), "considered": int(m.group(2)), "given_up": int(m.group(3)), "replaced": int(m.group(4)), "t": round(t, 1)}
+                self.approx = {"mode": m.group(1), "considered": int(m.group(2)), "given_up": int(m.group(3)), "replaced": int(m.group(4) or 0), "t": round(t, 1)}
             m = FEWER_RE.search(line)
             if m:
                 self.approx = dict(self.approx, fewer=int(m.group(1)), fewer_dropped=int(m.group(2)), t=round(t, 1))
@@ -211,7 +223,6 @@ class Monitor:
                      "ssd_waits": max(0, s.get("n_ssd_wait", 0) - p.get("n_ssd_wait", 0)),
                      "cpu": min(1.0, max(0, s.get("ns_cpu", 0) - p.get("ns_cpu", 0)) / dns_total) if dns_total > 0 else None,    # share of the cache's time spent in the CPU expert executor
                      "evict": max(0, s.get("evictions", 0) - p.get("evictions", 0)) / dt,
-                     "pf_used": max(0, s.get("pf_used", 0) - p.get("pf_used", 0)), "pf_wasted": max(0, s.get("pf_wasted", 0) - p.get("pf_wasted", 0)),
                      "gpu_up_gbs": max(0, s.get("gpu_up_bytes", 0) - p.get("gpu_up_bytes", 0)) / dt / 1e9}
                 a1, a0 = s.get("approx") or {}, p.get("approx") or {}
                 if a1:                  # picks the plugin changed per second (given up + replaced + dropped by "fewer experts")
@@ -246,7 +257,7 @@ class Monitor:
             if ap:
                 self.approx_live = {"mode": {1: "skip", 2: "subst"}.get(ap.get("route")), "considered": ap.get("considered", 0), "given_up": ap.get("skipped", 0), "replaced": ap.get("substituted", 0),
                                     "fewer": ap.get("fewer", 0), "fewer_considered": ap.get("fewer_considered", 0), "fewer_dropped": ap.get("fewer_dropped", 0), "live": True, "t": round(t, 1)}
-            self.snapshot_extra = {k: s.get(k) for k in ("policy", "evictions", "resident_bytes", "budget", "gpu_segments", "fallbacks", "exec_ops", "exec_fused", "pf_issued", "pf_used", "pf_wasted") if k in s}
+            self.snapshot_extra = {k: s.get(k) for k in ("policy", "evictions", "resident_bytes", "budget", "gpu_segments", "fallbacks", "exec_ops", "exec_fused") if k in s}
             if s.get("ex"):
                 self.snapshot_extra["threads"] = s["ex"].get("threads")
 

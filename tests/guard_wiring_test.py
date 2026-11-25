@@ -59,6 +59,11 @@ def check_lru(lru):
     m = re.search(r"if \(mclru::refresh_recency_of_resident\(cur_scan\)\) \{\s*unlink\(s\);\s*push_mru\(s\);\s*\}", c)
     return [] if m else ["the sibling path no longer asks mclru::refresh_recency_of_resident(cur_scan) before unlink()/push_mru() of a resident expert"]
 
+def check_token_clock(lru):
+    c = strip_comments(lru)
+    m = re.search(r"if \(mclru::starts_new_decode_token\(dl, last_dec_layer, loop_start, loop_end, loop_count, loop_pass\)\) \{\s*tok\+\+;\s*\}", c)
+    return [] if m else ["the decode-token clock no longer asks mclru::starts_new_decode_token(...) before tok++ (a loop pass would count as a token)"]
+
 def check_rebalance(state, rebal):
     p = []
     if not re.search(r"bool\s+rb_on\s*=\s*true;", state):
@@ -84,6 +89,7 @@ state = read("src/mc_state.inl") + "".join("\n" + read("src/" + h) for h in sort
 
 check(check_gpu_catch(compute, backend, hybrid) == [], f"GPU_CATCH: both GPU blocks run inside mcguard::guarded() ({check_gpu_catch(compute, backend, hybrid)})")
 check(check_lru(lru) == [], f"LRU rule: the sibling path asks the rule ({check_lru(lru)})")
+check(check_token_clock(lru) == [], f"token clock: tok++ asks the loop rule ({check_token_clock(lru)})")
 check(check_rebalance(state, rebal) == [], f"idle rebalance: on by default, rb_choose() called, stops when a graph starts ({check_rebalance(state, rebal)})")
 
 def mutate(text, old, new, what):
@@ -106,6 +112,8 @@ m = mutate(compute, "        gpu_failed_cleanup(c);\n        seg.clear();", "   
 if m: check(check_gpu_catch(m, backend, hybrid), "mutation: no cleanup after a caught throw is caught")
 m = mutate(lru, "if (mclru::refresh_recency_of_resident(cur_scan)) {", "if (true) {", "LRU rule bypassed")
 if m: check(check_lru(m), "mutation: the LRU rule bypassed (always refresh) is caught")
+m = mutate(lru, "if (mclru::starts_new_decode_token(dl, last_dec_layer, loop_start, loop_end, loop_count, loop_pass)) { tok++; }", "if (dl < last_dec_layer) { tok++; }", "token clock bypassed")
+if m: check(check_token_clock(m), "mutation: the token clock bypassing the loop rule is caught")
 m = mutate(rebal, "rb_choose(units, free_b, rb_cap_bytes, rb_gain, rb_min_score)", "std::vector<rb_pick>()", "rb_choose removed")
 if m: check(check_rebalance(state, m), "mutation: rb_choose() removed from the idle thread is caught")
 m = mutate(state, "bool   rb_on = true;", "bool   rb_on = false;", "rebalance off by default")

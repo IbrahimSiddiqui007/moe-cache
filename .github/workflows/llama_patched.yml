@@ -1,10 +1,10 @@
-# Builds llama.cpp b12207 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
+# Builds llama.cpp at LLAMA_COMMIT plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
 # Runs when asked (push to the branch ci/llama-patched or ci/llama-patched-*; manual dispatch needs the file on main) and, since v0.3.8, as a called workflow of release.yml:
 # the release kits (Windows zip, Linux tarball) bundle THESE artifacts, every patch built in and off. See patches/llama.cpp/README.md.
-# Identity: windows-package and linux-identity answer three prompts at temperature 0 with the official b12207 build, with this build (all switches off) and with this
+# Identity: windows-package and linux-identity answer three prompts at temperature 0 with the unpatched build of the same commit (built here, job variant `plain`; since the pin has no upstream b-tag, owner 2026-11-23), with this build (all switches off) and with this
 # build (0004, 0020, 0040 switches on); the answers must be byte-identical (tools/llama_identity_run.sh).
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
-# Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first.
+# Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first. llama-fit-params is included for the launcher's planner (LAUNCHER-1236).
 name: llama-patched
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
 # LLAMA_CONNECT=OFF: at b12064 (and b12207) =ON makes CMake download a prebuilt llama-connect binary from github.com (scripts/connect-download.cmake, 3 tries, no sha256) at
 # configure/build time; a github.com 504 broke the build on 2026-11-08. We build only llama-server (+ test-backend-ops), not that tool. The option is OFF by default upstream.
 env:
-  LLAMA_COMMIT: 998200491327347eed85f007e4de7a1a7c871453   # b12207
+  LLAMA_COMMIT: f5e6915c28f10330885fcb9243a93ae98d3115ab   # llama.cpp release b12651 (2026-11-23; ggml 1.0, backend API 4; contains #32704 and #32807); the identity reference is built from this same commit with no patch (variant plain; the official zips are not used for it)
   VULKAN_VERSION: "1.4.357.0"
   CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=OFF"
 
@@ -25,6 +25,10 @@ permissions:
 jobs:
   windows-server:
     runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [patched, plain]   # plain = the same commit with NO patch: the identity reference we build ourselves (owner 2026-11-23, option B: no official tag needed)
     timeout-minutes: 90
     steps:
       - run: git config --global core.autocrlf false   # the patches must apply byte for byte
@@ -39,28 +43,37 @@ jobs:
           path: llama.cpp
           fetch-depth: 0   # the build number names the prebuilt UI and the version line
       - name: Apply the patches
+        if: matrix.variant == 'patched'
         shell: bash
         run: tools/apply_llama_patches.sh llama.cpp
       - run: choco install ninja
+      - name: Install LLVM 22.1.8 (llama.cpp's GGML_OPENMP_FETCH wants Clang 22.x on Windows, as its own release.yml does at this pin)
+        run: |
+          choco install llvm --version=22.1.8
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       - name: Build
         shell: cmd
         working-directory: llama.cpp
         run: |
           call "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DLLAMA_BUILD_BORINGSSL=ON -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_OPENMP=ON -DGGML_OPENMP_FETCH=ON %CMAKE_ARGS% -DLLAMA_BUILD_TESTS=ON
-          cmake --build build --config Release --target llama-server test-backend-ops
+          cmake --build build --config Release --target llama-server llama-fit-params test-backend-ops
       - name: Version line
         shell: bash
         run: llama.cpp/build/bin/Release/llama-server.exe --version
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: llama-patched-win-server-x64
+          name: llama-${{ matrix.variant }}-win-server-x64
           path: |
             llama.cpp/build/bin/Release/*.exe
             llama.cpp/build/bin/Release/*.dll
 
   windows-vulkan:
     runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [patched, plain]   # plain = the same commit with NO patch: the identity reference we build ourselves (owner 2026-11-23, option B: no official tag needed)
     timeout-minutes: 90
     steps:
       - run: git config --global core.autocrlf false
@@ -75,6 +88,7 @@ jobs:
           path: llama.cpp
           fetch-depth: 0
       - name: Apply the patches
+        if: matrix.variant == 'patched'
         shell: bash
         run: tools/apply_llama_patches.sh llama.cpp
       - name: Cache restore (Vulkan SDK installer; a miss downloads below, with retries)
@@ -108,7 +122,7 @@ jobs:
           cmake --build build --config Release --target ggml-vulkan
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: llama-patched-win-vulkan-x64
+          name: llama-${{ matrix.variant }}-win-vulkan-x64
           path: llama.cpp/build/bin/Release/ggml-vulkan.dll
 
   # One zip for the Windows PC: the server + CPU backends from windows-server and ggml-vulkan.dll from windows-vulkan in one folder, with its sha256, after a
@@ -129,6 +143,14 @@ jobs:
         with:
           name: llama-patched-win-vulkan-x64
           path: pkg/llama-patched-win-x64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4   (the identity reference: same commit, no patch, same flags)
+        with:
+          name: llama-plain-win-server-x64
+          path: pkg/llama-plain-win-x64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llama-plain-win-vulkan-x64
+          path: pkg/llama-plain-win-x64
       - name: Cache restore (granite; a miss downloads below, with retries)
         id: granite
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -154,6 +176,7 @@ jobs:
           $dir = "$PWD\pkg\llama-patched-win-x64"
           Get-ChildItem $dir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
           if (-not (Test-Path "$dir\llama-server.exe")) { throw "no llama-server.exe in the package" }
+          if (-not (Test-Path "$dir\llama-fit-params.exe")) { throw "no llama-fit-params.exe in the package" }
           & "$dir\llama-server.exe" --version
           $body = '{"prompt":"The quick brown fox jumps over the lazy dog. The quick brown fox","n_predict":100,"temperature":0,"seed":1,"cache_prompt":false}'
           $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port","8101","--no-warmup" -RedirectStandardError "smoke.err" -RedirectStandardOutput "smoke.out" -PassThru
@@ -165,19 +188,12 @@ jobs:
           $text = (($r.Content | ConvertFrom-Json).content)
           Write-Host "text: $text"
           if (-not $text -or $text.Length -lt 20) { throw "the smoke run produced no text" }
-      - name: Official b12207 build (pinned by sha256) for the identity run
-        env:
-          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
-        run: |
-          & tools\ci\fetch.ps1 -Url "https://github.com/ggml-org/llama.cpp/releases/download/b12207/llama-b12207-bin-win-vulkan-x64.zip" -Out dl\official.zip -Sha256 c8c84eff8b7eae83602d3cf2dd6defe16c47d1011b4a2514905c1817e3a909ca
-          if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for the official llama.cpp zip (see the ci_fetch lines above)" }
-          Expand-Archive dl\official.zip -DestinationPath official
       - name: Identity at temperature 0 - official, patched (switches off), patched (switches on)
         shell: bash
         run: |
           set -e
           mkdir -p ident
-          tools/llama_identity_run.sh official/llama-server.exe granite.gguf 8111 ident/official.jsonl
+          tools/llama_identity_run.sh pkg/llama-plain-win-x64/llama-server.exe granite.gguf 8111 ident/official.jsonl
           tools/llama_identity_run.sh pkg/llama-patched-win-x64/llama-server.exe granite.gguf 8112 ident/patched_off.jsonl
           tools/llama_identity_run.sh pkg/llama-patched-win-x64/llama-server.exe granite.gguf 8113 ident/patched_on.jsonl LLAMA_RESERVE_TOP=10 LLAMA_PLE_PREFETCH_AHEAD=1 LLAMA_SLOT_SAVE_ASYNC=1
           grep -q "LLAMA_RESERVE_TOP" ident/patched_on.jsonl.log || { echo "FAIL: the 0040 switch did not take effect (no LLAMA_RESERVE_TOP line): the on-arm proves nothing"; exit 1; }
@@ -201,6 +217,10 @@ jobs:
 
   linux:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [patched, plain]   # plain = the same commit with NO patch: the identity reference we build ourselves (owner 2026-11-23, option B: no official tag needed)
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -214,6 +234,7 @@ jobs:
           path: llama.cpp
           fetch-depth: 0
       - name: Apply the patches
+        if: matrix.variant == 'patched'
         run: tools/apply_llama_patches.sh llama.cpp
       - name: Vulkan SDK
         run: |
@@ -227,9 +248,11 @@ jobs:
         working-directory: llama.cpp
         run: |
           cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS -DLLAMA_BUILD_TESTS=ON
-          cmake --build build --config Release --target llama-server test-backend-ops test-cpu-gpu-split -j $(nproc)
+          T='llama-server llama-fit-params test-backend-ops'; if [ '${{ matrix.variant }}' = patched ]; then T="$T test-cpu-gpu-split"; fi
+          cmake --build build --config Release --target $T -j $(nproc)
           build/bin/llama-server --version
       - name: "IQ3_XXS mat-vec kernel (patch 0090) against the CPU result, switch off and on (Vulkan on the CPU via mesa lavapipe, no GPU on the runner)"
+        if: matrix.variant == 'patched'
         working-directory: llama.cpp
         run: |
           set -e
@@ -242,6 +265,7 @@ jobs:
           done
           grep -q "restructured kernel" ../mmv_1.log || { echo "FAIL: the 0090 switch did not take effect"; exit 1; }
       - name: "CPU + GPU row split (patch 0091): split result against a float reference for every row, share changes, weight buffer freed and replaced (a second CPU backend plays the GPU)"
+        if: matrix.variant == 'patched'
         working-directory: llama.cpp/build/bin
         run: |
           set -e
@@ -249,23 +273,24 @@ jobs:
           grep -q "test-cpu-gpu-split: PASS" ../../../split_test.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: llama-patched-linux-x64
+          name: llama-${{ matrix.variant }}-linux-x64
           path: |
             llama.cpp/build/bin/llama-server
+            llama.cpp/build/bin/llama-fit-params
             llama.cpp/build/bin/*.so
       - name: Pack with the library symlinks kept (the tarball the Linux release bundles)
         run: |
           mkdir pkg
-          cp -a llama.cpp/build/bin/llama-server llama.cpp/build/bin/*.so* pkg/
-          tar -C pkg -czf llama-patched-linux-x64.tar.gz .
-          sha256sum llama-patched-linux-x64.tar.gz | tee llama-patched-linux-x64.tar.gz.sha256
+          cp -a llama.cpp/build/bin/llama-server llama.cpp/build/bin/llama-fit-params llama.cpp/build/bin/*.so* pkg/
+          tar -C pkg -czf llama-${{ matrix.variant }}-linux-x64.tar.gz .
+          sha256sum llama-${{ matrix.variant }}-linux-x64.tar.gz | tee llama-${{ matrix.variant }}-linux-x64.tar.gz.sha256
           ls -l pkg | head -40
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: llama-patched-linux-x64-tgz
+          name: llama-${{ matrix.variant }}-linux-x64-tgz
           path: |
-            llama-patched-linux-x64.tar.gz
-            llama-patched-linux-x64.tar.gz.sha256
+            llama-${{ matrix.variant }}-linux-x64.tar.gz
+            llama-${{ matrix.variant }}-linux-x64.tar.gz.sha256
 
   linux-identity:
     needs: linux
@@ -278,15 +303,18 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: llama-patched-linux-x64-tgz
-      - name: Unpack the patched build and fetch the official one and the Granite test model (pinned by sha256; retried, tools/ci/fetch.sh)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4   (the identity reference: same commit, no patch)
+        with:
+          name: llama-plain-linux-x64-tgz
+      - name: Unpack the patched and the reference (plain) build and fetch the Granite test model (pinned by sha256; retried, tools/ci/fetch.sh)
         env:
           GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
         run: |
           set -e
           sha256sum -c llama-patched-linux-x64.tar.gz.sha256
           mkdir patched && tar -C patched -xzf llama-patched-linux-x64.tar.gz
-          tools/ci/fetch.sh https://github.com/ggml-org/llama.cpp/releases/download/b12207/llama-b12207-bin-ubuntu-vulkan-x64.tar.gz official.tgz 178a5d6a940d74a24ee359dc8af68ce6b2fccb99150c1bdd458dbec640653c06
-          mkdir official && tar -C official -xzf official.tgz --strip-components=1
+          sha256sum -c llama-plain-linux-x64.tar.gz.sha256
+          mkdir official && tar -C official -xzf llama-plain-linux-x64.tar.gz
           tools/ci/fetch.sh "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" granite.gguf 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb
           patched/llama-server --version
       - name: Identity at temperature 0 - official, patched (switches off), patched (switches on)

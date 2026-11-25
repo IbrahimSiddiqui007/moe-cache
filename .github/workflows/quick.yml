@@ -4,7 +4,7 @@ name: quick
 
 on:
   push:
-    branches: [experimental, main]
+    branches: [experimental, main, 'claude/**']       # R13: a branch merges after CI is green, so its pushes run the quick tier too (audit row 30)
   pull_request:                  # AUD-001: an outside PR gets the model-free checks too (no secrets are used; permissions are read-only)
     branches: [experimental, main]
   workflow_dispatch:
@@ -37,15 +37,17 @@ jobs:
           if grep -nE '\w*(buffer|buf)->(buft|context|size|usage|iface)\b|->buffer->|\w*buf\w*->iface|->iface\.get_name' src/*.inl src/*.cpp; then echo "FAIL: read ggml buffer fields through the public API"; exit 1; fi
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/args_test.cpp -o /tmp/args_test && /tmp/args_test
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/tested_ggml_test.cpp -o /tmp/tested_ggml_test && /tmp/tested_ggml_test    # which ggml builds count as tested (version or version@commit)
-          g++ -std=c++17 -O1 -Wall -Werror -Isrc -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src tests/rebalance_test.cpp -o /tmp/rebalance_test -lpthread && /tmp/rebalance_test   # BO-2 choice logic
+          g++ -std=c++17 -O1 -Wall -Werror -Isrc -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src tests/rebalance_test.cpp -o /tmp/rebalance_test -lpthread && /tmp/rebalance_test   # idle-rebalance choice logic
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/peers_test.cpp -o /tmp/peers_test && /tmp/peers_test    # N2: peer registry rules (fake peers)
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/sigbus_test.cpp -o /tmp/sigbus_test && /tmp/sigbus_test    # A1-04: a model file cut short while mapped says what happened
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/file_view_load_test.cpp -o /tmp/fvl_test && /tmp/fvl_test    # CACHE-685: a file cut short under the view is a false return, not a SIGBUS
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -DMOE_CACHE_TEST_NO_POPULATE -Isrc tests/file_view_load_test.cpp -o /tmp/fvl_test2 && /tmp/fvl_test2    # the same through the guarded page touch (kernels without MADV_POPULATE_READ)
           # 2026-11-03 audit fixes: each is a standalone program (no ggml, no model)
-          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check profile_path; do
+          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check profile_path evict_timer stable_vec; do
             g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
           done
+          # CACHE-694: a whole state_t driven with hand-made tensors (unload keeps no old state, node addresses stable); the ggml calls are never reached
+          g++ -std=c++17 -Wall -Werror -Wno-unused-function -Wno-unused-parameter -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src -Isrc tests/unload_state_test.cpp -o /tmp/unload_state_test -lpthread -ldl -no-pie -Wl,--unresolved-symbols=ignore-all && /tmp/unload_state_test
           for t in wake_pipe reserve_msg; do      # these two include platform.h without -Wextra
             g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
           done
@@ -62,7 +64,7 @@ jobs:
           REQUIRE_NODE: "1"       # AUD-094: ui_test skips its JavaScript checks without node; the script then runs tests/require_node_test.py, which fails instead
         run: tools/run_quick_tests.sh
 
-      - name: Model catalogue (docs/MODELS.md is generated from models.json)
+      - name: Model catalogue (docs/reference/models.md is generated from models.json)
         run: |
           python3 tools/gen_models_md.py --check
           python3 - <<'PY'
@@ -76,7 +78,7 @@ jobs:
           python3 bin/moe_cache.py bench-record lint --warn
           python3 bin/moe_cache.py bench-record board --check || echo "::warning::benchmarks/BOARD.md is out of date: run bench-record board"
 
-      - name: README card block matches docs/benchmark_card.html
+      - name: README card block matches docs/results/benchmark-card.html
         run: python3 tools/card_markdown.py --check
 
       - name: Scoop bucket push (local empty bucket repo; first push, unchanged, next version)

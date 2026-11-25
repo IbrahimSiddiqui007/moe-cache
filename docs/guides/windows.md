@@ -1,0 +1,252 @@
+# Windows quick start (experimental): run big MoE models on an AMD (Vulkan) or NVIDIA PC
+
+Tested on one Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM; other cards are untested, reports welcome): identity 4/4 on four models, launcher
+and chat working; speed figures follow in a later release. Status and caveats per platform: [platforms](../reference/platforms.md). If your model fits in RAM and its experts all fit on the card, stock llama.cpp is all you need (the launcher picks it; with expert layers on the CPU it runs the plugin by default, `--stock` opts out); the plugin
+helps with models bigger than RAM.
+
+## 1. What you need
+
+| Piece | What worked | Notes |
+|---|---|---|
+| llama.cpp | the official release zip, **Vulkan** (tested b11669, b11966, b12064 and b12207; newer builds are supported, `moe_cache.py update --check` shows the newest) (`llama-b12207-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0, 0.28.0 and 0.29.0 (b11966, b12064, b12207) = backend API 3. The measurements below were made with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was slower in our test (we ran it without AMD's HIP SDK) |
+| The plugin | `ggml-moe-cache-api3.dll` (api3 for ggml 0.26 and newer, api2 for 0.25) | from the kit, or build it on Linux: `GGML_API=3 ./build.sh --windows` (mingw-w64) -> `build/win/ggml-moe-cache.dll` |
+| Python 3 | 3.8 or newer, standard library only | run the launcher with `python` |
+| This repository (or the kit with `moe_cache.py`) | `C:\moe-cache` | the launcher needs the `planner\`, `ui\` and `tools\` folders: keep the whole repository |
+| A GGUF model | any MoE model | A MoE model bigger than your RAM is what moe-cache is for. Since 0.3.2 the launcher watches Windows' memory budget (commit) and shrinks its own caches to fit; close browsers and games first and keep the page file on "system managed". Not sure which model? `python bin\moe_cache.py pick` |
+
+**Windows may warn: "unknown publisher".** The kit's DLLs and `.bat` files are not code-signed (a certificate costs money every year; the code is
+open source and the zip is built by GitHub Actions from the tagged commit), so Windows treats the downloaded zip as untrusted. Before you
+extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If SmartScreen still says "Windows protected your PC", click
+**More info** > **Run anyway**. To check that your zip is the one CI built, compare its SHA256 with `SHA256SUMS-windows` on the release page:
+`Get-FileHash moe-cache-vX-windows-x64.zip` in PowerShell (or `gh attestation verify moe-cache-vX-windows-x64.zip -R IbrahimSiddiqui007/moe-cache`).
+
+The launcher finds the DLL by itself when it is `ggml-moe-cache-api3.dll` next to `moe-cache.bat` (the kit folder) or in `build\win*\`; otherwise point to it:
+
+```
+set MOE_CACHE_LIB=C:\moe-cache-kit\ggml-moe-cache-api3.dll
+set LLAMA_SERVER=C:\llama\llama-server.exe
+```
+
+## 2. Check, then run
+
+```
+python bin\moe_cache.py check D:\models\model.gguf --llama-server C:\llama\llama-server.exe --run
+python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --ram 24 --open
+```
+
+`check --run` starts llama-server with the plugin and a small cache for one short request and reports "cache runs: yes". Two warnings are normal today:
+"Windows experimental" and, on a llama.cpp build we did not test (b11669, b11966, b12064, b12207), "this llama.cpp build is not one we tested". `server` prints the command (add `--dry-run` to only print it); `--open`
+opens llama-server's chat page. The model also works with any OpenAI-compatible client at `http://127.0.0.1:8080/v1`.
+`--llama-server` can be left out when llama.cpp is unpacked to `C:\llama` (or `LLAMA_SERVER` is set, or llama-server is on the PATH). Run `check` first: it looks at the GPU,
+RAM, the model's drive and llama-server, and says what to fix. If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command.
+
+## 3. The control page (GUI): one click
+
+Double-click **`moe-cache.bat`** in the kit folder (from a git checkout: `bin\moe-cache-ui.bat`). It opens http://127.0.0.1:8070 (this machine only): your models with the planner's verdict and why, start/stop,
+live speed, cache hit rate, SSD reads, RAM and VRAM, the chat, and Connect buttons for OpenCode and Hermes. To get it in the Start menu, run once:
+
+```
+moe-cache.bat --shortcut
+```
+
+What the `.bat` finds by itself (set the variable to override):
+
+| Piece | Looked for, in this order |
+|---|---|
+| Python | `MOE_CACHE_PYTHON`, the `py` launcher, a `python.exe` that really runs (the one Windows ships without Python only opens the Store) |
+| Plugin (`MOE_CACHE_LIB`) | `ggml-moe-cache-api3.dll`, then `ggml-moe-cache.dll`, next to the `.bat` or one folder up (the kit), then `build\win-api3\`, `build\win\` |
+| llama-server (`LLAMA_SERVER`) | `LLAMA_SERVER` (the process environment; on Windows also as stored in the registry, user then machine, because `setx` writes there and a program started earlier does not see it), the path the control page saved, the `PATH` (on Windows also the registry's), then the default folders (Windows: `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build, `~/llama.cpp/build/bin`, the kit folder). Among the folders the newest build whose ggml API a shipped plugin supports wins, and one log line says which one. A `PATH` llama-server whose ggml API no shipped plugin supports (the distro's, next to a kit that ships the API 3 plugin and its own llama.cpp) gives way to a default-folder one that has a supported API, and the log line says so; with none supported anywhere the `PATH` one stays. When none is found the control page asks for the path (checked with `--version`) and remembers it. |
+
+It prints what it found and the page's address (with a per-run token: only you can use the page); the same is in the page header's tooltip. Without the `.bat`: `python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe`.
+Options for both: `--ui-port N`, `--no-browser`. Details: [GUI](gui.md).
+
+## 4. Coding agents
+
+```
+python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --agent
+python bin\moe_cache.py connect opencode --write        # or: connect hermes --write
+```
+
+Without starting the server by hand each time (as with Ollama): the model starts on the first agent request and stops after 15 idle minutes.
+
+```
+python bin\moe_cache.py on-demand D:\models\model.gguf --llama-server C:\llama\llama-server.exe --ram 20
+python bin\moe_cache.py connect opencode --write        # or: connect hermes --write  (the model does not start for this)
+python bin\moe_cache.py on-demand --install-autostart   # optional: a shortcut in your Startup folder, no admin; --remove-autostart undoes it
+```
+
+Hermes Desktop by hand: Settings -> Model -> Main model, provider custom, URL `http://127.0.0.1:8080/v1`, API key from `python bin\moe_cache.py key`.
+
+Details, and the desktop apps: [AGENTS](agents.md#without-starting-a-server-by-hand-on-demand). Note for Flash-Next below.
+
+## 5. What the launcher does for you on Windows with an AMD or Intel GPU
+
+The control page shows these too: in the plan before you start ("Windows + AMD: ...", with the reason) and, once started, under "What the launcher decided".
+
+| Automatic | Why |
+|---|---|
+| Finds the discrete GPU (the planner only knew nvidia-smi and Linux sysfs): reads `llama-server --list-devices` and takes the adapter with the most dedicated VRAM in the registry | otherwise it saw no GPU and kept every expert layer on the CPU; `check` named the built-in iGPU |
+| At the first graph the plugin releases the model-file pages llama.cpp left in llama-server's working set (log: "released N GiB of model-file pages from the working set"); its own cache then lives in read-only views of the model file (file-view cache, no commit) | llama.cpp's Windows loader never unmaps the file pages of the GPU tensors, so ~13 GB stayed counted as in use with 12 GPU expert layers and the cache got that much less (I37). GPU expert layers are planned as on other GPUs |
+| Flash-Next (`qwen4exp`) on an AMD Vulkan GPU with a driver older than 32.0.32015.7029 (or an unknown version): `--ctx-checkpoints 0`, with a message | saving a context checkpoint of its recurrent state crashes AMD's Windows Vulkan driver (`amdvlk64.dll` 32.0.23034.4, access violation); stock llama-server crashes the same way, so it is not the plugin. Cost: a conversation cannot jump back to an earlier point (plain continuation still reuses the cache); this matters for agents. **Driver 32.0.32015.7029 (Adrenalin, 2026-10-27) does not crash** (stock llama-server, checkpoints on, chat answered, no crash in the event log), so from that version on the launcher leaves checkpoints on and says so; the launcher reads the version from the registry (`DriverVersion` of the chosen adapter) |
+| **`--ram N` is a sizing hint for the cache, not a RAM cap, on the default path.** It sets how big the cache and the layer plan may be. The Windows job memory limit is set only for the plugin, only with `--ram`, and only with `MOE_CACHE_WIN_VIEW=0` (the private-memory cache). The default file-view cache, the on-demand listener and stock llama-server get no limit, so the server can use more than N GB (for example while a long prompt runs or other programs take memory). No guard against that is built | a job limit caps commit, and Windows commits Vulkan's GPU memory: with the file-view cache (experts use no commit) it only capped llama.cpp's GPU memory and `--ram 16` failed to load. Without the limit `--ram 16` runs on Flash-Next IQ2_XS at close to the speed of `--ram 24` |
+| Pins threads to the performance cores of a hybrid CPU | none needed on the 7950X (`check` says "no hybrid cores: no pinning") |
+| The log line "commit ... failed (Windows error 487), committing page by page" | a handled case, not an error |
+
+## 6. Known limits
+
+- **Game launchers and other apps that draw on the GPU slow it down.** The EA app is the one we measured: while it draws, it keeps the GPU's graphics engine busy and our work waits behind it. Close it before a long prompt; if it stays in the system tray, quit it from there. Others, such as Epic, Battle.net or Ubisoft Connect, are the same kind of program but not measured. See [Troubleshooting](troubleshooting.md#slow).
+- **Speed on the test PC** (RESULTS 59-60, 2026-10-27: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, page file 14 GB, llama.cpp Vulkan ggml 0.27;
+  every run cold (file cache flushed), stock-plugin-plugin-stock order, launcher defaults, decode of a 256-token greedy request). These numbers need the
+  **file-view cache** (the Windows default since 2026-10-27, `MOE_CACHE_WIN_VIEW=0` turns it off): the cache keeps experts in read-only views of the
+  model file, which cost no commit. Before it, Windows charged the cache (and Vulkan's GPU memory) to commit, the cache was held at 8-11 GiB and decode
+  was held back.
+
+  Speed figures for these models (Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Qwen3.5-122B, GLM-5.3-Flash with and without `--mtp`) follow in a later release.
+
+  Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
+  IQ2_XS): the plugin finished the sessions sooner than stock and the first token came sooner; two agents at once also finished sooner. The
+  122B row replaces RESULTS 59's earlier pair: that pair ran during a slowdown of the whole PC (T2b).
+  If your model fits in RAM and its experts all fit on the card, stock llama.cpp is the better choice (the launcher picks it by itself; with expert layers on the CPU it runs the plugin by default, `--stock` opts out; the 16 GB PC gained little forced through the plugin). One desktop only; Linux numbers are in the README.
+- **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC, plugin with launcher defaults, cold). Tasks = 202
+  exact-answer tasks; no quality difference between any two files is proven (all paired sign tests p > 0.05):
+
+  | File | Size | Tasks /202 | Use it |
+  |---|---|---|---|
+  | **IQ3_XXS** | 75.8 GB | **193** | **the default** (0.3.2 to 0.3.6, and again since v0.3.8): 3-bit, most tasks right, reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); speed figures follow in a later release |
+  | Q2_0 | 66.4 GB | 191 | **the smaller option**, 9 GB less than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8); speed figures follow in a later release |
+  | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 189 | coding agents: half the experts (256 of 512); speed figures follow in a later release. General knowledge not checked beyond the task set |
+  | IQ2_XS | 68.0 GB | 187 | superseded by Q2_0. The other IQ2_XS numbers on this page were measured on IQ2_XS |
+  | IQ3_S | 83.6 GB | 192 | not worth it: bigger than IQ3_XXS for no gain in tasks |
+
+  Stock vs plugin on Q2_0: speed figures follow in a later release.
+  The Q2_0 numbers above were measured before the plugin's exact Q2_0 executor kernel came to Windows; with it the PC's Q2_0 decode is unchanged
+  (RESULTS 63 addendum).
+- **Long context (Windows PC).** Per-depth prompt and decode tables of the v0.3.4 / v0.3.5 kits are kept in [results-archive/RESULTS_CURRENT_v0.3.8.md](../results/archive/results-current-v0.3.8.md); they are not v0.3.9 numbers. Since v0.3.5 the launcher uses `-ub 2048` above 32k context (gpt-oss keeps 1024) and the planner keeps 39 CPU layers at 40960-65536, 41 at 131072.
+- **Other models (Windows PC, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
+  so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): 190/202 tasks (Flash-Next Q2_0 191, not proven); speed figures follow in a later release. The plugin is for models bigger than memory, so the launcher does not use it here. DeepSeek V4-Flash: not tested.
+- The plugin's Q2_0 and IQ3_XXS executor kernels run on Windows x86-64 too since 2026-10-28 (bit-identical; the Q2_0 one matches llama.cpp's own
+  AVX2 Q2_0 function; no decode change on the PC because decode streams its weights from RAM, RESULTS 63 addendum). Replacing llama.cpp's own
+  functions outside the executor needs `LD_PRELOAD`, which Windows does not have. The IQ3_XXS gather and AVX-512 kernels stay off on AMD
+  (bit-exact but slower than llama.cpp's own kernels on Zen 4).
+- `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers. A path-loading version exists on a branch, but
+  llama.cpp's own GPU expert cache loses on this Vulkan PC (slower than without it) and aborts at load above about 5.9 GiB, so it is parked.
+- HIP / ROCm: llama.cpp's official b11669 HIP zip runs on the RX 9070 XT without the HIP SDK, and the plugin loads into it, but HIP
+  is much slower than Vulkan on this card (stock Flash-Next Q2_0, decode and prompt), so use Vulkan. Intel GPUs
+  on Windows: untested.
+- The bash wrappers (`moe-cache-server` ...) do not run on Windows: use `python bin\moe_cache.py <command>`.
+- GLM-5.3-Flash (102 GB) runs, long-prompt GPU blocks included; the earlier crash in that path is fixed.
+- Run as a normal user (not elevated), Windows may refuse the file-view cache's working-set minimum (error 1314 in the log); the cache still works
+  (in that test). A normal desktop login has the privilege it needs.
+
+### Windows: where the RAM goes, and suggestions that do not help
+
+llama.cpp's Windows loader reads the GPU tensors through its mapping of the model file and never unmaps those pages. After loading they stay in
+llama-server's working set, and Windows counts them as in use: 13.3 GB with 12 Flash-Next expert layers on the GPU. It looked like AMD's driver taking RAM
+for VRAM, but it is not: a newer driver changed nothing, and emptying the working set gave the RAM back with GPU memory unchanged (I37). The
+plugin releases these pages at the first graph (log: "released N GiB of model-file pages from the working set"). Stock llama-server keeps them.
+The plugin's own cache lives in read-only views of the model file (the file-view cache, default since 2026-10-27): those pages are file-backed, so they
+cost no commit, and a hard working-set minimum keeps them in RAM (log: "working-set minimum N GiB"). When another program needs memory Windows finds it
+elsewhere: with 8 and 14 GB taken by another program the server kept its speed and nothing froze.
+
+**Page file.** On Windows every private allocation needs commit (RAM plus page file), even if it never leaves RAM, and Vulkan's GPU allocations are charged
+to commit too (about 24 GB with GLM). The file-view cache needs none, but llama.cpp's own memory does: GLM with `--mtp` left 3.47 GiB of commit free on a
+14 GB page file. Before the file view (or with `MOE_CACHE_WIN_VIEW=0`) the cache itself was cut by commit: a 6.9 GB page file cut GLM's cache
+from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (speed figures follow in a later release). Let Windows manage the page file, or make it 14 GB or more.
+
+| Suggestion often made | What it does here |
+|---|---|
+| `--no-mmap` (newer llama.cpp: `--load-mode none`) | loads the whole model into RAM: impossible for a model bigger than RAM |
+| `--mlock` (newer llama.cpp: `--load-mode mlock`) | pins memory so Windows cannot page it out: less RAM for everything else |
+| `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). On this Vulkan PC it aborts at load above about 5.9 GiB even without the plugin (each cache bank is one tensor over Vulkan's ~2 GiB buffer limit) and, where it loads, it was slower. moe-cache's cache size follows `--ram` (the launcher sets `MOE_CACHE_SIZE_GIB` itself) |
+| "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ..."). With the file-view cache this no longer happens for commit (1 resize per request instead of 226 on IQ3_XXS) |
+| q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045 on the laptop's CUDA; **0.0120 on this PC's Vulkan**, `--fast` as shipped 0.0145, RESULTS 61 R11), so it is part of `--fast` (it was kept there), not the default. Measured on this desktop at context 8192 (R11): no speed difference in decode or in a 2,950-token prompt; it matters only for memory at long agent contexts |
+| WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |
+
+Still to try (owner's machine): Linux/RADV on the same PC. A newer Adrenalin driver (32.0.32015.7029) was tried: it fixed the Flash-Next
+checkpoint crash but not the RAM use, which is the loader's (I37).
+
+### Windows: "display driver stopped responding", a frozen screen, or the PC gone for minutes
+
+What you can see and what it means. Check the PC's own record first (PowerShell, read-only): `Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Display'}`
+(event 4101 = a real driver timeout), `Get-ChildItem C:\Windows\LiveKernelReports -Recurse` (files named WATCHDOG or AMD_WATCHDOG), and in the Application log
+`Windows Error Reporting` entries named `LiveKernelEvent` (P1 141 or a1000001 = the GPU stopped answering and the driver reset it without a screen flash).
+
+| What you see | What it is | What to do |
+|---|---|---|
+| Message "Display driver amdkmdag (or nvlddmkm) stopped responding and has recovered", System log event 4101 | Windows' timeout detection (TDR): one GPU submission ran longer than 2 s (`TdrDelay`) | lower the micro-batch at long context: `--ub 512` (the launcher picks `-ub 2048` at `--ctx 262144`; `--ub 512` is the fallback if the GPU resets); update the GPU driver; do not raise `TdrDelay` on a machine you do not own |
+| No message, but a `WATCHDOG` or `AMD_WATCHDOG` file in `C:\Windows\LiveKernelReports` (the `WATCHDOG` one can be 4 GB), Application log `LiveKernelEvent` 141 / a1000001, nothing in the System log | the AMD driver's own watchdog saw the GPU hang and reset it: Windows keeps going and the System log stays empty. Windows re-reports the same dump at every sleep and wake, hours later, which looks like new events | moe-cache does not read these files (Windows' Disk Cleanup can remove them); if it happens in a pattern, note what was running and open an issue |
+| PC unreachable (SSH, remote desktop, the GUI) for some minutes, no reboot, "driver timeout" notice when you come back | the PC went to **sleep** (System log: Kernel-Power 42 "entering sleep", 107 "resumed") and the GPU needed about 5 s to start again (Kernel-PnP Driver Watchdog 902/903, shown as a long-running device start). Nothing crashed, but a run that was in progress was paused for that time | turn off sleep while a long run is going (Settings > System > Power: "Put my device to sleep" = never); a run that spans a sleep has wrong timings and may time out its requests |
+
+**Can a long run of moe-cache trigger the 2 s TDR?** Unlikely, and nothing here shows it happening. The plugin has no GPU kernels of its own on Windows (its expert kernels run on
+the CPU; the GPU work is llama.cpp's Vulkan backend, the plugin only copies tensors through it). That backend cuts every graph into submissions of at most 100 nodes and at most
+200 GFLOP (less on small AMD GPUs; it says so in its source: "larger submissions can hit a driver timeout"), so a long prompt never becomes one long submission.
+Only one single operation is not cut: the attention (or indexer) step of one layer for one micro-batch, whose cost grows with the batch size times the context. On the test PC
+(RX 9070 XT) there was no event 4101 in 14 days of runs, which included 64k, 128k and 256k contexts at `-ub` 512-2048 and prompts of 228k tokens; a whole 512-token batch at
+228k depth took 1.8 s (Nemotron, stock), more than any one operation in it. A slower GPU (an integrated one, an old card) or a hand-chosen `-ub 4096` or more at
+256k is where it could happen; the cure is a smaller `-ub`, which costs a little prompt speed and nothing else. The launcher's own choice at 256k is `-ub 2048` since 2026-11-03 (a 222k-token prompt ran with no driver reset; it was 512, then 1024, before); pass `-ub 512` yourself if your GPU is slower.
+
+## 7. Fair stock-vs-plugin timings: empty the file cache first
+
+Stock llama-server reads the model through Windows' file cache, so a run after another run of the same model finds it in RAM. The file-view cache uses the
+same file cache (its evicted pages stay there, which is why a warm restart answers sooner than stock). So a run right after another run of
+the same model is warm for both. Timing one side warm and the other cold compares two different things (before the file view the plugin's cold first
+session ran much slower than warm stock).
+Before **every** timed run (stock and plugin alike) push the model out of the cache by reading other big files:
+
+```
+powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target D:\models\model.gguf -Other D:\models\other1.gguf,E:\old-models
+```
+
+It reads other files (files of 100 MB or more in a folder, searched recursively) for 1.15x the machine's RAM, skips the target, and prints GB read and seconds (about 100 GB in 40 s on our test PC, one run).
+No admin rights; it only reads, never writes or deletes. It needs other big files totalling more than your RAM: if they are fewer it says so and exits with 1. For an ABBA series call it between runs.
+
+## 8. Repeat the identity test
+
+`tools\windows_test.ps1`, details in the next section.
+
+## Identity test: trying moe-cache on Windows (experimental: tested, not a supported install)
+
+This section is the identity test (the quick start for using it is above).
+
+State: the plugin has a Windows layer (`src/platform.h`) that cross-compiles with mingw-w64 and passes its platform tests under Wine. It has run on real Windows:
+the MSI Claw (Vulkan iGPU, rounds 1-2 found bugs) and, on 2026-10-26, a Windows 11 desktop (Ryzen 9 7950X + RX 9070 XT, llama.cpp b11669 Vulkan): identity 4/4 on four
+models and the Python launcher (check, server, chat) works; see [platforms](../reference/platforms.md). Speed numbers with the plugin on the desktop are preliminary (RESULTS 54). Everything below is how to repeat the
+test. If you only need to run models on Windows, use a stock llama.cpp release; the plugin only adds a RAM cache for models bigger than RAM.
+
+### What to run
+1. `tools/windows_test.ps1` (PowerShell). It starts an official `llama-server.exe` twice on the same GGUF (stock, then with the plugin DLL through `GGML_BACKEND_PATH`),
+   sends 4 prompts at temperature 0 and prints PASS / FAIL, decode speed, and the plugin's `moe-cache:` log lines.
+2. Use a model that **fits in RAM** for the first test (an 18 GB Qwen3-Coder 30B-A3B Q4_K_M on a 31 GB machine). The script puts each llama-server in a Windows job object capped at RAM minus max(4 GiB, 12.5 %)
+   (`-MemLimitGB N` sets another cap, `-1` none; `MOE_CACHE_MAX_RAM_GB` overrides as in the launcher) and refuses a model file bigger than that cap unless `-AllowBigModel` is given. It is the identity test,
+   not the way to run big models (that is the rest of this page: the launcher watches Windows' memory budget there).
+
+### How to install
+On Linux, before rebooting (the Windows disk is NTFS, the Linux disk is btrfs: Windows cannot read your Linux files):
+- Cross-compile (done already for the kit): `GGML_API=3 ./build.sh --windows` and `./build.sh --windows` (API 2); output `build/win/ggml-moe-cache.dll`.
+- Mount the Windows partition and copy the kit and one model to it (`lsblk -f` shows which partition is NTFS; if it says the volume is hibernated, boot Windows once
+  and shut down with "Shift + Shutdown" or disable Fast Startup).
+- In Windows: download an official llama.cpp release zip from https://github.com/ggml-org/llama.cpp/releases (the `win-cuda` build for an NVIDIA GPU, plus its
+  `cudart` zip) and unpack it. Pick the plugin DLL by API: **api3** for llama.cpp 23b0202a1 or newer ggml 0.26.x, **api2** for ggml 0.25.x. A newer llama.cpp may
+  have a newer backend API; the plugin then prints a clear message and the model loads normally without it.
+
+### How to run
+```
+powershell -ExecutionPolicy Bypass -File windows_test.ps1 -LlamaDir C:\llama -Model D:\moe-cache-kit\qwen3-coder-30b-q4km.gguf -Dll D:\moe-cache-kit\ggml-moe-cache-api3.dll
+```
+Send back: the printed result, `%TEMP%\moe-cache-test\plugin.err.txt`, and the llama.cpp release name. Failure modes to expect and report: the DLL fails to load
+(missing ggml symbol), the plugin refuses on API mismatch (message names both), the plugin loads but the identical-prompt count is below 4/4 (a bug).
+The test turns the cache on at 0.5 GiB (`-CacheGiB`), far below the model, so experts are evicted and read again; it fails if the log has no
+`moe-cache: cache mode` line (before 2026-10-15 it ran the plugin in pass-through mode and a PASS proved little).
+
+### Launcher on Windows (T15, tested on the desktop above)
+The launcher is Python (`bin/moe_cache.py`, standard library only), so it runs on Windows too; there the plugin is always loaded with `GGML_BACKEND_PATH`:
+```
+set MOE_CACHE_LIB=D:\moe-cache-kit\ggml-moe-cache-api3.dll
+python moe-cache\bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --ram 16 --open
+python moe-cache\bin\moe_cache.py check D:\models\model.gguf --llama-server C:\llama\llama-server.exe
+```
+Add `--dry-run` to see the command without starting it. The launcher pins threads to the performance cores of a hybrid CPU on Windows too (`win_cores()`;
+`check` reports "no hybrid cores: no pinning" on a plain CPU such as the 7950X). It finds an AMD or Intel GPU through the registry/`--list-devices`, not only NVIDIA,
+and on an AMD Vulkan GPU it turns llama.cpp's context checkpoints off for Flash-Next (qwen4exp): the AMD Windows driver crashes when one is saved.
+`build.sh --windows` writes `build/win/` or `$BUILD_DIR` (`BUILD_DIR=build/win-api3 GGML_API=3 ./build.sh --windows` keeps both APIs side by side); the launcher picks the DLL that matches the server's ggml
+(it also finds the kit's `ggml-moe-cache-api2.dll` / `-api3.dll` next to `moe_cache.py`).

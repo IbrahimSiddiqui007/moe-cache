@@ -19,9 +19,9 @@ $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
 
 # pinned exactly as in windows.yml (LLAMA_RELEASE, RELEASE-008) and the Granite file of the workflow
-$LlamaRelease = "b12207"
+$LlamaRelease = "b12651"
 $LlamaZipName = "llama-$LlamaRelease-bin-win-cpu-x64.zip"
-$LlamaZipSha = "c1ced7358438e19c2af6debefe188280ba39ac0242352719cd30d931ca8eec73"
+$LlamaZipSha = "b2d794fa7587aba29f654d717ff9b73e31caeabf50a7766692903008bbe0855d"
 $GraniteUrl = "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
 $GraniteSha = "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb"
 
@@ -200,9 +200,9 @@ Invoke-CiStep "bench report tests (no server)" "tests" {
 }
 
 Invoke-CiStep "one-click start (moe-cache-ui.bat finds Python, DLL and llama-server; page answers)" "tests" {
-  $dll3 = Join-Path $Work "build\win-api3"
-  New-Item -ItemType Directory -Force $dll3 | Out-Null
-  Copy-Item $PluginDll (Join-Path $dll3 "ggml-moe-cache.dll") -Force
+  $dll4 = Join-Path $Work "build\win-api4"
+  New-Item -ItemType Directory -Force $dll4 | Out-Null
+  Copy-Item $PluginDll (Join-Path $dll4 "ggml-moe-cache.dll") -Force
   $env:LLAMA_SERVER = $LlamaServer
   [Environment]::SetEnvironmentVariable("MOE_CACHE_LIB", $null, "Process")
   $batOut = Join-Path $RunTemp "ui_bat.out"; $batErr = Join-Path $RunTemp "ui_bat.err"
@@ -221,7 +221,7 @@ Invoke-CiStep "one-click start (moe-cache-ui.bat finds Python, DLL and llama-ser
   taskkill /T /F /PID $p.Id | Out-Null
   Get-Content $batOut, $batErr
   if (-not $sys) { throw "the page did not come up" }
-  if (-not ($sys.plugin -like "*build\win-api3\ggml-moe-cache.dll")) { throw "the .bat did not find the DLL in build\win-api3" }
+  if (-not ($sys.plugin -like "*build\win-api4\ggml-moe-cache.dll")) { throw "the .bat did not find the DLL in build\win-api4" }
   if ($sys.llama_server -ne $env:LLAMA_SERVER) { throw "the page does not use LLAMA_SERVER" }
   # the CI step's --shortcut part is left to GitHub: it writes a Start-menu entry
 }

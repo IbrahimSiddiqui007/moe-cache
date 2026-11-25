@@ -8,7 +8,7 @@
   C    B plus q8_0 KV cache (rank 3, existing --fast=kv)  --ub=4096 --fast=kv        LLAMA_N_OUTPUTS_MAX=1
   D    A plus q8_0 KV cache (separates KV from the buffer) --ub=2048 --fast=kv       -
 
-Order for the chain: A B C D D C B A (two runs per arm, the first and last arm are the pair that shows drift). Keep rules: docs/internal and the report
+Order for the chain: A B C D D C B A (two runs per arm, the first and last arm are the pair that shows drift). Keep rules: the maintainers private notes and the report
 (parts/reports/iq3_prompt_speed.md, stage 2): B keeps if overall prompt >= +20 % and decode within -2 %; C keeps if prompt >= +3 %, decode >= 0 and the quality gate passes.
 
     python3 tools/stage2_arms.py MODEL.gguf [--ctx 65536] [--ram 24]      check the four arms with --dry-run and print the PC lines

@@ -65,4 +65,17 @@ inline size_t hybrid_mib(const char * v) {
     return (!s.empty() && end != s.c_str() && n > 0) ? (size_t) n : 0;
 }
 
+// DECODE-104: MOE_CACHE_GPU_MIN_TOKENS (the smallest batch the GPU takes). 1 is not allowed: 1-token batches on the GPU produce one repeated token
+// (Granite 3.1, T25; 2 and more are fine), so 1 becomes 2 and *clamped says so (the caller prints the warning). Unset keeps `dflt`.
+inline int gpu_min_tokens_value(const char * v, int dflt, bool * clamped = nullptr) {
+    if (clamped) *clamped = false;
+    if (!v) return dflt;
+    int n = atoi(v);
+    if (n == 1) {
+        n = 2;
+        if (clamped) *clamped = true;
+    }
+    return n;
+}
+
 }  // namespace mcenv

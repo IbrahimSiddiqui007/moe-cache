@@ -19,7 +19,7 @@ PRE=(); [ -n "$LIMIT" ] && PRE=(systemd-run --user --scope -q -p MemoryMax=${LIM
 TMP=$(mktemp -d); trap 'kill $SPID 2>/dev/null || true; [ -n "$IDENT_KEEP" ] && mkdir -p "$IDENT_KEEP" && cp "$TMP"/* "$IDENT_KEEP"/ 2>/dev/null; rm -rf "$TMP"' EXIT
 COMMON=(-m "$MODEL" ${DEVICE:+--device $DEVICE} -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -np "$NP" -fa on --load-mode mmap --no-warmup --port $PORT --seed 42)
 # IDENT_EXTRA="--moe-cache-mib 2000": more llama-server arguments for both servers (e.g. llama.cpp's GPU expert cache)
-# IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1 MOE_CACHE_AVX512=1": more environment for the plugin server only
+# IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1": more environment for the plugin server only
 [ -n "$IDENT_EXTRA" ] && COMMON+=($IDENT_EXTRA)
 wait_up() { for i in $(seq 300); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health)" = 200 ] && return 0; sleep 2; done; echo "server did not start"; return 1; }
 if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health"; then echo "port $PORT is already in use (a leftover server?): stop it first, the comparison would be wrong"; exit 1; fi
@@ -45,7 +45,7 @@ if [ -z "$IDENT_ALLOW_INACTIVE" ] && { grep -q "moe-cache: .*plugin disabled" "$
   echo "FAIL: the plugin was not active in the second run (no 'moe-cache: cache mode' line in the server log), so this comparison proves nothing."
   grep "moe-cache:" "$TMP/plugin.log" | tail -5; exit 2
 fi
-[ -n "$MOE_CACHE_STATS" ] && grep "moe-cache:" "$TMP/plugin.log" | tail -6
+[ -n "$MOE_CACHE_STATS" ] && { grep "moe-cache: executor ran" "$TMP/plugin.log"; grep "moe-cache:" "$TMP/plugin.log" | tail -6; }      # the executor line first: later stats lines (DECODE-123 time evict) pushed it out of the tail and identity.yml greps it
 python3 - "$TMP/stock.json" "$TMP/plugin.json" "$N" <<'PY'
 import json, sys
 a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))

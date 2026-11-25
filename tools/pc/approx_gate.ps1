@@ -1,4 +1,4 @@
-# Quality gate on the PC (docs/QUALITY_GATE.md): one part of one level under the PC timed lock (max 30 min).
+# Quality gate on the PC (docs/reference/quality-gate.md): one part of one level under the PC timed lock (max 30 min).
 #   approx_gate.ps1 -Level kv|fast|fewer -Part stockkl|stocktasks|kl|tasks [-Tag NAME] [-Dll PATH]
 # Output: C:\dl\approx\gate_<tag>_<part>\ (logs, gate.json), stdout line "GATE PASS/FAIL" in C:\dl\approx\gate_<tag>_<part>.txt. The stock base logits and the stock
 # task run are made once (stockkl, stocktasks) and kept in C:\dl\approx\gate_cache_<model tag>. NOT CLEAN when the owner's desktop uses VRAM.

@@ -7,9 +7,13 @@ import argparse, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as pk  # noqa: E402
+import moe_cache_catalogue as cat  # noqa: E402
 
 DEFAULT_CTX = {"agents": 65536, "chat": 32768, "docs": 65536}
 ORDER = {"fits": 0, "tight": 1, "no": 2}
+
+
+SHOW_MEASURED_SPEED = cat.SHOW_MEASURED_SPEED     # v0.3.9 ships no speed figures: the one switch is in moe_cache_catalogue.py
 
 
 def headline(k, spec):
@@ -20,6 +24,8 @@ def headline(k, spec):
     if not dec:
         return None
     r, m = dec[0]
+    if not SHOW_MEASURED_SPEED:
+        return {"text": "speed figures follow in a later release", "value": None, "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": None, "note": None}
     text = f"{r['value']:g} tok/s decode" + (f" at context {r['ctx']}" if r.get("ctx") else "") + f" ({m['name'].split(':')[0]}, {r['source']}, {r['date']})" + (f"; {r['note']}" if r.get("covers_fit") is False and r.get("note") else "")
     return {"text": text, "value": r["value"], "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": r["source"], "note": r.get("note")}
 
@@ -53,12 +59,12 @@ def lines(spec, use, ctx, rs, hidden):
         out.append(f"      {r['fit']['reason']}")
     if hidden:
         out.append(f"({hidden} more do not fit this PC: --all lists them)")
-    out.append("pick one for a use: moe_cache.py pick --use agents|chat|docs [--model ID]; the whole catalogue: models.json, docs/MODELS.md")
+    out.append("pick one for a use: moe_cache.py pick --use agents|chat|docs [--model ID]; the whole catalogue: models.json, docs/reference/models.md")
     return out
 
 
 def models(argv, spec=None):
-    ap = argparse.ArgumentParser(prog="moe_cache.py models", description="the model catalogue for this PC: fits / tight / no, size, downloaded or not, measured speed")
+    ap = argparse.ArgumentParser(prog="moe_cache.py models", description="the model catalogue for this PC: fits / tight / no, size, downloaded or not")
     ap.add_argument("--use", choices=list(pk.USES), default="agents", help="what the verdicts are for (default agents: coding agents)")
     ap.add_argument("--ctx", type=int, help="context in tokens (default: 65536 for agents and docs, 32768 for chat)")
     ap.add_argument("--all", action="store_true", help="also the models that do not fit this PC")

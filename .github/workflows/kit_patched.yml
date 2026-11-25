@@ -1,0 +1,92 @@
+# The Windows kit exactly as release.yml builds it: OUR llama.cpp build (llama_patched.yml, commit b12651, ggml 1.0, backend API 4) in llama\ plus both plugin DLLs;
+# then the kit as a user gets it, on a Windows runner: no --llama-server, no MOE_CACHE_LIB; the bundled llama-server must report ggml 1.0 and the launcher must pick the
+# API 4 DLL (owner 2026-11-23: the CI kit of windows.yml carries the OFFICIAL build, so it cannot show the patched one). Nothing is published; the zip is an artifact for the PC check.
+# Runs on a push to ci/kit-patched or ci/kit-patched-*; manual dispatch needs the file on main.
+name: kit-patched
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/kit-patched, 'ci/kit-patched-**']
+
+permissions:
+  contents: read
+
+jobs:
+  llama-patched:
+    uses: ./.github/workflows/llama_patched.yml
+
+  kit:
+    needs: llama-patched
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: mingw-w64 (UCRT when available, as release.yml)
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update -q
+          if sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
+            echo "MINGW_CXX=x86_64-w64-mingw32ucrt-g++" >> "$GITHUB_ENV"
+          else
+            sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+            echo "MINGW_CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llama-patched-win-x64-zip
+          path: ${{ runner.temp }}/llama-patched-dl
+      - name: Unpack it (sha256 checked) and point make_windows_kit.sh at it
+        run: |
+          cd "$RUNNER_TEMP/llama-patched-dl"
+          tr -d '\r' < llama-patched-win-x64.zip.sha256 | sha256sum -c -
+          unzip -q llama-patched-win-x64.zip -d unz
+          echo "LLAMA_PATCHED_WIN_DIR=$RUNNER_TEMP/llama-patched-dl/unz/llama-patched-win-x64" >> "$GITHUB_ENV"
+      - name: Build the kit
+        run: |
+          tools/make_windows_kit.sh 0.0.0-ci
+          z=dist/moe-cache-v0.0.0-ci-windows-x64.zip
+          unzip -p "$z" "moe-cache-v0.0.0-ci-windows-x64/llama/PATCHES-moe-cache.txt" | tr -d '\r' | grep -Fx "llama.cpp b12651 + moe-cache patches $(cd patches/llama.cpp && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -) built in, switches all off" || { echo "FAIL: the kit's llama has no patched-build note"; exit 1; }
+          unzip -l "$z" | grep -E 'llama/(llama-server\.exe|ggml-vulkan\.dll)' | wc -l | grep -qx 2 || { echo "FAIL: llama-server.exe / ggml-vulkan.dll missing"; exit 1; }
+          unzip -l "$z" | grep -q 'llama/llama-fit-params\.exe' || { echo "FAIL: llama-fit-params.exe missing from the kit"; exit 1; }
+          unzip -l "$z" | grep -q 'ggml-moe-cache-api4.dll' || { echo "FAIL: no api4 DLL in the kit"; exit 1; }
+          sha256sum "$z"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: win-kit-patched
+          path: dist/moe-cache-v0.0.0-ci-windows-x64.zip
+
+  kit-as-a-user:
+    needs: kit
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: win-kit-patched
+          path: kitzip
+      - name: The small MoE model (sha256 pinned)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force dl | Out-Null
+          & tools\ci\fetch.ps1 -Url "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -Out dl\granite.gguf -Sha256 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb
+          if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for granite.gguf" }
+      - name: The kit as a user gets it - the bundled llama-server is ggml 1.0 and the launcher picks the API 4 DLL
+        run: |
+          Expand-Archive kitzip\moe-cache-v0.0.0-ci-windows-x64.zip -DestinationPath $env:RUNNER_TEMP\kit
+          $k = "$env:RUNNER_TEMP\kit\moe-cache-v0.0.0-ci-windows-x64"
+          Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
+          Remove-Item Env:LLAMA_SERVER -ErrorAction SilentlyContinue
+          Push-Location $k
+          python bin\moe_cache.py check "$env:GITHUB_WORKSPACE\dl\granite.gguf" --run 2>&1 | Tee-Object $env:RUNNER_TEMP\kit_check.txt
+          Pop-Location
+          $t = Get-Content $env:RUNNER_TEMP\kit_check.txt -Raw
+          if ($t -notmatch [regex]::Escape("llama\llama-server.exe")) { throw "kit: check did not use the bundled llama\llama-server.exe" }
+          if ($t -notmatch "llama-server\s+commit f5e6915c2") { throw "kit: the bundled llama-server is not commit f5e6915c2 (the old official build?)" }
+          if ($t -notmatch "moe-cache\s+\S+, plugin ggml-moe-cache-api4\.dll") { throw "kit: the launcher did not pick the API 4 plugin" }
+          if ($t -notmatch "ggml-moe-cache-api4.dll") { throw "kit: check did not pick the API 4 DLL" }
+          if ($t -match "ggml-moe-cache-api3.dll") { throw "kit: check names the API 3 DLL" }
+          if ($t -notmatch "plugin loads .*yes") { throw "kit: the plugin does not load" }
+          if ($t -notmatch "cache runs .*yes") { throw "kit: the cache did not compute" }

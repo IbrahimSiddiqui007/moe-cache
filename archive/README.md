@@ -5,6 +5,16 @@ Code that lost or gained nothing in a paired run leaves the program and stays he
 ## Restore
 Plugin: `git apply archive/plugin/NAME.patch` from the top of the repo. llama.cpp: copy the file back to `patches/llama.cpp/`. Later changes to the same lines may need a small manual fix.
 
+## Branches kept as git tags
+
+Branches that lost or were only for a test are kept as tags so the commits stay reachable after the branch is deleted. Restore one with `git checkout -b NAME TAG`.
+
+| Tag | Was the branch | What it holds | Why it was not merged |
+|---|---|---|---|
+| `archive/block-prefetch` | `claude/block-prefetch-52b3eb` | next-block weight prefetch into a second GPU buffer by a helper thread, with the design note and laptop results | identity held, speed was not readable on the laptop; the helper-thread idea was dropped |
+| `archive/r02-prefetch` | `claude/exec-prefetch-r02` | software prefetch in the CPU executor (`MOE_CACHE_EXEC_PREFETCH`, off by default) | lost on the laptop |
+| `archive/cache623-without-1541b0e` | `ci/cache623-without-1541b0e` | a CI test branch: the same code with only one hunk of an older commit reverted, to A/B a cache-eviction change | test only, never for merging |
+
 ## What is here
 Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 2026-11-01, one baseline against each arm in mirrored order. Baseline 252.1 / 251.9 tok/s prompt, decode about 27.7. Keep-or-drop runs, not chart numbers.
 
@@ -46,7 +56,7 @@ Layer-wise prefill, port to b12064 (2026-11-06, PREFILL-638): `llama.cpp/0050-la
 | llama.cpp/0042-n-outputs-max.patch | `LLAMA_N_OUTPUTS_MAX=8` | at 39 CPU layers 585 / 598 off, 606 / 590 on | inside noise | VRAM is short at 128k+ |
 | llama.cpp/0002-server-adaptive-draft-length.patch | `LLAMA_SPEC_ADAPT` | MTP decode 16.35 both | no gain | another draft model |
 | llama.cpp/0003-vulkan-mmid-vec-max-tokens.patch | `GGML_VK_MMID_VEC_MAX_TOKENS` | 16.45 vs 16.2-16.35 | no gain | - |
-| plugin/decode_tier.patch (design: docs/internal/DECODE_TIER_DESIGN.md; also deletes `src/mc_tier.h`, `tests/tier_test.cpp`) | `MOE_CACHE_DECODE_TIER=38,39` (+ `_CHECK`, `_KEEP_MIB`) | 2026-11-03, 64k ctx, 34k prompt, restarted PC: check mode exact (0 groups above 0.05); decode 26.71 / 26.22 vs 26.72 / 26.65, prompt 311 / 313 vs 488 / 585 | kill check: no decode gain, prompt -41 % (letting llama.cpp place 2 more layers gives +15 %: the gain needs the loader, see the engine re-check) | a llama.cpp patch keeps a decode-only GPU copy of layers |
+| plugin/decode_tier.patch (design: the maintainers' private note DECODE_TIER_DESIGN; also deletes `src/mc_tier.h`, `tests/tier_test.cpp`) | `MOE_CACHE_DECODE_TIER=38,39` (+ `_CHECK`, `_KEEP_MIB`) | 2026-11-03, 64k ctx, 34k prompt, restarted PC: check mode exact (0 groups above 0.05); decode 26.71 / 26.22 vs 26.72 / 26.65, prompt 311 / 313 vs 488 / 585 | kill check: no decode gain, prompt -41 % (letting llama.cpp place 2 more layers gives +15 %: the gain needs the loader, see the engine re-check) | a llama.cpp patch keeps a decode-only GPU copy of layers |
 
 ### PC 2026-11-05 (IQ3_XXS, 64k prompt, timers off, A B B A + C + R)
 
@@ -120,3 +130,5 @@ Restore: `git apply archive/plugin/sched_tuning.patch`. The launcher still accep
 
 ## Notes on 0001
 `ggml_vk_wait_for_fence` waits for the last 20 % of a graph by polling `getFenceStatus` with 1000 `pause` instructions between polls. The patch made the count an env value (N blocks of 10 pauses, unset = 100 = stock). Only the poll interval changes, so output cannot change. Tested at N = 10.
+
+| plugin/lookahead_avx512_removal_CLEANUP-1198.patch | `MOE_CACHE_LOOKAHEAD*`, `MOE_CACHE_AVX512` (restore: `git apply -R archive/plugin/lookahead_avx512_removal_CLEANUP-1198.patch`) | lookahead prefetch -25 / -12 / -74 % decode on three models; AVX-512 IQ kernels 0.60-0.77x of llama.cpp on a Zen 4 (Intel AVX-512 never measured); both off by default, removed 2026-11-23 |

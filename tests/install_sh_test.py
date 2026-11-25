@@ -3,7 +3,7 @@
 Checks: a wrong hash is refused and installs nothing, a good one installs, a second run is idempotent, an update replaces the old version,
 --uninstall removes exactly what was added (a file of the user's in the same folders stays). Linux only.
    python3 tests/install_sh_test.py"""
-import hashlib, io, os, shutil, subprocess, sys, tarfile, tempfile
+import hashlib, io, os, re, shutil, subprocess, sys, tarfile, tempfile
 
 if not sys.platform.startswith("linux"):
     print("install.sh test: Linux only, skipped"); sys.exit(0)
@@ -40,9 +40,12 @@ def release(ver, tamper=False):
     """A release folder: moe-cache-v<ver>-ggml0.26-linux-x86_64.tar.gz with bin/moe_cache.py, and SHA256SUMS (wrong hash when tamper)."""
     d = os.path.join(T, "rel-" + ver + ("-bad" if tamper else "")); os.makedirs(d, exist_ok=True)
     n = f"moe-cache-v{ver}-ggml0.26-linux-x86_64"
-    py = f'import sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n'.encode()
+    py = f'# own_cache_base (the real kit reads the flag)\nimport sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n'.encode()
     with tarfile.open(os.path.join(d, n + ".tar.gz"), "w:gz") as tf:
         ti = tarfile.TarInfo(n + "/bin/moe_cache.py"); ti.size = len(py); ti.mode = 0o755; tf.addfile(ti, io.BytesIO(py))
+        so = tarfile.TarInfo(n + "/llama/libllama.so.0.8.0"); so.size = 3; tf.addfile(so, io.BytesIO(b"elf"))      # RELEASE-686: the real tarball ships llama.cpp's libraries with symlinks
+        for ln_, tg in (("libllama.so.0", "libllama.so.0.8.0"), ("libllama.so", "libllama.so.0")):
+            sl = tarfile.TarInfo(n + "/llama/" + ln_); sl.type = tarfile.SYMTYPE; sl.linkname = tg; tf.addfile(sl)
     h = hashlib.sha256(open(os.path.join(d, n + ".tar.gz"), "rb").read()).hexdigest()
     open(os.path.join(d, "SHA256SUMS"), "w").write(("0" * 64 if tamper else h) + f"  {n}.tar.gz\n" + "1" * 64 + "  other-file.tar.gz\n")
     return d
@@ -63,6 +66,21 @@ check(not os.path.exists(prefix) and not os.path.exists(shim), "...and nothing w
 
 rc, out = run(release("9.9.1"), "9.9.1", "--dry-run")
 check(rc == 0 and "would download" in out and not os.path.exists(prefix), "--dry-run prints the plan and installs nothing")
+
+# ---- RELEASE-686 (2026-11-12): hardening: the tag shape, a plain-http mirror, a link inside the tarball
+rc, out = run(release("9.9.1"), "9.9.1", MOE_CACHE_REF="v9.9.1/../../x")
+check(rc != 0 and "does not look like a release tag" in out and not os.path.exists(prefix), "MOE_CACHE_REF with a path in it is refused")
+rc, out = run(release("9.9.1"), "9.9.1", MOE_CACHE_BASE_URL="http://example.invalid/mirror")
+check(rc != 0 and "not https" in out and not os.path.exists(prefix), "a plain-http mirror is refused")
+rc, out = run(release("9.9.1"), "9.9.1", MOE_CACHE_BASE_URL="http://localhost:80@example.invalid/mirror")
+check(rc != 0 and "user part" in out and not os.path.exists(prefix), "a plain-http address with a user part (localhost:80@evil) is refused")
+dl = release("9.9.3"); nl = "moe-cache-v9.9.3-ggml0.26-linux-x86_64"
+with tarfile.open(os.path.join(dl, nl + ".tar.gz"), "a:") if False else tarfile.open(os.path.join(dl, nl + ".tar.gz"), "w:gz") as tf:
+    py = b'print("x")\n'; ti = tarfile.TarInfo(nl + "/bin/moe_cache.py"); ti.size = len(py); ti.mode = 0o755; tf.addfile(ti, io.BytesIO(py))
+    ln = tarfile.TarInfo(nl + "/bin/evil"); ln.type = tarfile.SYMTYPE; ln.linkname = "/etc/passwd"; tf.addfile(ln)
+open(os.path.join(dl, "SHA256SUMS"), "w").write(hashlib.sha256(open(os.path.join(dl, nl + ".tar.gz"), "rb").read()).hexdigest() + f"  {nl}.tar.gz\n")
+rc, out = run(dl, "9.9.3", MOE_CACHE_ALLOW_UNVERIFIED="1")
+check(rc != 0 and "link to a file name beside it" in out and not os.path.exists(prefix), "a tarball with a symlink member is refused before it is unpacked")
 
 # ---- RELEASE-686: the build attestation. Without it the install stops unless the user asked for it; the sha256 is checked either way.
 rA = release("9.9.1")
@@ -117,6 +135,43 @@ check(os.listdir(os.path.join(prefix, "versions")) == ["moe-cache-v9.9.1-ggml0.2
 rc, out = run(release("9.9.2"), "9.9.2")
 check(rc == 0 and "installed: moe-cache 9.9.2 (was 9.9.1)" in out, "update in place says what it replaced")
 check(os.listdir(os.path.join(prefix, "versions")) == ["moe-cache-v9.9.2-ggml0.26-linux-x86_64"], "...the old version folder is gone")
+# ---- LAUNCHER-1222 item 5: a new install under --prefix keeps its own launcher cache; an install without the flag keeps what it had
+rec_path = os.path.join(prefix, ".installed")
+check("own_cache=1" in open(rec_path).read() and f"{prefix}/cache/moe-cache" in out, "a new install under --prefix records own_cache=1 and says where the cache is")
+check("own_cache=1" in open(rec_path).read(), "...the update kept it")
+open(rec_path, "w").write("".join(l for l in open(rec_path) if not l.startswith("own_cache=")))      # what an install made before the flag looks like
+rc, out = run(release("9.9.2"), "9.9.2")
+check(rc == 0 and "own_cache=0" in open(rec_path).read() and "cache:   " in out and "/cache/moe-cache   (this install" not in out, "an install without the flag stays on the user cache after an update (nothing moves)")
+
+# ---- LAUNCHER-1222 item 5 (critic J): a new install at the DEFAULT prefix is not isolated: no --prefix at all, and --prefix naming the default folder, both record own_cache=0
+def run_default(pfx, xdg=None):
+    h = tempfile.mkdtemp(dir=T); bd = os.path.join(h, "bin"); os.makedirs(bd)
+    env = dict(os.environ, MOE_CACHE_BASE_URL="file://" + release("9.9.2"), MOE_CACHE_REF="v9.9.2", HOME=h, **GOOD_ENV); env.pop("XDG_DATA_HOME", None)
+    if xdg: env["XDG_DATA_HOME"] = xdg
+    r = subprocess.run(["sh", inst, *pfx(h), "--bin-dir", bd, "--no-apt"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=120)
+    return h, r.returncode, r.stdout + r.stderr
+h, rc, out = run_default(lambda h: [])
+rec = os.path.join(h, ".local", "share", "moe-cache", ".installed")
+check(rc == 0 and os.path.exists(rec) and "own_cache=0" in open(rec).read() and "/cache/moe-cache   (this install" not in out, "no --prefix: the default folder, own_cache=0, the user cache is named")
+h, rc, out = run_default(lambda h: ["--prefix", os.path.join(h, ".local", "share", "moe-cache")])
+rec = os.path.join(h, ".local", "share", "moe-cache", ".installed")
+check(rc == 0 and os.path.exists(rec) and "own_cache=0" in open(rec).read(), "--prefix naming the default folder: own_cache=0")
+xd = tempfile.mkdtemp(dir=T)
+h, rc, out = run_default(lambda h: ["--prefix", os.path.join(xd, "moe-cache")], xdg=xd)
+check(rc == 0 and "own_cache=0" in open(os.path.join(xd, "moe-cache", ".installed")).read(), "--prefix naming the XDG_DATA_HOME default folder: own_cache=0")
+
+# LAUNCHER-1222 critic G (Linux half): the "cache:" line names the folder the launcher reads: XDG_CACHE_HOME when set, else ~/.cache (bin/moe_cache.py CACHE_DIR)
+xc = tempfile.mkdtemp(dir=T)
+_saved_xch = os.environ.pop("XDG_CACHE_HOME", None)
+try:
+    os.environ["XDG_CACHE_HOME"] = xc
+    h, rc, out = run_default(lambda h: [])
+    os.environ.pop("XDG_CACHE_HOME")
+    check(rc == 0 and f"cache:   {xc}/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME set: the cache line names $XDG_CACHE_HOME/moe-cache")
+    h, rc, out = run_default(lambda h: [])
+    check(rc == 0 and "cache:   ~/.cache/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME unset: the cache line names ~/.cache/moe-cache")
+finally:
+    if _saved_xch is not None: os.environ["XDG_CACHE_HOME"] = _saved_xch
 
 # ---- failure midway (AUD-049): a failed update keeps the old install, a failed first install leaves nothing
 def state():
@@ -190,6 +245,30 @@ rc, out = run2(r3, "9.9.3")
 check(rc == 0 and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "an update does not delete folders in versions/ that are not ours")
 rc, out = subprocess.run(["sh", inst, "--prefix", sp, "--uninstall"], capture_output=True, text=True, env=dict(os.environ, HOME=os.path.join(T, "home"), MOE_CACHE_REF="v9.9.3", **GOOD_ENV), stdin=subprocess.DEVNULL).returncode, ""
 check(rc == 0 and not os.path.exists(shim2) and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "uninstall without --bin-dir removes the command the install recorded, and still leaves folders that are not ours")
+
+# PACKAGING-1193: the commit install.sh builds by default (--build, no LLAMA_SHA) is the llama.cpp commit the release kits bundle (llama_patched.yml LLAMA_COMMIT);
+# the old default 7fe450e19 had no --moe-cache-mib, so --gpu-cache failed for users who built from source
+_sh = open(os.path.join(HERE, "install.sh")).read()
+_wf = open(os.path.join(HERE, ".github", "workflows", "llama_patched.yml")).read()
+_m1, _m2 = re.search(r'^LLAMA_SHA="\$\{LLAMA_SHA:-([0-9a-f]{40})\}"', _sh, re.M), re.search(r"^\s+LLAMA_COMMIT: ([0-9a-f]{40})\b", _wf, re.M)
+check(bool(_m1 and _m2 and _m1.group(1) == _m2.group(1)), f"install.sh's default build commit equals the bundled pin ({_m1 and _m1.group(1)[:9]} vs {_m2 and _m2.group(1)[:9]})")
+check(bool(_m1) and re.search(r"case \"\$LLAMA_SHA\" in .*\b" + _m1.group(1)[:9] + r"\*\) export GGML_API=4", _sh) is not None, "the default build commit selects GGML_API=4 (the bundled build's backend API)")
+
+rc, out = run2(r3, "9.9.3")
+# ---- PACKAGING-832 item 16: `curl ... | bash` has $0 = "bash": the script must not take the folder you stand in for its own folder (a build.sh there is not ours)
+mine = os.path.join(T, "my-checkout"); os.makedirs(os.path.join(mine, "src"))
+open(os.path.join(mine, "build.sh"), "w").write("#!/bin/sh\necho MY-OWN-BUILD-RAN\n"); os.chmod(os.path.join(mine, "build.sh"), 0o755)
+env16 = dict(os.environ, MOE_CACHE_REF="v9.9.3", HOME=os.path.join(T, "home"), **GOOD_ENV)
+r = subprocess.run(["bash", "-s", "--", "--prefix", sp, "--bin-dir", sb, "--no-apt", "--dry-run"], stdin=open(inst), capture_output=True, text=True, env=env16, cwd=mine, timeout=60)
+check(r.returncode == 0 and "release install into" in r.stdout and "MY-OWN-BUILD-RAN" not in r.stdout + r.stderr, f"piped into bash from a folder with a build.sh: still the release install, the folder's build.sh is not used ({(r.stdout + r.stderr).strip()[-120:]})")
+# ---- item 19: a re-run of the same version only refreshes the command; --force unpacks again and repairs a damaged tree
+rc, out = run2(r3, "9.9.3")      # the uninstall above removed it
+kit = os.path.join(sp, "versions", "moe-cache-v9.9.3-ggml0.26-linux-x86_64", "bin", "moe_cache.py"); good = open(kit).read()
+open(kit, "w").write("# damaged\n")
+rc, out = run2(r3, "9.9.3"); check(rc == 0 and "already unpacked" in out and open(kit).read() == "# damaged\n", "same version again: only the command is refreshed (a damaged tree stays damaged)")
+rc, out = run2(r3, "9.9.3", "--force"); check(rc == 0 and "already unpacked" not in out and open(kit).read() == good, "--force unpacks the release again and repairs the damaged tree")
+# ---- item 9: an https download address keeps curl on https through redirects
+check("--proto '=https' --proto-redir '=https'" in _sh and 'case "$REL_BASE" in https://*) CURLP=' in _sh, "curl is told to stay on https (--proto / --proto-redir) for an https download address")
 
 check(subprocess.run(["bash", "-n", os.path.join(HERE, "install.sh")]).returncode == 0, "install.sh parses")
 print("FAIL" if fails else "PASS", f"({len(fails)} failed)"); sys.exit(1 if fails else 0)

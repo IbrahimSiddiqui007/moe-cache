@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The model catalogue (models.json): its shape and sources, the one fit rule (8/16/24 GB GPUs x 16/32/64 GB RAM x 32k/64k/256k context), pick and launch
-reading it, `moe_cache.py models`, and that docs/MODELS.md is what tools/gen_models_md.py makes from it. No model, no llama-server, no network.
+reading it, `moe_cache.py models`, and that docs/reference/models.md is what tools/gen_models_md.py makes from it. No model, no llama-server, no network.
    python3 tests/models_catalogue_test.py"""
 import contextlib, io, json, os, re, subprocess, sys, tempfile
 
@@ -115,7 +115,7 @@ os.makedirs(os.path.dirname(here)); open(here, "wb").write(b"x")
 spec = machine(32, 16, local={"qwen3.6-35b": here})
 txt = run_models([], spec)
 check("FITS  bolt" in txt and "downloaded: " + here in txt and "not downloaded" in txt, "models: verdict, downloaded path and 'not downloaded'")
-check("RESULTS 65" in txt and "27.9 tok/s decode" in txt and "2026-10-28" in txt, "models: the measured speed comes with its source and date")
+check("speed figures follow in a later release" in txt and "tok/s" not in txt, "models: v0.3.9 shows no speed figure (SHOW_MEASURED_SPEED False)")
 check("glm-5.3" not in txt and "do not fit this PC" in txt, "models: what does not fit is hidden and counted")
 check("glm-5.3" in run_models(["--all"], spec), "models --all: lists the models that do not fit")
 rows = json.loads(run_models(["--json", "--all"], spec))
@@ -132,7 +132,7 @@ r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "
 check("moe_cache.py models" in r.stdout + r.stderr, "moe_cache.py help lists models")
 
 # ---- the doc and the tools ----
-check(gen.main(["--check"]) == 0, "docs/MODELS.md is what tools/gen_models_md.py makes from models.json")
+check(gen.main(["--check"]) == 0, "docs/reference/models.md is what tools/gen_models_md.py makes from models.json")
 changed = json.loads(json.dumps(doc)); changed["models"][0]["quant"] = "Q9_X"
 check(gen.apply(open(gen.DOC, encoding="utf-8").read(), gen.render(changed)) != open(gen.DOC, encoding="utf-8").read(), "the doc check notices a changed JSON")
 src = open(os.path.join(HERE, "tools", "check_model_links.py"), encoding="utf-8").read()

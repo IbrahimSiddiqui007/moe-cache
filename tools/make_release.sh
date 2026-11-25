@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build the release tarball: tools/make_release.sh VERSION   (e.g. 0.1.2). Output: dist/moe-cache-vVERSION-linux-x86_64.tar.gz (llama.cpp 7fe450e19, ggml 0.25.1) and dist/moe-cache-vVERSION-ggml0.26-linux-x86_64.tar.gz (llama.cpp 23b0202a1, ggml 0.26.0) + SHA256SUMS
+# Build the release tarball: tools/make_release.sh VERSION   (e.g. 0.1.2). Output: dist/moe-cache-vVERSION-linux-x86_64.tar.gz (ggml 0.25.1, API 2, built against llama.cpp 7fe450e19; bundles no llama-server) and dist/moe-cache-vVERSION-ggml0.26-linux-x86_64.tar.gz (ggml API 3; bundles llama.cpp b12207 = ggml 0.29) + SHA256SUMS
 # The tarball is always built from a clean export of the last commit (git archive HEAD), never from the working tree, so untracked or
 # uncommitted files cannot end up in a release. Uncommitted changes are ignored (a warning is printed).
-set -e
+set -eo pipefail
 cd "$(dirname "$0")/.."
 V="$1"; [ -n "$V" ] || { echo "usage: tools/make_release.sh VERSION"; exit 1; }
 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?$ ]] || { echo "VERSION must look like 0.1.2 (got '$V')"; exit 1; }
@@ -11,31 +11,39 @@ if [ -z "$MOE_CACHE_RELEASE_EXPORT" ]; then
   [ -z "$(git status --porcelain --untracked-files=no)" ] || echo "warning: uncommitted changes are NOT part of this release (only the last commit is)"
   X="$(mktemp -d)"; trap 'rm -rf "$X"' EXIT
   git archive HEAD | tar -x -C "$X"
+  # the export has no .git: the commit label and the archive date are taken HERE and handed down (0.3.9 draft shipped an empty BUILD_COMMIT and mtime -2^63)
+  MOE_CACHE_BUILD_COMMIT="$(git rev-parse --short=9 HEAD)$([ -n "$(git status --porcelain --untracked-files=no)" ] && echo -dirty)" \
+  SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}" \
   MOE_CACHE_RELEASE_EXPORT=1 "$X/tools/make_release.sh" "$V"
   mkdir -p dist; cp "$X"/dist/moe-cache-v"$V"*-linux-x86_64.tar.gz "$X"/dist/SHA256SUMS dist/
   echo "built from commit $(git rev-parse --short HEAD) -> dist/"; ( cd dist && cat SHA256SUMS )
-  echo "note: SHA256SUMS detects corruption only. Releases built by the GitHub workflow also carry a build attestation (see docs/SECURITY.md)."
+  echo "note: SHA256SUMS detects corruption only. Releases built by the GitHub workflow also carry a build attestation (see docs/reference/security.md)."
   exit 0
 fi
-# two builds: ggml 0.25.1 (backend API 2, llama.cpp 7fe450e19; the file name without suffix) and ggml 0.26.0 (API 3, llama.cpp 23b0202a1; suffix -ggml0.26)
+[[ "${MOE_CACHE_BUILD_COMMIT:-}" =~ ^[0-9a-f]{9}(-dirty)?$ ]] || { echo "FAIL: MOE_CACHE_BUILD_COMMIT not set by the outer run (got '${MOE_CACHE_BUILD_COMMIT:-}')"; exit 1; }
+[[ "${SOURCE_DATE_EPOCH:-}" =~ ^[0-9]+$ ]] || { echo "FAIL: SOURCE_DATE_EPOCH not set by the outer run (got '${SOURCE_DATE_EPOCH:-}')"; exit 1; }
+# two builds: ggml 0.25.1 (backend API 2, llama.cpp 7fe450e19; the file name without suffix) and ggml 0.26.0 (API 3; suffix -ggml0.26; bundles llama.cpp b12207, see below)
 rm -f dist/SHA256SUMS
 for API in 2 3; do
   if [ $API = 3 ]; then SUF=-ggml0.26; export GGML_API=3; else SUF=; unset GGML_API; fi
   ./build.sh --portable
+  if [ $API = 3 ]; then GGML_API=4 BUILD_DIR=build-api4 ./build.sh --portable; fi   # ggml 1.0 headers (backend API 4 tag): the bundled llama.cpp b12651 is ggml 1.0, an API-3 plugin must not be its only match
   N=moe-cache-v$V$SUF-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
-  cp -r bin planner ui tests tools profiles docs LICENSE README.md CHANGELOG.md models.json build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; tools/release_copy_src.sh dist/$N/src
+  cp -r bin planner ui tests tools profiles docs LICENSE README.md CHANGELOG.md models.json build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; if [ $API = 3 ]; then mkdir -p dist/$N/build-api4; cp build-api4/libggml-moe-cache.so dist/$N/build-api4/; fi; tools/release_copy_src.sh dist/$N/src
+  echo "$MOE_CACHE_BUILD_COMMIT" > dist/$N/BUILD_COMMIT     # the kit has no .git: the launcher's --version and the check header read this (LAUNCHER-1281)
   rm -rf dist/$N/docs/internal dist/$N/tools/make_release.sh dist/$N/tools/release_copy_src.sh dist/$N/tools/bundle_llama_linux.sh dist/$N/tools/bundle_llama_patched.sh dist/$N/tools/ci
-  # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12207 = ggml 0.29 = API 3), unmodified, sha256-checked
+  # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12651 = ggml 1.0, our API 4 build; b12207 = ggml 0.29 = API 3 before), unmodified, sha256-checked
   # against the release asset, in llama/ (the launcher finds it); the API-2 tarball (llama.cpp 7fe450e19) has no official build to bundle: it needs your own.
   # MOE_CACHE_RELEASE_NO_LLAMA=1 builds the old tarball without it.
   # LLAMA_PATCHED_LINUX_DIR=DIR (the release workflow sets it: the unpacked llama_patched.yml build) bundles OUR patched build of the same pin instead
   # (tools/bundle_llama_patched.sh; every patch built in and off). Unset = the official build, as before; the workflow's `llama_build: official` input unsets it.
   if [ $API = 3 ] && [ "${MOE_CACHE_RELEASE_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_LINUX_DIR:-}" ]; then
-    tools/bundle_llama_patched.sh dist/$N "$LLAMA_PATCHED_LINUX_DIR" linux b12207
+    tools/bundle_llama_patched.sh dist/$N "$LLAMA_PATCHED_LINUX_DIR" linux b12651
   elif [ $API = 3 ] && [ "${MOE_CACHE_RELEASE_NO_LLAMA:-0}" != 1 ]; then
-    tools/bundle_llama_linux.sh dist/$N b12207 llama-b12207-bin-ubuntu-vulkan-x64.tar.gz 178a5d6a940d74a24ee359dc8af68ce6b2fccb99150c1bdd458dbec640653c06 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
+    tools/bundle_llama_linux.sh dist/$N b12651 llama-b12651-bin-ubuntu-vulkan-x64.tar.gz 0bbcf2093f15c64c8a9bf54b809c9b2c812b982992dc2fbc9b36720c1d32cf13 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
   fi
   [ -f dist/$N/ui/index.html ] || { echo "FAIL: ui/index.html missing from $N (the control page needs it)"; exit 1; }
-  tar -C dist -czf dist/$N.tar.gz $N
+  # reproducible archive layout (PACKAGING-828; two builds of one commit are not proven byte-identical): sorted names, owner 0, the commit's date, no name or time in the gzip header
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$SOURCE_DATE_EPOCH" -C dist -cf - $N | gzip -n -9 > dist/$N.tar.gz
   ( cd dist && sha256sum $N.tar.gz >> SHA256SUMS )
 done

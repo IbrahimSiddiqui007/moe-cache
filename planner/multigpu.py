@@ -1,4 +1,4 @@
-"""Placement for more than one GPU (PROTOTYPE, avenue 2 of handover/parts/multi_model_gpu_20261030.md; not wired into the launcher yet).
+"""Placement for more than one GPU (PROTOTYPE, avenue 2 of the private multi-model GPU notes; not wired into the launcher yet).
 
 Why: llama.cpp assigns layers to devices by index, in the order of its device list, in proportion to -ts (default: each device's free memory), and
 `--n-cpu-moe N` keeps the experts of layers 0..N-1 on the CPU. The launcher plans with ONE card's free memory and passes neither -ts nor --device, so
@@ -23,11 +23,12 @@ MIB = 1048576
 
 def fill(n_layers, n_cpu_moe, light, heavy, caps):
     """Counts of slots (layers 0..n_layers-1 and the output slot n_layers) per card, filled in card order; None when they do not fit.
-    light = bytes of a slot whose experts are on the CPU (also the output slot), heavy = bytes of a slot with its experts on the card."""
+    light = bytes of a slot whose experts are on the CPU (also the output slot), heavy = bytes of a slot with its experts on the card (one number, or a list with one
+    number per layer: the real expert sizes differ between layers, and gguf_plan.gpu_expert_bytes counts them)."""
     counts = [0] * len(caps)
     dev, used = 0, 0.0
     for i in range(n_layers + 1):
-        w = heavy if (i < n_layers and i >= n_cpu_moe) else light
+        w = (heavy[i] if isinstance(heavy, (list, tuple)) else heavy) if (i < n_layers and i >= n_cpu_moe) else light
         while dev < len(caps) and used + w > caps[dev]:
             dev, used = dev + 1, 0.0
         if dev >= len(caps):
@@ -50,12 +51,14 @@ def plan(path, ctx, frees, kv_q8=False, ub=None, reserve_gb=0.5, layout=None, kv
     kv = kv if kv is not None else gguf_plan._kv_or_flat(path, ctx, kv_q8)
     # 1) the answer for one pool of memory: what tune() gives for the sum, with each extra card paying its own compute buffer + reserve
     probe = gguf_plan.tune(path, ctx, free=max(frees), kv_q8=kv_q8, want_cache=False, reserve_gb=reserve_gb, ub=ub) if layout is None else {"ub": ub or 1024, "compute_mib": compute_mib or 400}
-    buf = (compute_mib if compute_mib is not None else probe["compute_mib"]) * MIB
+    buf = (compute_mib if compute_mib is not None else probe["compute_mib"]) * MIB      # bytes
     u = probe["ub"]
-    block = (1.6 if u > 1024 else 1.35) * e + (160 + 256) * MIB          # the plugin's long-prompt block: same formula as tune(); on the first card only
-    caps = [f - buf - reserve_gb * 1e9 - (block if k == 0 else 0) for k, f in enumerate(frees)]
-    light = (lay["other_bytes"] + kv) / (L + 1)                          # the same fixed part tune() counts, spread over the slots
-    heavy = light + e
+    block = gguf_plan.long_prompt_block_bytes(lay, u)                    # the plugin's long-prompt block: tune()'s own function; on the first card only
+    caps = [gguf_plan.room_bytes(f, buf / MIB, reserve_gb, block if k == 0 else 0) for k, f in enumerate(frees)]       # tune()'s own subtraction, per card
+    light = (gguf_plan.gpu_fixed_weights_bytes(lay) + kv) / (L + 1)      # the same fixed part tune() counts (token_embd stays on the CPU), spread over the slots
+    by = lay.get("expert_bytes_by_layer") or {}
+    expert = [by.get(i, e) for i in range(L)]                              # the real size of each layer's experts, as tune() counts them (gpu_expert_bytes)
+    heavy = [light + x for x in expert]
     for n in range(0, L + 1):
         counts = fill(L, n, light, heavy, caps)
         if counts is not None:
@@ -69,8 +72,7 @@ def plan(path, ctx, frees, kv_q8=False, ub=None, reserve_gb=0.5, layout=None, kv
     per = []
     s = 0
     for c in counts:
-        heavy_here = sum(1 for i in range(s, s + c) if n <= i < L)
-        per.append(round((c * light + heavy_here * e) / 2**30, 2))
+        per.append(round((c * light + sum(expert[i] for i in range(s, s + c) if n <= i < L)) / 2**30, 2))
         s += c
     used = [k for k, c in enumerate(counts) if c]
     why.append(f"{L - n} of {L} layers of experts on the GPUs; layers per card (of {L + 1} slots incl. the output layer): {counts}; planned use per card GiB: {per}")

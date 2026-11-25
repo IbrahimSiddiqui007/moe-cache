@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit test of `moe_cache.py pack` (BO-1) on a synthetic GGUF: layout, byte-identical slices, --verify, refusal of a changed model, resume.
+"""Unit test of `moe_cache.py pack` on a synthetic GGUF: layout, byte-identical slices, --verify, refusal of a changed model, resume.
    python3 tests/pack_test.py            (standard library only; runs in a second)
    python3 tests/pack_test.py --make-gguf OUT.gguf   write the synthetic model only (CI uses it next to the real tiny model)"""
 import os, struct, sys, tempfile, unittest, zlib, random
@@ -66,6 +66,74 @@ class PackTest(unittest.TestCase):
         self.assertEqual(os.path.getsize(out), max(struct.unpack_from("<Q", data, 256 + r * 512 + 16)[0] + 5 * struct.unpack_from("<Q", data, 256 + r * 512 + 24)[0] for r in range(n_rec)))
         self.assertEqual(mp.pack_main([self.m, "--verify"]), 0)
         self.assertEqual(mp.pack_main([self.m]), 0)       # complete already: says so
+
+    def test_hash(self):
+        self.assertEqual(mp.pack_main([self.m, "--hash"]), 0)
+        out = os.path.join(self.d, "m.moepack")
+        data = open(out, "rb").read()
+        self.assertEqual(struct.unpack_from("<I", data, 28)[0], mp.HASH_FLAG)
+        files, layers = mp.plan(self.m)
+        lay, _ = mp.layout(layers, mp.round_up(256 + 512 * len(layers)))
+        for r in range(len(layers)):
+            layer, n_exp, nt, rec_crc, base, stride = struct.unpack_from("<IIIIQQ", data, 256 + r * 512)
+            payload = data[base: base + stride * n_exp]
+            self.assertEqual(rec_crc, zlib.crc32(payload) & 0xffffffff, f"layer {layer}")
+        self.assertEqual(mp.pack_main([self.m, "--verify"]), 0)
+        self.assertEqual(mp.pack_main([self.m, "--hash"]), 0)       # complete already: says so
+
+    def test_no_hash_fields_are_zero(self):
+        mp.pack_main([self.m])
+        data = open(os.path.join(self.d, "m.moepack"), "rb").read()
+        self.assertEqual(data[28:32], b"\0\0\0\0")
+        for r in range(3):
+            self.assertEqual(struct.unpack_from("<I", data, 256 + r * 512 + 12)[0], 0, f"record {r}")
+
+    def test_hash_catches_a_flipped_byte(self):
+        self.assertEqual(mp.pack_main([self.m, "--hash"]), 0)
+        out = os.path.join(self.d, "m.moepack")
+        with open(out, "r+b") as f:
+            f.seek(os.path.getsize(out) - 4096 + 3)       # inside the last expert's block of the last layer
+            b = f.read(1)
+            f.seek(-1, 1)
+            f.write(bytes([b[0] ^ 1]))
+        data = open(out, "rb").read()
+        files, layers = mp.plan(self.m)
+        lay, _ = mp.layout(layers, mp.round_up(256 + 512 * len(layers)))
+        last = max(layers)
+        for l in sorted(layers):
+            base, stride, _ = lay[l]
+            fresh = zlib.crc32(data[base: base + stride * layers[l]["n_expert"]]) & 0xffffffff
+            stored = struct.unpack_from("<I", data, 256 + sorted(layers).index(l) * 512 + 12)[0]
+            if l == last:
+                self.assertNotEqual(stored, fresh, f"layer {l}")
+            else:
+                self.assertEqual(stored, fresh, f"layer {l}")
+        with self.assertRaises(SystemExit):
+            mp.pack_main([self.m, "--verify"])
+
+    def test_hash_on_an_unhashed_pack_is_not_silently_skipped(self):
+        mp.pack_main([self.m])
+        with self.assertRaises(SystemExit) as cm:
+            mp.pack_main([self.m, "--hash"])              # must not say "already complete" and leave the pack without a hash
+        self.assertIn("no payload hash", str(cm.exception))
+        self.assertEqual(mp.pack_main([self.m, "--hash", "--force"]), 0)
+        self.assertEqual(struct.unpack_from("<I", open(os.path.join(self.d, "m.moepack"), "rb").read(), 28)[0], mp.HASH_FLAG)
+
+    def test_hash_covers_padding_bytes(self):
+        # a damaged byte between the slices of a block (no model data there) is invisible to the slice compare but is payload: only the hash sees it
+        self.assertEqual(mp.pack_main([self.m, "--hash"]), 0)
+        out = os.path.join(self.d, "m.moepack")
+        files, layers = mp.plan(self.m)
+        lay, _ = mp.layout(layers, mp.round_up(256 + 512 * len(layers)))
+        base, stride, offs = lay[0]
+        used = offs[-1] + layers[0]["tensors"][-1][3]
+        self.assertLess(used, stride)
+        with open(out, "r+b") as f:
+            f.seek(base + used)
+            f.write(b"\x55")
+        with self.assertRaises(SystemExit) as cm:
+            mp.pack_main([self.m, "--verify"])
+        self.assertIn("payload hash differs", str(cm.exception))
 
     def test_verify_catches_a_flipped_byte(self):
         mp.pack_main([self.m])

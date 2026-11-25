@@ -233,7 +233,7 @@ extern "C" MOE_CACHE_EXPORT ggml_backend_reg_t ggml_backend_init(void) {
         const std::string m = ggml_struct_layout_mismatch();
         if (!m.empty()) {
             g_layout_bad = true;
-            fprintf(stderr, "moe-cache: %s: plugin not loaded, the model loads the normal way. Use the plugin build that matches your llama.cpp (docs/QUICKSTART.md)\n", m.c_str());
+            fprintf(stderr, "moe-cache: %s: plugin not loaded, the model loads the normal way. Use the plugin build that matches your llama.cpp (docs/guides/quickstart.md)\n", m.c_str());
         }
         return true;
     }();
@@ -259,7 +259,7 @@ __attribute__((constructor)) static void moe_cache_autoload() {
         const int api = moe_cache_api_of_ggml(ggml_version());
         if (api > 0 && api != GGML_BACKEND_API_VERSION) {   // registering would hand the server a struct of the wrong layout
             fprintf(stderr, "moe-cache: this plugin was built for ggml backend API %d but the server uses ggml %s (API %d): not loaded, the model loads the normal way. "
-                            "Use the plugin build that matches your llama.cpp (docs/QUICKSTART.md)\n", GGML_BACKEND_API_VERSION, ggml_version(), api);
+                            "Use the plugin build that matches your llama.cpp (docs/guides/quickstart.md)\n", GGML_BACKEND_API_VERSION, ggml_version(), api);
             return;
         }
         moe_cache_register();

@@ -46,6 +46,36 @@ def line(pid, kind, mib):
 # --- pure helpers ---
 txt = ";".join([line(100, "dedicated", 1500), line(200, "dedicated", 900), line(300, "shared", 50), line(300, "dedicated", 13000), line(300, "shared", 1700)])
 check(abs(gp.others_dedicated_mib(txt, 300) - 2400) < 1e-6, "others_dedicated_mib: the other processes' dedicated use (2400 MiB), not ours, not shared")
+# 2026-11-12 PC (RX 9070 XT + the CPU's iGPU): the process counters summed to 3.9 GiB, the card's own adapter counter read 1.92 GiB
+def pl(pid, luid, mib, kind="dedicated"):
+    return f"\\\\pc\\gpu process memory(pid_{pid}_luid_{luid}_phys_0)\\{kind} usage|{mib * 1048576}"
+def al(luid, mib):
+    return f"\\\\pc\\gpu adapter memory(luid_{luid}_phys_0)\\dedicated usage|{mib * 1048576}"
+CARD, IGPU = "0x00000000_0x0000a1b2", "0x00000000_0x0000c3d4"
+pc = ";".join([pl(10, CARD, 700), pl(11, CARD, 500), pl(12, CARD, 400), pl(13, CARD, 380), pl(10, IGPU, 300), pl(14, IGPU, 250), pl(15, CARD, 800), pl(16, CARD, 600), pl(17, CARD, 20),
+               al(CARD, 1970), al(IGPU, 560)])
+plain = ";".join(x for x in pc.split(";") if "adapter" not in x)
+check(abs(gp.others_dedicated_mib(plain) - (700 + 500 + 400 + 380 + 300 + 250 + 800 + 600 + 20)) < 1e-6, "no adapter counters in the text: the plain sum over every adapter, as before (3950 MiB: the 3.9 GiB of the PC)")
+check(abs(gp.others_dedicated_mib(pc) - 1970) < 1e-6, f"the PC case: processes sum to 3400 MiB on the card, the card's own counter says 1970 MiB: the figure is capped to 1970 ({gp.others_dedicated_mib(pc)})")
+check(abs(gp.others_dedicated_mib(pc.replace(f"{1970 * 1048576}", f"{9000 * 1048576}")) - 3400) < 1e-6, "adapter figure above the processes' sum: the sum stays (the cap only lowers)")
+only_card = ";".join([pl(10, CARD, 700), pl(10, IGPU, 5000), al(CARD, 900), al(IGPU, 5200)])
+check(abs(gp.others_dedicated_mib(only_card) - 5000) < 1e-6, "the card is the adapter with the most dedicated use (a limit: an iGPU holding more than the card would win; the counters do not say which one llama.cpp uses)")
+two = ";".join([pl(10, CARD, 700), pl(10, IGPU, 100), al(CARD, 2000), al(IGPU, 300)])
+check(abs(gp.others_dedicated_mib(two) - 700) < 1e-6, "instances of the other adapter (the iGPU) are left out")
+mine = ";".join([pl(100, CARD, 9000), pl(10, CARD, 700), al(CARD, 9800)])
+check(abs(gp.others_dedicated_mib(mine, 100) - 700) < 1e-6, "our own process excluded; the cap is the adapter figure minus our share (9800 - 9000 = 800 >= 700)")
+mine2 = ";".join([pl(100, CARD, 9000), pl(10, CARD, 2500), al(CARD, 10500)])
+check(abs(gp.others_dedicated_mib(mine2, 100) - 1500) < 1e-6, "cap with our share taken off: min(2500, 10500 - 9000) = 1500")
+# the REAL capture (PC 2026-11-12 22:54, RX 9070 XT, typeperf CSV turned into the 'path|value;' text counters_text returns): luids 0x145FA (card), 0x16A03 (iGPU), 0x16982
+import csv as _csv
+def _csv_text(name):
+    rows = list(r for r in _csv.reader(open(os.path.join(HERE, "tests", "data", name), encoding="utf-8-sig")) if r)
+    return ";".join(f"{h}|{v}" for h, v in zip(rows[0][1:], rows[1][1:]) if h and v.strip())
+_real_p, _real_a = _csv_text("gpu_counters_pc_20261112_process.csv"), _csv_text("gpu_counters_pc_20261112_adapter.csv")
+check(abs(gp.others_dedicated_mib(_real_p) - 3.89 * 1024) < 15, f"real capture, process counters only: the plain sum {gp.others_dedicated_mib(_real_p) / 1024:.2f} GiB (the planner's 3.9 GiB)")
+_real = gp.others_dedicated_mib(_real_p + ";" + _real_a)
+check(abs(_real - 2060398592 / 1048576) < 1, f"real capture with the adapter counter: capped to the card's {_real / 1024:.2f} GiB (adapter 1.92 GiB, gputaskman 1.93)")
+check(gp.real_room_mib(15.9 * 1024, _real) / 1024 > 13.5, f"the room with the real figure: {gp.real_room_mib(15.9 * 1024, _real) / 1024:.2f} GiB (was 11.75)")
 check(gp.others_dedicated_mib("") is None and gp.others_dedicated_mib("junk|x") is None, "others_dedicated_mib: no counter -> None")
 check(gp.real_room_mib(16304, 2400) == 16304 - 2400 - 300 and gp.real_room_mib(16304, None) is None and gp.real_room_mib(16304, 16304) is None and gp.real_room_mib(None, 100) is None and gp.real_room_mib(2000, 1500) is None,
       "real_room_mib: size - others - reserve; None without figures or when the result is implausible")
@@ -69,15 +99,27 @@ def stage(vram=None, m=None):
         mc.say = sv
     return a, said
 a, said = stage()
-check(a.vram == "15.04" and abs(a.room_gib - (16304 - 2400 - 300) / 1024) < 0.01 and any("GPU room: planning with 13.29 GiB" in x for x in said), f"gpu_stage: a.vram {a.vram}, room {getattr(a, 'room_gib', None)}, line: {[x for x in said if 'room' in x]}")
+check(a.vram == "15.04" and abs(a.room_gib - (15400 - 2400 - 300) / 1024) < 0.01 and any("GPU room: planning with 12.40 GiB" in x and "free figure minus that" in x for x in said), f"gpu_stage: a.vram {a.vram}, room {getattr(a, 'room_gib', None)}, line: {[x for x in said if 'room' in x]}")
 check(abs(a.room_used_gib - 2400 / 1024) < 1e-6, "gpu_stage: the other programs' use is kept for the desk reserve")
+# critic R1: the room is the smaller of (card - others - reserve) and (llama-server's free figure - others): 16304 - 2400 - 300 = 13604 vs 15400 - 2400 = 13000 -> 13000
+check(abs(a.room_gib * 1024 - 12700) < 1, "room = the smaller of the two readings (13000 MiB, not 13604) minus the 300 MiB reserve (critic N1)")
+m4 = M(); m4.gpu_process_text = lambda: _real_p + ";" + _real_a
+m4.total_mib = 16304
+c4, said4 = stage(m=m4)
+check(abs(c4.room_gib - (15.04 * 1024 - 2060398592 / 1048576 - 300) / 1024) < 0.01, f"the real PC capture through gpu_stage: room {c4.room_gib:.2f} GiB (driver 15.04 minus the adapter's 1.92 minus the 300 MiB reserve), not 11.75 and not 13.69")
 f, gap = mc.dense_fit_free(a, M())
 check(abs(f / GIB - a.room_gib) < 1e-6 and gap == 0.0, "dense_fit_free: min(driver figure, real room)")
 b, said = stage(vram="15.4")
 check(not hasattr(b, "room_gib") and mc.dense_fit_free(b, M())[0] == 15.4 * GIB and not any("GPU room" in x for x in said), "the user's own --vram is taken as given: no room line, no cap")
 m2 = M(); m2.others = 300
 c, said = stage(m=m2)
-check(getattr(c, "room_gib", None) is None and not any("GPU room" in x for x in said), "a nearly empty card: the driver figure stands, nothing is said")
+check(abs(c.room_gib - (15400 - 300) / 1024) < 0.01 and not any("GPU room" in x for x in said), f"a nearly empty card: the room is applied (critic N3: {c.room_gib:.2f} GiB), nothing is said")
+# critic N2: a driver figure that already counts the others (here 12000 MiB free of 16304 with others 2400: below card - others = 13904) is taken as it is, not reduced again
+class M5(M):
+    def list_devices(self, ls): return "Available devices:\n  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 12000 MiB free)\n"
+    def pick_gpu_full(self, listing): return ("Vulkan0", "AMD Radeon RX 9070 XT", 12000, 16304)
+c5, said5 = stage(m=M5())
+check(abs(c5.room_gib - (12000 - 300) / 1024) < 0.01, f"N2: the driver's figure already below card - others: room = driver - reserve ({c5.room_gib:.2f} GiB), the others are not subtracted twice")
 m3 = M(); m3.gpu_process_text = lambda: ""
 c, said = stage(m=m3)
 check(getattr(c, "room_gib", None) is None and sum("GPU room: the other programs' GPU memory use could not be read" in x and "free figure as before" in x for x in said) == 1,

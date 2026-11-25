@@ -16,8 +16,14 @@ struct state_budget_t {
     size_t max_budget = 0;             // all registered expert bytes
     size_t min_budget = 0;
     uint64_t tune_shrinks = 0, tune_grows = 0;
+    size_t live_keep = 0;              // RAM-LIVE (MOE_CACHE_AVAIL_KEEP_GIB, set by the launcher): keep this much of the system's available RAM free; 0 = off
+    uint64_t live_last_ms = 0, live_grow_ms = 0, live_log_ms = 0, live_settle_ms = 0;   // last probe, last grow, last status line
+    size_t live_avail = 0;             // available RAM at the last probe
+    uint64_t live_shrinks = 0, live_grows = 0;
     size_t resident_bytes = 0;
     uint64_t epoch = 0;
+    // INKLING-1250 fix 2: a loop architecture runs its layers loop_start..loop_end-1 several times per token with shared weights (Inkling 2 Mini: 6-17, 3 passes); read from the GGUF header, -1 = not a loop model
+    int loop_start = -1, loop_end = -1, loop_count = 0, loop_pass = 0;
     // experts with epoch >= protect_epoch are used by the graph being prepared/computed: no eviction may take them. All groups of a graph are
     // prepared before any is computed, so protecting only the current group (epoch == epoch) let a later group (or tune() shrinking the budget)
     // evict an earlier group's experts before llama.cpp read them: decommitted memory on Windows (access violation, PC 2026-10-27), zeros on Linux

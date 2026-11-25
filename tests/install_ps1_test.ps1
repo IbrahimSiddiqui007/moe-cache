@@ -21,7 +21,7 @@ d, ver, mode = sys.argv[1:4]
 os.makedirs(d, exist_ok=True)
 n = "moe-cache-v%s-windows-x64" % ver
 z = os.path.join(d, n + ".zip")
-src = 'import sys\nprint("moe-cache %s" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n' % ver
+src = '# own_cache_base\nimport sys\nprint("moe-cache %s" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n' % ver
 with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
     f.writestr(n + "/bin/moe_cache.py", src)
     f.writestr(n + "/LICENSE", "x")
@@ -30,6 +30,10 @@ with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
             f.writestr(n + "/" + extra, "x")
     if mode == "slip":
         f.writestr(n + "/../../evil.txt", "x")
+    if mode == "ads":      # PACKAGING-832 item 18: an NTFS alternate data stream name
+        f.writestr(n + "/bin/x:stream", "x")
+    if mode == "aux":      # a reserved device name
+        f.writestr(n + "/bin/aux.txt", "x")
 h = hashlib.sha256(open(z, "rb").read()).hexdigest()
 open(os.path.join(d, "SHA256SUMS-windows"), "w").write(("0" * 64 if mode == "bad" else h) + "  " + n + ".zip\n")
 '@ | Set-Content -LiteralPath $maker -Encoding ASCII
@@ -64,6 +68,13 @@ try {
 
     $r = Run-Installer (New-Release 'slip' '9.9.1' 'slip') '9.9.1' @()
     Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and -not (Test-Path (Join-Path $T 'evil.txt')) -and -not (Test-Path $kit)) 'a zip with a path that leaves the folder is refused'
+
+    foreach ($m in 'ads', 'aux') {
+        $r = Run-Installer (New-Release $m '9.9.1' $m) '9.9.1' @()
+        Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'treats specially' -and -not (Test-Path $kit)) "a zip with a Windows-special name ($m) is refused (PACKAGING-832 item 18)"
+    }
+    $r = Run-Installer '\\evil.invalid\share' '9.9.1' @('-DryRun')
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'network share') 'a UNC -BaseUrl is refused (it would send the NTLM sign-in to that host; PACKAGING-832 item 9)'
 
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-DryRun')
     Check ($r.Code -eq 0 -and $r.Out -match 'would download' -and -not (Test-Path $kit) -and -not (Test-Path $bin) -and -not (Test-Path (Join-Path $root 'kit.part'))) '-DryRun prints the plan and installs nothing'
@@ -134,6 +145,7 @@ try {
     Check ($r.Code -eq 0 -and $r.Out -match 'sha256 matches' -and $r.Out -match 'installed: moe-cache 9.9.1') 'install: hash checked, version printed'
     Check ((Test-Path (Join-Path $kit 'bin\moe_cache.py')) -and (Test-Path $shim)) '...kit and command written'
     Check ((Count-Entry $bin) -eq 1) '...the bin folder is on the user PATH, once'
+    Check ($r.Out -match 'folder added to your user PATH by this installer') '...and it says it added it'
     Check ($r.Out -match 'undo:' -and $r.Out -match '-Uninstall') '...it says how to undo'
     $o = (& $shim launch --x 2>&1 | Out-String).Trim()
     Check ($o -eq 'args: launch --x') "the moe-cache command runs the kit's moe_cache.py with its arguments ($o)"
@@ -143,6 +155,27 @@ try {
 
     $r = Run-Installer (New-Release 'good2' '9.9.2' 'ok') '9.9.2' @()
     Check ($r.Code -eq 0 -and $r.Out -match 'installed: moe-cache 9.9.2 \(was 9.9.1\)') 'update in place says what it replaced'
+    # LAUNCHER-1222 item 5: a new install in its own -Root keeps its own launcher cache (moe_cache.py reads the flag; the shim has no cache line any more)
+    $recJ = Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json
+    Check ($recJ.own_cache -eq $true -and $r.Out -match 'cache:\s+\S*cache\\moe-cache') 'LAUNCHER-1222 item 5: a new install in its own -Root records own_cache and says where the cache is'
+    Check (-not ((Get-Content -LiteralPath $shim -Raw) -match 'XDG_CACHE_HOME')) '...the command itself sets nothing (the Startup link and the Start-menu paths read the same flag)'
+    # an install made before the flag (no own_cache in its record) keeps the user cache when updated: nothing moves under anyone
+    $j = Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json; $j.PSObject.Properties.Remove('own_cache')
+    [IO.File]::WriteAllText((Join-Path $root 'install.json'), ($j | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    $r = Run-Installer (Join-Path $T 'good2') '9.9.2' @('-Force')
+    $recJ = Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json
+    Check ($r.Code -eq 0 -and $recJ.own_cache -eq $false -and $r.Out -match 'cache:\s+your user cache') '...an older install without the flag stays on the user cache after an update'
+    # the default root is not isolated: LOCALAPPDATA pointed at a temp folder, no -Root
+    $savedLad = $env:LOCALAPPDATA; $env:LOCALAPPDATA = Join-Path $T 'lad'; New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+    $savedXdg = $env:XDG_CACHE_HOME; $xdgDir = Join-Path $T 'xdgcache'; $env:XDG_CACHE_HOME = $xdgDir
+    try {
+        $r = & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -BaseUrl (Join-Path $T 'good2') -Version 9.9.2 2>&1 | Out-String
+        # LAUNCHER-1222 critic G: the "cache:" line names the folder the launcher really reads (bin/moe_cache.py CACHE_DIR: XDG_CACHE_HOME first), not a fixed %USERPROFILE%\.cache
+        Check ($r.Contains('your user cache (' + (Join-Path $xdgDir 'moe-cache') + ')')) "...the 'cache:' line follows XDG_CACHE_HOME ($xdgDir\moe-cache)"
+        $recD = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'moe-cache\install.json') -Raw | ConvertFrom-Json
+        Check ($LASTEXITCODE -eq 0 -and $recD.own_cache -eq $false) '...an install into the default root does not isolate the cache'
+        & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -Uninstall 2>&1 | Out-Null
+    } finally { $env:LOCALAPPDATA = $savedLad; $env:XDG_CACHE_HOME = $savedXdg }
 
     # ---- failure midway (AUD-050): a failed update keeps the 9.9.2 install whole, a failed first install leaves nothing
     function Snapshot { $k = if (Test-Path $kit) { (Get-ChildItem -LiteralPath $kit -Recurse -Force | ForEach-Object { $_.FullName.Substring($kit.Length) }) -join '|' } else { '' }
@@ -219,6 +252,12 @@ try {
     $r = Run-Installer $good1 '9.9.1' @('-Uninstall')
     Check ($r.Code -eq 0 -and (Count-Entry $bin) -eq 1) '...and -Uninstall leaves it (this installer did not add it)'
     Set-UserPath $origPath
+
+    # LAUNCHER-1222 (1): -NoPath on a PATH without the folder must not say 'was already there'
+    $r = Run-Installer $good1 '9.9.1' @('-NoPath')
+    Check ($r.Code -eq 0 -and $r.Out -match 'NOT on your user PATH \(-NoPath\)' -and $r.Out -notmatch 'was already there' -and (Count-Entry $bin) -eq 0) '-NoPath: says the folder is NOT on the PATH, adds nothing'
+    $r = Run-Installer $good1 '9.9.1' @('-Uninstall')
+    Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
 
     $r = Run-Installer $good1 '9.9.1' @('-Uninstall')
     Check ($r.Code -eq 0 -and $r.Out -match 'nothing to remove') 'uninstall twice is harmless'

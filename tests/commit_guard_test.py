@@ -84,6 +84,8 @@ d3 = cg.decide(f, layout(kv_q8=False), 22 * GIB, 48 * GIB, allow_q8=False)
 check(not any("q8_0" in s for s in d3["steps"]), "--exact: no q8_0 KV step")
 d4 = cg.decide(f, layout(ffn_off=30, copy_weights=True), 21 * GIB, 48 * GIB)
 check(d4["ok"] and d4["steps"][0].startswith("mmap"), "copied weights: mmap is the first fix")
+d4b = cg.decide(f, layout(ffn_off=30, copy_weights=True), 21 * GIB, 48 * GIB, locked=("loadmode",))
+check(not any(s.startswith("mmap") for s in d4b["steps"]), "critic L2: locked 'loadmode' (the launcher chose --load-mode none itself): no 'mmap instead of copied weights' step")
 d5 = cg.decide(moe(), layout(n_cpu_moe=10, ub=2048, kv_q8=False), 13 * GIB, 40 * GIB)
 check(d5["ok"] and d5["layout"]["n_cpu_moe"] >= 10 and "n_cpu_moe" in d5["layout"], f"MoE: {'; '.join(d5['steps'])}")
 
@@ -412,5 +414,33 @@ check(rn.poll() is True and len(said) == 3, "ram note: recovered (1 GB over the 
 rn2 = cg.RamNote(lambda: 1 / 0, said.append)
 check(rn2.poll() is False and cg.RamNote(lambda: None, said.append).poll() is False, "ram note: a failing or empty probe says nothing and never raises")
 check(not hasattr(rn, "stop_fn") and not hasattr(rn, "stop"), "ram note: read-only: the note has no stop function, it only says a line")
+# Flash-Next (2 shards): shard 2 is ONE tensor, the 28.8 GB n-gram table; it never goes on the GPU, so it must not count as GPU weights (PC refusal 2026-11-13: 34.8 GB "GPU buffers")
+import gguf_plan as _gp
+_fake = {"/m/fn-00001-of-00002.gguf": [("token_embd.weight", int(0.27e9))] + [(f"blk.{l}.ffn_{k}_exps.weight", int(0.49e9)) for l in range(48) for k in ("up", "down", "gate")] + [("blk.0.attn_q.weight", int(4e9))],
+         "/m/fn-00002-of-00002.gguf": [("per_layer_token_embd.weight", int(28.8e9))]}
+_save = (_gp.shards, _gp.read_tensors)
+_gp.shards = lambda path: sorted(_fake)
+_gp.read_tensors = lambda path: list(_fake[path])
+try:
+    ft = cg.facts_from_model("/m/fn-00001-of-00002.gguf")
+finally:
+    _gp.shards, _gp.read_tensors = _save
+ee = cg.estimate(ft, dict(ctx=32768, kv_q8=True, ub=4096, n_cpu_moe=44, cache_ram_mib=2048, fit=False))
+check(ee["gpu_total"] < 20 * GB, f"two-shard model with a 28.8 GB n-gram table: GPU buffers {ee['gpu_total'] / GB:.1f} GB with 44 of 48 layers' experts on the CPU, not 34.8 (the table is not GPU weights)")
+_L = dict(ctx=32768, kv_q8=True, ub=4096, n_cpu_moe=44, cache_ram_mib=2048, fit=False)
+_dd = cg.decide(ft, _L, 44.2e9, 79.1e9, locked={"ub", "kv", "cache", "weights"})
+check(_dd["ok"] and not _dd["steps"], f"the PC's figures (44.2 GB free of 79.1): decide() starts the plan as planned ({_dd['est']['total'] / GB:.1f} GB estimate)")
+_ec = cg.estimate(ft, dict(_L, copy_weights=True))
+check(_ec["copied_weights"] > 28.8e9 and _ec["gpu_total"] < 20 * GB, f"copied weights (--load-mode none): the n-gram table lands in copied_weights ({_ec['copied_weights'] / GB:.1f} GB), not in the GPU buffers ({_ec['gpu_total'] / GB:.1f} GB)")
+# LAUNCHER-1163: -ot per_layer_token_embd=<GPU buffer> puts the table on the GPU: it counts as GPU weights then
+check(cg.table_on_gpu(["-ot", "per_layer_token_embd=CUDA0"]) and cg.table_on_gpu(["--override-tensor", "blk\\.1\\.ffn=CPU,per_layer_token_embd\\.weight=Vulkan0"])
+      and cg.table_on_gpu(["--override-tensor=per_layer=CUDA0"]), "-ot naming the table with a GPU buffer is read (also several rules, also --override-tensor=)")
+check(not cg.table_on_gpu(["-ot", "per_layer_token_embd=CPU"]) and not cg.table_on_gpu(["-ot", "blk\\.1\\.ffn_up=CUDA0"]) and not cg.table_on_gpu(["-c", "8192"])
+      and not cg.table_on_gpu(["-ot", "per_layer_token_embd=CPU,per_layer_token_embd=CUDA0"]) and not cg.table_on_gpu(["-ot", "[=CUDA0"]), "-ot to CPU, an unrelated rule, no -ot, a first CPU rule and a broken regex: the table stays on the host")
+check(cg.table_on_gpu(["-ot", "per_layer_token_embd=CUDA0,.*=CPU"]) and not cg.table_on_gpu(["-ot", ".*=CPU,per_layer_token_embd=CUDA0"]), "-ot: the FIRST matching rule wins, as in llama.cpp")
+_Lg = cg.layout_from_cmd(["llama-server", "-c", "32768", "-ot", "per_layer_token_embd=CUDA0", "--n-cpu-moe", "44"], [], ft)
+check(_Lg["table_on_gpu"], "layout_from_cmd carries table_on_gpu")
+_eg = cg.estimate(ft, dict(_L, table_on_gpu=True))
+check(abs((_eg["gpu_total"] - ee["gpu_total"]) - 28.8e9) < 0.1e9 and _eg["gpu_weights"] > ee["gpu_weights"] + 28e9, f"table on the GPU: GPU buffers {ee['gpu_total'] / GB:.1f} -> {_eg['gpu_total'] / GB:.1f} GB (+28.8)")
 print("FAIL" if fails else "all ok")
 sys.exit(1 if fails else 0)

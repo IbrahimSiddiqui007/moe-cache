@@ -6,7 +6,7 @@ n_probs, temperature 0: the chosen token is the exact top-1). Where the exact to
 The server keeps the prompt's KV cache between calls, so a position costs one decode step: the audit takes about as long as writing the answer did.
 
 What it reports per position: the answer's token, the exact top-1 token with its probability, and the exact probability of the answer's token (when it is among the
-top N asked for; otherwise "below p"). Summary: same-top-token share (the quality gate's own measure, docs/QUALITY_GATE.md) and the mean log-loss over the positions
+top N asked for; otherwise "below p"). Summary: same-top-token share (the quality gate's own measure, docs/reference/quality-gate.md) and the mean log-loss over the positions
 whose probability is known. A KL needs the approximate run's own distribution, which a server does not keep; this is not a KL.
 
 score(url, prompt_text, answer_text) works with any llama-server; see the functions' docstrings. The orchestration (starting an exact server beside the running one,

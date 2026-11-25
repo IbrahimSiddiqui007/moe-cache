@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the model table of docs/MODELS.md from models.json (between the two marker lines); `--check` exits 1 when the doc differs from what the JSON
+"""Write the model table of docs/reference/models.md from models.json (between the two marker lines); `--check` exits 1 when the doc differs from what the JSON
 would give (CI: tests/models_catalogue_test.py and the quick workflow). Standard library only."""
 import os, sys
 
@@ -7,7 +7,8 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "bin"))
 import moe_cache_catalogue as cat  # noqa: E402
 
-DOC = os.path.join(HERE, "docs", "MODELS.md")
+SHOW_MEASURED_SPEED = cat.SHOW_MEASURED_SPEED     # the one switch is in bin/moe_cache_catalogue.py
+DOC = os.path.join(HERE, "docs", "reference", "models.md")
 BEGIN = "<!-- models:begin (generated from models.json by tools/gen_models_md.py: edit the JSON, then run the tool; CI checks it) -->"
 END = "<!-- models:end -->"
 USE_WORDS = {"agents": "agents", "chat": "chat", "docs": "documents"}
@@ -15,6 +16,8 @@ USE_WORDS = {"agents": "agents", "chat": "chat", "docs": "documents"}
 
 def speed(m, machines):
     """The best-known decode number: the strongest machine first, its shortest context."""
+    if not SHOW_MEASURED_SPEED:
+        return "speed figures follow in a later release"
     dec = sorted((r for r in m["measured"] if r["metric"] == "decode_tps" and r.get("covers_fit", True)),
                  key=lambda r: (-machines[r["machine"]]["cap_gb"], r.get("ctx") or 0))
     if not dec:
@@ -70,12 +73,12 @@ def main(argv):
     new = apply(text, render())
     if "--check" in argv:
         if new != text:
-            print("docs/MODELS.md is out of date: run python3 tools/gen_models_md.py")
+            print("docs/reference/models.md is out of date: run python3 tools/gen_models_md.py")
             return 1
-        print("docs/MODELS.md matches models.json")
+        print("docs/reference/models.md matches models.json")
         return 0
     open(DOC, "w", encoding="utf-8", newline="\n").write(new)
-    print("docs/MODELS.md written")
+    print("docs/reference/models.md written")
     return 0
 
 

@@ -3,7 +3,7 @@
 #pragma once
 
 struct state_pack_t {
-    // BO-1 (MOE_CACHE_PACK, see bin/moe_cache_pack.py): MODEL.moepack holds each expert's gate/up/down slices in one 4 KiB-aligned block; a missing expert is
+    // expert pack (MOE_CACHE_PACK, see bin/moe_cache_pack.py): MODEL.moepack holds each expert's gate/up/down slices in one 4 KiB-aligned block; a missing expert is
     // then one large unbuffered read instead of three. Replaces the file-view cache while it is in use (reads fill private memory).
     struct pack_layer_t { uint64_t base = 0, stride = 0; int n_expert = 0, n = 0; std::string name[4]; size_t nb2[4] = {}, in_off[4] = {}; };
     bool   pack_on = false;

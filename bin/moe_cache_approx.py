@@ -2,11 +2,11 @@
 """QUALITY-970: the opt-in `--approx safe|careful|aggressive` tiers of moe-cache-server.
 
 Off by default. A tier is a named group of switches that already exist (q8_0 KV cache, the model's own MTP draft head, --fast, --fast=2); each mode in it carries
-the quality gate it must pass (docs/QUALITY_GATE.md, the thresholds are copied here and a test keeps them equal), and the models it was measured on.
+the quality gate it must pass (docs/reference/quality-gate.md, the thresholds are copied here and a test keeps them equal), and the models it was measured on.
 The startup canary re-measures the tier on a short text against the exact setting of the same model and steps the tier down when the KL divergence is past
 the gate. Standard library only. Everything here that decides (resolve, canary_decide, parse) is pure, so tests/approx_test.py runs without a model.
 
-A canary guards, it never proves: passing it does not make a mode a default (docs/QUALITY_GATE.md: defaults need the full gate and the owner's decision).
+A canary guards, it never proves: passing it does not make a mode a default (docs/reference/quality-gate.md: defaults need the full gate and the owner's decision).
 """
 import json, os, re, subprocess, hashlib, time
 
@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TIER_ORDER = ["exact", "safe", "careful", "aggressive"]       # lowest to highest; the canary steps down this list
 
-# gate level -> (max mean KLD, min same-top %, tasks tolerance). The same numbers as LEVELS in tools/quality_gate.py and the table in docs/QUALITY_GATE.md.
+# gate level -> (max mean KLD, min same-top %, tasks tolerance). The same numbers as LEVELS in tools/quality_gate.py and the table in docs/reference/quality-gate.md.
 GATE_LEVELS = {
     "exact": (1e-5, 100.0, 0),
     "kv": (0.015, 95.0, 2),
@@ -31,15 +31,15 @@ MODES = {
             "verified": ["flash-next", "qwen3.6", "qwen3.8", "granite"]},
     "spec-exact": {"class": "S", "gate": "kv", "switch": "--mtp  (the model's own draft head, checked by the model)", "changes_answers": True,
                    "plain": "the model guesses 2 tokens ahead with its own draft head and checks them; only when the model has that head. The text can differ slightly (batch rounding)",
-                   "measured": "Qwen3.6 on the PC 45.6 -> 70.3 tok/s; GLM-5.3 code text differed slightly",
+                   "measured": "Qwen3.6 on the PC; GLM-5.3 code text differed slightly (speed figures follow in a later release)",
                    "verified": ["*"]},
     "fast1": {"class": "E", "gate": "fast", "switch": "--fast  (+ q8_0 KV cache)", "changes_answers": True,
               "plain": "experts that are rarely picked and not in RAM are skipped, and the KV cache is stored in 8 bit; about 1 token in 40-50 comes out different",
-              "measured": "about +10 %; KL 0.0053 (RESULTS 31) to 0.025 with top-1 93.6 % (25.3)",
+              "measured": "KL 0.0053 (RESULTS 31) to 0.025 with top-1 93.6 % (25.3); speed figures follow in a later release",
               "verified": ["flash-next", "qwen3.6", "granite"]},
     "fast2": {"class": "E", "gate": "fewer", "switch": "--fast=2  (+ q8_0 KV cache)", "changes_answers": True,
               "plain": "up to 4 low-ranked experts per token that are not in RAM are skipped; about 1 token in 28 comes out different. For memory much smaller than the model",
-              "measured": "Flash-Next at 12 GB +43 %; KL 0.022; gate level 'fewer' (0.060) is the contract limit for this mode",
+              "measured": "Flash-Next at 12 GB (speed figure follows in a later release); KL 0.022; gate level 'fewer' (0.060) is the contract limit for this mode",
               "verified": ["flash-next", "granite"]},
 }
 
@@ -60,19 +60,31 @@ TIERS = {
 # default and nothing else; tests/token_modes_test.py proves the default enables exactly the "won" rows and that --exact enables none.
 TOKEN_MODES = [
     {"id": "kv8", "what": "q8_0 KV cache from 128k context on a GPU machine", "switch": "--fast=kv (default from 128k)", "status": "won",
-     "reason": "about 2x prompt speed at 256k on a 16 GB card; gate level kv passed (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
+     "reason": "speed at 256k on a 16 GB card: no run record (not measured at 128k or above); gate level kv passed at 4k (KL 0.0045-0.015, docs/reference/quality-gate.md); owner 2026-10-30"},
     {"id": "long-prompt", "what": "long-prompt mode from 32k context: -ub 4096 with the q8_0 KV cache, where the memory plan has room", "switch": "--long-prompt (default from 32k)", "status": "won",
-     "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: prompts +77.0 %, answers +1.8 % (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
+     "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: speed figures follow in a later release (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
     {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",
-     "reason": "Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s; prompt processing 5-8 % slower; GLM-5.3 code text differed slightly"},
-    {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "unmeasured",
-     "reason": "about +10 % where memory is much smaller than the model; no paired run with a quality check at 64k on the PC yet"},
-    {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "unmeasured",
-     "reason": "Flash-Next at 12 GB on the laptop +43 %, no gain at 24 GB; not measured on the PC"},
-    {"id": "fewer", "what": "drop the 2 lowest-ranked experts of every token on the CPU-held layers", "switch": "--fast=fewer", "status": "unmeasured",
-     "reason": "gate level fewer (KL 0.060) set, nothing measured"},
-    {"id": "approx-tiers", "what": "the named groups of the modes above", "switch": "--approx safe|careful|aggressive", "status": "unmeasured", "group": True,
-     "reason": "a tier is only a group of the rows above; it is as good as its rows"},
+     "reason": "Qwen3.6 on the PC (speed figures follow in a later release); GLM-5.3 code text differed slightly"},
+    # LAUNCHER-1063 (owner 2026-11-10) / QUALITY-014 (2026-11-20): the dense KV ladder's smaller steps have their own rows and gate entries (they used to ride on the kv8 row).
+    # status "kept" = the quality gate failed (or is not met) but the owner decided to keep the step on: on by default, said as approximate, never "won". No row is "kept" today: kv-k8v4 / kv-q4 were until 2026-11-20.
+    {"id": "kv-k8v4", "what": "K q8_0 / V q4_0 KV cache for a dense model whose q8_0 / q8_0 KV cache would not fit the GPU (instead of a shorter context)", "gate": "kv",
+     "switch": "--kv-4bit (off by default since 2026-11-20; your own -ctk/-ctv win)", "status": "lost",
+     "reason": "failed the absolute gate level kv (KL <= 0.015, same top token >= 95 %) in the older runs, which had no floor arm (the KL an f16 KV cache reaches with only the micro-batch changed: the model's own noise on that text): 8 windows of 8192 tokens of real long chats (laptop, Qwen3.8-27B UD-Q3_K_XL, 2026-11-10, one run, forecast): KL 0.109, top-1 94.6 % (q8_0 / q8_0 there: 0.063, 96.5 %), so part of that figure is the model, not the cache. "
+               "Floor-corrected (floor = f16 KV with only -ub halved; laptop RTX 4060, Qwen3-30B-A3B Q4_K_M, llama.cpp 7fe450e, 2026-11-20, one run each, forecast): K q8_0 / V q4_0 costs +0.003 to +0.006 KL over the floor at 8k and 32k windows on real-chat and README + docs text, top-1 0.8-1.4 points under the floor (README + docs at 8k: 94.99 % absolute); that passes the floor-corrected rule. Not measured with a floor on the dense 27B, nor at 64k. "
+               "Owner 2026-11-20: off by default (was kept on by his 2026-11-10 decision), reachable with --kv-4bit; approximate (LAUNCHER-1063)"},
+    {"id": "kv-q4", "what": "q4_0 / q4_0 KV cache for a dense model whose K q8_0 / V q4_0 cache would not fit the GPU either (instead of a shorter context)", "gate": "kv",
+     "switch": "--kv-4bit (off by default since 2026-11-20; your own -ctk/-ctv win)", "status": "lost",
+     "reason": "failed the absolute gate level kv (KL <= 0.015, same top token >= 95 %) in the older runs, which had no floor arm: 8 windows of 8192 tokens of real long chats (laptop, Qwen3.8-27B UD-Q3_K_XL, 2026-11-10, one run, forecast): KL 0.173, top-1 92.9 % (part of it the model's own noise). "
+               "Floor-corrected (floor = f16 KV with only -ub halved; laptop RTX 4060, Qwen3-30B-A3B Q4_K_M, llama.cpp 7fe450e, 2026-11-20, one run each, forecast): q4_0 / q4_0 costs +0.022 to +0.040 KL over the floor and 3.1-5.8 points of top-1 under it, over the limit in all four cells (real-chat and README + docs, 8k and 32k), so this step has a real cost. Not measured with a floor on the dense 27B, nor at 64k. "
+               "PC, 27B 64k with the desktop on the card: q4_0 fit where q8_0 spilled (one run; speed figures follow in a later release). Owner 2026-11-20: off, quality loss (floor-corrected 30B-A3B q4/q4 KL 0.027-0.047, top-1 90-95 %); was kept on by his 2026-11-10 decision; reachable with --kv-4bit; approximate (LAUNCHER-1063)"},
+    {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "lost",
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win (speed figures follow in a later release); quality gate passed (KL 0.0196)"},
+    {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "lost",
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win at 64k (speed figures follow in a later release); quality gate passed (KL 0.0233). The laptop at 12 GB RAM is a different scope: memory far below the model"},
+    {"id": "fewer", "what": "drop the 2 lowest-ranked experts of every token on the CPU-held layers", "switch": "--fast=fewer", "status": "lost",
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win; quality gate failed (KL 0.0637 > 0.060)"},
+    {"id": "approx-tiers", "what": "the named groups of the modes above", "switch": "--approx safe|careful|aggressive", "status": "lost", "group": True,
+     "reason": "a tier is only a group of the rows above; PC, 64k, 2026-11-09 screen of careful and aggressive: no speed win; safe (= kv8 + own drafting) was not in that screen, see the kv8 row. Kit kapprox d3b32ea predates LAUNCHER-985 (the arms may have differed in more than expert skipping): recheck on a current kit before treating that result as the cost of the mode"},
 ]
 DEPRECATED_SWITCHES = ("--fast", "--fast=2", "--fast=fewer", "--approx")        # still work as aliases that force the mode on; the table decides the default
 
@@ -81,17 +93,20 @@ def token_mode(mode_id):
     return next(m for m in TOKEN_MODES if m["id"] == mode_id)
 
 
+ON_STATUSES = ("won", "kept")      # "kept": failed or did not meet its gate, on by an owner decision (said as approximate)
+
+
 def default_on(mode_id):
-    """True when the default launch enables this mode: its status in TOKEN_MODES is "won"."""
-    return token_mode(mode_id)["status"] == "won"
+    """True when the default launch enables this mode: its status in TOKEN_MODES is "won", or "kept" (an owner decision over a failed gate)."""
+    return token_mode(mode_id)["status"] in ON_STATUSES
 
 
 def default_ids():
-    return [m["id"] for m in TOKEN_MODES if m["status"] == "won" and not m.get("group")]
+    return [m["id"] for m in TOKEN_MODES if m["status"] in ON_STATUSES and not m.get("group")]
 
 
 def default_expert_level():
-    """The --fast level the default launch uses: the strongest expert-skipping row whose status is "won" (fewer, then fast2, then fast1), else None. All three are "unmeasured" today."""
+    """The --fast level the default launch uses: the strongest expert-skipping row whose status is "won" (fewer, then fast2, then fast1), else None. All three are "lost" today (2026-11-09 screen)."""
     for mid, lvl in (("fewer", "fewer"), ("fast2", "2"), ("fast1", "1")):
         if default_on(mid):
             return lvl
@@ -155,7 +170,7 @@ def resolve(tier, model_name, off=(), unverified=False, user_fast=None, records=
         elif st == "unverified" and not unverified:
             bad.append(f"{m} (no gate record for this model)")
     if bad:
-        raise ApproxError(f"--approx {tier}: refused: " + "; ".join(bad) + ". Modes need a gate record for the model (docs/QUALITY_GATE.md). Drop one with --approx-off MODE, "
+        raise ApproxError(f"--approx {tier}: refused: " + "; ".join(bad) + ". Modes need a gate record for the model (docs/reference/quality-gate.md). Drop one with --approx-off MODE, "
                           "or --approx-unverified to run it anyway (the control page shows a red badge)")
     ids = [m["id"] for m in modes]
     fast = ("1" if "fast1" in ids else "2" if "fast2" in ids else None)
@@ -163,7 +178,7 @@ def resolve(tier, model_name, off=(), unverified=False, user_fast=None, records=
     if fast and user_fast and user_fast != fast:
         lines.append(f"moe-cache: --approx {tier}: your --fast={user_fast} wins over the tier's expert mode (--fast={fast}); the tier's gate no longer describes this run")
         fast = None
-    lines.append(f"moe-cache: --approx {tier}: {t['plain']}. Gate: {t['gate']} level (docs/QUALITY_GATE.md). Modes: " + "; ".join(f"{m['id']} [{m['status']}]" for m in modes))
+    lines.append(f"moe-cache: --approx {tier}: {t['plain']}. Gate: {t['gate']} level (docs/reference/quality-gate.md). Modes: " + "; ".join(f"{m['id']} [{m['status']}]" for m in modes))
     for m in modes:
         if m["status"] == "unverified":
             lines.append(f"moe-cache: --approx-unverified: {m['id']} has NO gate record for this model: it runs, nobody measured its quality here")

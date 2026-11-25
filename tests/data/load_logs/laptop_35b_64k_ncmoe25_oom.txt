@@ -1,0 +1,14 @@
+0.00.113.725 I srv  llama_server: initializing ...
+0.00.113.748 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.117.451 I srv    load_model: loading model '/models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf'
+0.00.676.410 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+0.00.978.859 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.02.281.866 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 788.02 MiB on device 0: cudaMalloc failed: out of memory
+0.02.281.872 E ggml_gallocr_reserve_n_impl: failed to allocate CUDA0 buffer of size 826294400
+0.02.281.873 E graph_reserve: failed to allocate compute buffers
+0.02.287.057 E llama_init_from_model: failed to initialize the context: failed to allocate compute pp buffers
+0.02.287.063 E cmn  common_init_: failed to create context with model '/models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf'
+0.02.287.067 E cmn  common_init_: failed to create context with model '/models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf'
+0.02.287.073 E srv    load_model: failed to create_context with model '/models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf'
+0.02.287.075 I srv    operator(): operator(): cleaning up before exit...
+0.02.287.883 E srv  server_run_i: exiting due to model loading error

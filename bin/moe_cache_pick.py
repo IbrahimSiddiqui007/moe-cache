@@ -3,7 +3,7 @@
 
 Reads this machine (RAM and the server's hard cap, dedicated VRAM, free disk, SSD or HDD, AVX2 / AVX-512, llama-server's build), asks what the
 model is for (agents and coding at 64k+ context, plain chat, long documents) and recommends one model, file, context and launcher options.
-Every rule below comes from a measurement in docs/results-archive/RESULTS.md; where nothing was measured on that class of machine the result says so
+Every rule below comes from a measurement in docs/results/archive/results-windows-desktop.md; where nothing was measured on that class of machine the result says so
 ("untested on this class of machine"). It never downloads anything by itself: it prints the command (size and source), and the launcher asks
 before running it. `--apply` (or the page's "Use it") writes the choice into the settings the launcher and the control page keep (ui.json):
 `moe_cache.py server` and `on-demand` without a model then use it, and `connect hermes|opencode` reads it from that server.
@@ -22,8 +22,9 @@ USES = {"agents": "agents and coding (Hermes, OpenCode) at 64k-256k context", "c
 USE_SHORT = {"agents": "coding agents", "chat": "chat", "docs": "long documents"}      # for the fit reasons
 BOLT_BUILD = 11966          # Nemotron needs llama.cpp b11966 or newer (tokenizer fix #30960, RESULTS 65)
 DSV4_BUILD = 11870          # DeepSeek-V4.1-Flash needs llama.cpp b11870 or newer (the release of 25 Oct with "model: DSV4.1 flash (#31086)"; the card says so)
-PC = "32 GB RAM + 16 GB GPU (Windows desktop, RESULTS 59-67)"
-LAPTOP = "31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop, RESULTS 44-45)"
+PC = "our test PC, 32 GB RAM + 16 GB GPU (Windows desktop; not your speed)"
+LAPTOP = "our test laptop, 31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop; not your speed)"
+NOTHING_FITS_BELOW_CAP_GB = 11     # GUI-1155: the smallest server memory any candidate was ever run with (12 GB RAM laptop, RESULTS 53): below it nothing is recommended
 
 # The candidates are in models.json (bin/moe_cache_catalogue.py); MODELS is the picker's view of them: name, size = bytes of all shards, pattern finds a
 # copy in the model folders, repo + include = where it comes from (+ sha256, min_free, link, ollama). CAT has the whole entries (fit block, measured numbers).
@@ -33,12 +34,14 @@ CAT = cat.models_dict(CATALOGUE)
 MODELS = {k: cat.legacy(m) for k, m in CAT.items()}
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
-# Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: 430.0 against 188.2 tok/s with moe-cache; the decode numbers of
-# those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record pending)
-Q2_FAST = "reads prompts about 2.3 times as fast as IQ3_XXS in a 65k conversation (430.0 against 188.2 tok/s, v0.3.7 records) and decodes faster"
-Q2_LESS = "a little less exact (top-1 agreement with IQ3_S 73.3 % against 76.5 % for IQ3_XXS, measured 2026-11-05, record pending), 191/202 tasks against 193"
-SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file (owner 2026-11-07): 3-bit, the most tasks right (193/202), top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context",
-                "flash-next-q2_0": f"the faster option (owner 2026-11-07): 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
+# Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: faster with moe-cache, figures follow in a later release; the decode numbers of
+# those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record not published;
+# IQ3_S is itself a 3-bit file: no Flash-Next file was measured against full precision)
+Q2_FAST = "smaller; measured comparison follows in a later release"
+Q2_LESS = ("a little less exact (same top token as the 3-bit IQ3_S file, not full precision: 73.3 % against 76.5 % for IQ3_XXS; one run 2026-11-05, record not published), "
+           "191/202 tasks against 193")
+SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file 3-bit, the most tasks right (193/202), same top token as the 3-bit IQ3_S file (not full precision) 76.5 % against 73.3 % for Q2_0 (one run 2026-11-05, record not published); speed figures follow in a later release",
+                "flash-next-q2_0": f"the smaller option, 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
 
 
 # ---- this machine ----
@@ -60,6 +63,13 @@ def cpu_flags():
     except OSError:
         pass
     return None, None
+
+
+def snap_gib(v):
+    """DOCS-774: a '6 GB' card reports 5.9 GiB and a '12 GB' card 11.9: a size within 0.2 GiB under a whole number counts as that number, so the thresholds
+    (6, 12, 16, 24 GiB ...) do not switch on a rounding of the driver's figure."""
+    r = round(v)
+    return float(r) if 0 < r - v <= 0.2 else v
 
 
 def dedicated_vram():
@@ -230,7 +240,7 @@ def is_draft_head(path):
         st = os.stat(path)
         k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
         if k not in _HEADS:
-            sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "planner"))
+            mc.planner_path()
             from gguf_plan import read_tensors
             heads, plain = set(), set()
             for name, _ in read_tensors(path):
@@ -424,7 +434,7 @@ def recommend(spec, use, model=None):
     if use not in USES:
         raise ValueError(f"use: one of {', '.join(USES)}")
     cap = (spec.get("ram_cap") or 0) / 1e9                       # what the whole server may use (RAM minus max(4 GiB, 12.5 %)), GB
-    vram = (spec.get("vram") or 0) / GIB
+    vram = snap_gib((spec.get("vram") or 0) / GIB)
     local = spec.get("local") or {}
     hdd = spec.get("disk_kind") == "HDD"
     build = spec.get("llama_build")
@@ -449,55 +459,53 @@ def recommend(spec, use, model=None):
     R = []     # candidate rules in order: (id, condition, ctx, measured text or None = untested here, why)
     if use == "agents":
         R += [("bolt", fits("bolt") and vram >= 12 and bolt_ok(), 131072,
-               f"{PC}: OpenCode session 47.8 s (the fastest measured; Flash-Next IQ2_XS 73.4 s), prompts 721 tok/s at 114k tokens, decode 24.9 tok/s "
-               "there (27.9 short), 190/202 tasks",
-               "fits in your RAM, so llama.cpp runs it stock (moe-cache forced on it was 18 % slower); the fastest agent model we measured"),
+               f"{PC}: an OpenCode session measured (speed figures follow in a later release), 190/202 tasks",
+               "fits in your RAM, so llama.cpp runs it stock"),
               ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 65536, None,
                "fits in your RAM (stock llama.cpp); measured only with a 16 GB GPU: with less VRAM long prompts are slower"),
               ("qwen3.6-35b", True, 65536,
-               f"{LAPTOP}: 42.9 tok/s stock when it fits; at 12 GB RAM + 8 GB GPU 22.6 tok/s with moe-cache; {PC}: 739-848 tok/s prompts and "
-               "59 tok/s decode at 64k" if vram >= 6 else
-               "no GPU, 12 GB RAM: 9.9 tok/s (laptop) and 10.6 tok/s (Ryzen mini PC) with moe-cache, short prompts",
+               f"{LAPTOP} and {PC}: measured, speed figures follow in a later release" if vram >= 6 else
+               "no GPU, 12 GB RAM: measured with moe-cache on a laptop and a Ryzen mini PC, short prompts; speed figures follow in a later release",
                "the smallest candidate (3B active): the one that still runs agents at 64k on this machine")]
     elif use == "chat":
         R += [("glm-5.3", fits("glm-5.3"), 32768, None, "fits in your RAM: the biggest candidate, stock llama.cpp"),
               # IQ3_XXS is the default Flash-Next file again (owner 2026-11-07: most people use it, and the measured quality loss of Q2_0 is small but the name puts people off);
-              # Q2_0 is the faster option (earlier default: IQ3_XXS 2026-10-30, Q2_0 2026-11-05)
+              # Q2_0 is the smaller option (earlier default: IQ3_XXS 2026-10-30, Q2_0 2026-11-05)
               ("flash-next-iq3_xxs", cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs"), 32768,
-               f"{PC}: 19.9 tok/s decode (2026-10-27), 193/202 tasks (the most)",
+               f"{PC}: 193/202 tasks (the most); speed figures follow in a later release",
                "the default Flash-Next file: 3-bit, reads best and the most tasks right (top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0, measured 2026-11-05, record pending); "
-               "bigger than your RAM, moe-cache keeps the hot experts in RAM. Q2_0 is the faster option (9 GB smaller, " + Q2_FAST + ")"),
+               "bigger than your RAM, moe-cache keeps the hot experts in RAM. Q2_0 is the smaller option (9 GB smaller, " + Q2_FAST + ")"),
               ("flash-next-q2_0", cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0"), 32768,
-               f"{PC}: 22-25 tok/s decode, 281-287 tok/s prompts, 191/202 tasks (2026-10-28)",
-               "the faster option: 9 GB smaller than IQ3_XXS, " + Q2_FAST + "; " + Q2_LESS),
+               f"{PC}: 191/202 tasks (2026-10-28); speed figures follow in a later release",
+               "the smaller option: 9 GB smaller than IQ3_XXS, " + Q2_FAST + "; " + Q2_LESS),
               ("flash-next-q2_0", cap >= 24 and vram >= 6 and drive_ok("flash-next-q2_0"), 32768, None,
-               f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size: 12.5 tok/s"),
+               f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size (speed figure follows in a later release)"),
               ("qwen3.5-122b", cap >= 24 and vram >= 6 and drive_ok("qwen3.5-122b"), 32768,
-               f"{PC}: 19.7 tok/s at 4k, 17.3 at 64k; {LAPTOP}: 7.7 tok/s" if vram >= 12 else f"{LAPTOP}: 7.7 tok/s",
+               f"{PC} and {LAPTOP}: measured, speed figures follow in a later release" if vram >= 12 else f"{LAPTOP}: measured, speed figure follows in a later release",
                "36.6 GB on disk instead of Flash-Next's 66 GB"),
-              ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 32768, f"{PC}: 27.9 tok/s" if vram >= 12 else None,
+              ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 32768, f"{PC}: measured, speed figure follows in a later release" if vram >= 12 else None,
                "fits in your RAM (stock llama.cpp)"),
               ("qwen3.6-35b", True, 32768,
-               f"{LAPTOP}: 42.9 tok/s stock when it fits, 22.6 tok/s with moe-cache at 12 GB RAM" if vram >= 6 else
-               "no GPU, 12 GB RAM: 9.9-10.6 tok/s with moe-cache",
+               f"{LAPTOP}: measured stock and with moe-cache at 12 GB RAM; speed figures follow in a later release" if vram >= 6 else
+               "no GPU, 12 GB RAM: measured with moe-cache; speed figures follow in a later release",
                "the smallest candidate (21.7 GB, 3B active)"),
               ("flash-next-q2_0", cap >= 11 and vram >= 6 and drive_ok("flash-next-q2_0"), 16384,
-               "12 GB RAM + 8 GB GPU (laptop, RESULTS 53): 9.5 tok/s with --fast, 13.7 with --fast=2 (both change some tokens)",
-               "a much bigger model through moe-cache; on this much RAM only with --fast (approximate)"),
+               None,       # the only laptop figures were measured with --fast / --fast=2, which are off (measured as no win) and not what --apply sets
+               "a much bigger model through moe-cache; with this little RAM most experts are read from the drive, so it is slow (no speed measured in the default mode)"),
               # never the automatic pick (the rows above always match first): offered as alternatives, or chosen with --model; untested here, so no speed is quoted
               ("gpt-oss-120b", cap >= 24 and vram >= 6 and drive_ok("gpt-oss-120b"), 32768, None,
                "OpenAI's gpt-oss-120b (63.4 GB): general chat and short answers. A reasoning model: if answers come back empty, give it room or lower its effort "
                "(--reasoning-budget); sampling temperature 1.0, top-p 1.0; coding agents at 64k are not tested"),
               ("deepseek-v41-flash", cap >= 24 and vram >= 12 and ds_ok(), 8192, None,
                "DeepSeek-V4.1-Flash-1017 IQ1_M (231 GB, of which 111 GB is the Engram lookup table read from the SSD): chat and short answers only; "
-               "long prompts are slow (a llama.cpp user measured about 31 tok/s prompt); needs 240 GB free and a fast drive")]
+               "long prompts are slow (a llama.cpp user reported very slow prompt reading); needs 240 GB free and a fast drive")]
     else:
         R += [("bolt", fits("bolt") and vram >= 12 and bolt_ok(), 131072,
-               f"{PC}: prompts 595 tok/s at 57k and 721 at 114k tokens, decode 24.9 at 114k (Flash-Next Q2_0: 170 tok/s prompts at 128k)",
-               "reads long prompts about 4x faster than Flash-Next at 128k and fits in your RAM (stock llama.cpp)"),
+               f"{PC}: measured at 57k and 114k tokens; speed figures follow in a later release",
+               "fits in your RAM (stock llama.cpp)"),
               ("bolt", fits("bolt") and vram >= 6 and bolt_ok(), 65536, None, "fits in your RAM (stock llama.cpp); measured only with a 16 GB GPU"),
               ("qwen3.6-35b", True, 131072 if fits("qwen3.6-35b") and vram >= 12 else 65536,
-               f"{PC}: 936-1014 tok/s prompts and 45.8 tok/s decode at 128k" if fits("qwen3.6-35b") and vram >= 12 else None,
+               f"{PC}: measured at 128k; speed figures follow in a later release" if fits("qwen3.6-35b") and vram >= 12 else None,
                "the smallest candidate; long prompts on a small GPU or none are slow")]
 
     def placed(k):
@@ -521,6 +529,7 @@ def recommend(spec, use, model=None):
     if not chosen:      # no candidate that suits the machine is here or fits the disk: still the one that suits the machine (warn, never block), said plainly below
         chosen = next(r for r in R if r[1])
     k, _, ctx, measured, why = chosen
+    nothing = bool(not model and cap < NOTHING_FITS_BELOW_CAP_GB and not (k in local))     # GUI-1155: the last rule always matched, so an 8 GB machine was told to use a 22 GB model
     sib = SIBLINGS.get(k)
     if sib and not model and k not in local and sib in local and drive_ok(sib):     # the other Flash-Next file is already here: no 66-76 GB download
         why = f"{MODELS[sib]['name']} is already on this machine (same model, {SIBLINGS_WHY[sib]}); otherwise: {why}"
@@ -549,12 +558,12 @@ def recommend(spec, use, model=None):
         elif spec.get("disk_kind") != "SSD":
             warn.append("could not tell whether the models' drive is an SSD: DeepSeek-V4.1-Flash reads its 111 GB Engram table from the drive and needs a fast one")
         if use in ("agents", "docs"):
-            warn.append("DeepSeek-V4.1-Flash is for chat and short answers only: long prompts are slow (about 31 tok/s prompt in a llama.cpp user's report) and "
+            warn.append("DeepSeek-V4.1-Flash is for chat and short answers only: long prompts are slow (very slow in a llama.cpp user's report) and "
                         "saved prompt state is unreliable until llama.cpp #31292; do not use it with --agent")
     if k == "gpt-oss-120b" and use in ("agents", "docs"):
         warn.append("gpt-oss-120b with coding agents or 64k prompts is not tested here (a reasoning model: check that the agent handles its reasoning_content)")
     if build is not None and build < BOLT_BUILD and use in ("agents", "docs") and fits("bolt"):
-        warn.append(f"your llama-server is b{build}: Nemotron 3.5 Bolt (the faster pick here) needs b{BOLT_BUILD} or newer")
+        warn.append(f"your llama-server is b{build}: Nemotron 3.5 Bolt (the pick here) needs b{BOLT_BUILD} or newer")
     if vram and spec.get("gpu_margin") is not None and float(spec["gpu_margin"]) > GPU_MARGIN_GIB + 0.01:
         warn.append(f"counting {float(spec['gpu_margin']):.1f} GiB of VRAM as left free (--gpu-margin), the launcher's default is {GPU_MARGIN_GIB:.1f}")
     elif vram and use in ("agents", "docs") and ctx >= 131072:
@@ -573,7 +582,7 @@ def recommend(spec, use, model=None):
     need = m["size"] + kv["bytes"]
     margin = spec.get("gpu_margin")
     margin = GPU_MARGIN_GIB if margin is None else float(margin)
-    usable_vram = max(0.0, vram - margin) * GIB if vram else 0.0          # the same margin the launcher's tuner keeps (--gpu-margin)
+    usable_vram = max(0.0, (spec.get("vram") or 0) / GIB - margin) * GIB if vram else 0.0          # the same margin the launcher's tuner keeps (--gpu-margin)
     memory = {"model": m["size"], "kv": kv["bytes"], "kv_how": kv["how"], "total": need, "available": cap * 1e9 + usable_vram, "gpu_margin_gib": margin}
     if need > memory["available"] and fits(k):
         warn.append(f"model {m['size'] / 1e9:.1f} GB + KV cache {kv['bytes'] / 1e9:.1f} GB at context {ctx} ({kv['how']}) is more than RAM cap + VRAM "
@@ -592,12 +601,16 @@ def recommend(spec, use, model=None):
     if use == "agents" and k != "flash-next-iq3_xxs" and cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs") and placeable("flash-next-iq3_xxs"):
         alts.append({"id": "flash-next-iq3_xxs", "name": MODELS["flash-next-iq3_xxs"]["name"],
                      "why": f"the default Flash-Next file (3-bit, 193/202 tasks), moe-cache; long context measured with Q2_0 on {PC}: "
-                            "20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (2026-10-28); Q2_0 is the faster option (" + Q2_FAST + ")",
+                            "speed figures follow in a later release (2026-10-28); Q2_0 is the smaller option (" + Q2_FAST + ")",
                      "fit": fit(spec, "flash-next-iq3_xxs", 65536, use, local)})
+    if nothing:
+        msg = (f"Nothing fits this machine well: the server may use {cap:.0f} GB of RAM and {vram:.0f} GiB of VRAM, and the smallest model we ever ran ({m['name']}, "
+               f"{m['size'] / 1e9:.0f} GB) was tried with 12 GB of RAM or more. No recommendation. You can still choose a model yourself (--model), but we have no speed to quote for it.")
+        warn.insert(0, msg); why = msg; measured = None; alts = []
     out = {"id": k, "name": m["name"], "use": use, "size": size_of(k, local), "ctx": ctx, "args": args, "engine": engine,
            "measured": measured or "untested on this class of machine", "untested": not measured, "key": key_numbers(measured), "why": [why], "warnings": warn,
            "alternatives": alts[:2], "fit": fit(spec, k, ctx, use, local), "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,
-           "download": None if (k in local or not fits_disk) else download_cmd(k)}
+           "download": None if (k in local or not fits_disk or nothing) else download_cmd(k), "nothing_fits": nothing}
     return out
 
 
@@ -623,7 +636,7 @@ def kv_estimate(k, ctx, path=None):
     per token (an over-estimate for hybrid models)."""
     if path:
         try:
-            sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+            mc.planner_path()
             import gguf_plan
             v = gguf_plan.kv_bytes(path, ctx)
             if v:
@@ -784,6 +797,8 @@ def spec_lines(spec):
 
 
 def rec_lines(r):
+    if r.get("nothing_fits"):          # GUI-1155: no model, no speed, no download
+        return [f"{USES[r['use']]}: {r['why'][0]}"]
     out = [f"{USES[r['use']]}: {r['name']}  ({r['size'] / 1e9:.1f} GB, {r['engine']})",
            f"  context {r['ctx']}, options: {' '.join(r['args'])}",
            f"  memory: model {r['memory']['model'] / 1e9:.1f} GB + KV cache {r['memory']['kv'] / 1e9:.1f} GB ({r['memory']['kv_how']}) = {r['memory']['total'] / 1e9:.1f} GB; "
@@ -808,7 +823,7 @@ def rec_lines(r):
     return out
 
 
-DOWNLOAD_HINT = ("Run the same command again to continue: `hf download` keeps the files that finished and resumes a half-written one. "
+DOWNLOAD_HINT = ("Run the same command again to continue: `hf download` normally keeps the files that finished (we have not tested that it also resumes a half-written one). "
                  "If it fails again, a proxy or VPN may be in the way: set HTTPS_PROXY for your proxy, or switch the VPN off, and retry.")
 
 

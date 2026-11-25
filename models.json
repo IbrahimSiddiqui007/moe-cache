@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "about": "The one model catalogue of moe-cache: bin/moe_cache_catalogue.py reads it; pick, launch, models, docs/MODELS.md (tools/gen_models_md.py) and tools/check_model_links.py follow it. Schema in docs/MODELS.md. Numbers: only those written down in docs/results-archive/RESULTS.md or benchmarks/, each with machine, date and source.",
+ "about": "The one model catalogue of moe-cache: bin/moe_cache_catalogue.py reads it; pick, launch, models, docs/reference/models.md (tools/gen_models_md.py) and tools/check_model_links.py follow it. Schema in docs/reference/models.md. Numbers: only those written down in docs/results/archive/results-windows-desktop.md or benchmarks/, each with machine, date and source.",
  "machines": {
   "pc": {
    "name": "Windows PC: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Windows 11, llama.cpp Vulkan",
@@ -113,7 +113,7 @@
     }
    ],
    "notes": [
-    "Fits in RAM + VRAM on a 32 GB PC, so the launcher runs stock llama-server (moe-cache forced on it was 18 % slower, RESULTS 65).",
+    "Fits in RAM + VRAM on a 32 GB PC, so the launcher runs stock llama-server (the plugin is for models bigger than memory; speed figures follow in a later release).",
     "General knowledge beyond our 202 tasks is not checked."
    ],
    "warnings": [
@@ -222,7 +222,7 @@
      "date": "2026-10-28",
      "source": "RESULTS 63",
      "ctx": 40960,
-     "note": "34k-token prompt; the v0.3.5 defaults read 34k at 620-640 tok/s (RESULTS 78, 2026-11-02)"
+     "note": "34k-token prompt; the v0.3.5 defaults were measured on this prompt (RESULTS 78, 2026-11-02; speed figures follow in a later release)"
     },
     {
      "metric": "tasks_correct",
@@ -244,8 +244,8 @@
     }
    ],
    "notes": [
-    "The faster Flash-Next file, 9 GB smaller than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8, owner 2026-11-07): it decoded faster than IQ2_XS on 2026-10-28. Measured on the PC (2026-11-08, fixed driver, RAM at 6000 MT/s): in a 65k conversation moe-cache reads new prompt tokens at 434.8 tok/s on Q2_0 against 188.6 on IQ3_XXS, and decodes 26.9 against 19.1 tok/s (claims v038-conv-q2_0, v038-conv-iq3xxs). No quality difference between any two Flash-Next files is proven (all p > 0.05).",
-    "Decode is CPU-bound on the measured PC; the model card's +33 % does not reproduce."
+    "The smaller Flash-Next file, 9 GB less than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8, decided 2026-11-07); speed figures follow in a later release. No quality difference between any two Flash-Next files is proven (all p > 0.05).",
+    "Decode is CPU-bound on the measured PC; the model card's decode gain does not reproduce."
    ],
    "warnings": [
     "Bigger than the RAM the server may use: moe-cache keeps the hot experts in RAM and reads the rest from the drive (SSD needed)."
@@ -294,7 +294,7 @@
     "min_vram_gib": 6,
     "needs_ssd_if_oversize": true,
     "ctx_tested_max": 65536,
-    "ctx_tested_source": "docs/AGENTS.md: Hermes fixed a bug at 64k (laptop, 2026-10-29)"
+    "ctx_tested_source": "docs/guides/agents.md: Hermes fixed a bug at 64k (laptop, 2026-10-29)"
    },
    "measured": [
     {
@@ -316,7 +316,7 @@
     }
    ],
    "notes": [
-    "The default Flash-Next file (the default from 0.3.2 to 0.3.6 and again since v0.3.8, owner 2026-11-07): 3-bit, the most tasks right (193/202), reads best for coding, top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context (65k conversation, new prompt tokens: 188.6 against 434.8 tok/s with moe-cache, claims v038-conv-iq3xxs, v038-conv-q2_0)."
+    "The default Flash-Next file (the default from 0.3.2 to 0.3.6 and again since v0.3.8, decided 2026-11-07): 3-bit, the most tasks right (193/202), reads best for coding, top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); speed figures follow in a later release."
    ],
    "warnings": [
     "Bigger than the RAM the server may use: moe-cache keeps the hot experts in RAM and reads the rest from the drive (SSD needed)."
@@ -417,7 +417,7 @@
    ],
    "notes": [
     "The smallest candidate: the one that still runs agents at 64k on a small machine.",
-    "MTP (separate head file) takes decode from 43.5 to 72 tok/s in agent mode on the PC (RESULTS 60).",
+    "MTP (separate head file) is available for agent mode; speed figures follow in a later release.",
     "The Hugging Face file is now 22.13 GB; the picker and the measurements used a 21.72 GB file (RESULTS 44), so the file changed since (revision above): check the sha256 before comparing numbers."
    ],
    "warnings": [],
@@ -571,10 +571,10 @@
    ],
    "notes": [
     "The biggest candidate; suggested for chat only where it fits in RAM (128 GB+).",
-    "With --mtp 3.1x stock on the PC (RESULTS 60); on the laptop MTP lost 25 % (RESULTS_OLD_LAPTOP 40)."
+    "MTP is available with --mtp; speed figures follow in a later release."
    ],
    "warnings": [
-    "On a 32 GB PC it is a 102 GB model read from the drive: 4-7 tok/s, 64k contexts did not finish."
+    "On a 32 GB PC it is a 102 GB model read from the drive: very slow, 64k contexts did not finish."
    ],
    "ollama": {
     "pull": null,
@@ -717,7 +717,7 @@
     "Six files: the backbone in five shards (120.7 GB) and the Engram lookup table (110.6 GB), read from the SSD."
    ],
    "warnings": [
-    "Chat and short answers only: long prompts are slow (a llama.cpp user measured about 31 tok/s prompt) and saved prompt state is unreliable until llama.cpp #31292.",
+    "Chat and short answers only: long prompts are slow (a llama.cpp user reported very slow prompt reading) and saved prompt state is unreliable until llama.cpp #31292.",
     "Needs 240 GB free disk and a fast SSD; never run by us (no measured numbers)."
    ],
    "link": {

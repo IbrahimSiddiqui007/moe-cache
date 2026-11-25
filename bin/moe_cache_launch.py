@@ -5,15 +5,17 @@ agents found on the PC. Every step reuses what exists (pick, check's facts, serv
 
   moe-cache launch                         asks; Enter takes the suggestion at each question
   moe-cache launch --yes --model PATH      no questions: start that model (chat); never downloads
+  moe-cache launch claude|opencode|codex    start that agent against the running server; the key only in its environment, no config file
   moe-cache launch --yes --agent opencode  agent mode with the recommended model if it is on this PC, then connect OpenCode
 
 Standard library only. The decisions are plain functions of the answers and of `Deps` (the machine facts, pick's recommendation, running things),
 so tests/launch_test.py runs the whole walk-through on a fake machine."""
-import argparse, os, re, shutil, subprocess, sys, time
+import argparse, json, os, re, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as pk  # noqa: E402
+import moe_cache_catalogue as cat  # noqa: E402
 import moe_cache_fetch as fx  # noqa: E402
 
 AGENTS = ("hermes", "opencode", "claude")
@@ -68,6 +70,13 @@ class Deps:
 
     def which(self, name):
         return shutil.which(name)
+
+    def run_agent(self, cmd, env):
+        """Runs the agent in the foreground with `env` added to a copy of our environment; returns its exit code. Nothing is written anywhere."""
+        try:
+            return subprocess.call(cmd, env=dict(os.environ, **env))
+        except KeyboardInterrupt:
+            return 130
 
     def download(self, rec):
         """Runs the download of recommendation `rec` (hf, then the link step if the model has one). Returns 0 or an error text."""
@@ -199,11 +208,50 @@ def stop_child(child):
         child.kill()
 
 
+def installed_command():
+    """LAUNCHER-1222 (2): the command the installer wrote for this kit (install.ps1: <root>/install.json "command"; install.sh: <prefix>/.installed "command="), when it
+    still exists; None in a checkout or when the record is missing. Looked for next to the kit (<root>/kit, <prefix>/current) and one folder above (<prefix>/versions/X)."""
+    for d in (os.path.dirname(mc.HERE), os.path.dirname(os.path.dirname(mc.HERE))):
+        try:
+            with open(os.path.join(d, "install.json"), encoding="utf-8-sig") as f:
+                cmd = (json.load(f) or {}).get("command")
+        except (OSError, ValueError, AttributeError):
+            cmd = None
+        if not cmd:
+            try:
+                with open(os.path.join(d, ".installed"), encoding="utf-8") as f:
+                    cmd = next((l.split("=", 1)[1].strip() for l in f if l.startswith("command=")), None)
+            except OSError:
+                cmd = None
+        if cmd and os.path.isfile(cmd):
+            return cmd
+    return None
+
+
 def command_word():
-    """How to write moe-cache in the commands we print: the installed command when there is one, else this interpreter and file."""
+    """How to write moe-cache in the commands we print: `moe-cache` when that is on the PATH; else the command the installer wrote (its full path: installed with -NoPath or
+    a PATH this terminal does not have yet); else this interpreter and file (a checkout)."""
     if shutil.which("moe-cache"):
         return "moe-cache"
+    cmd = installed_command()
+    if cmd:
+        return f'"{cmd}"' if " " in cmd else cmd
     return f'"{sys.executable}" "{os.path.join(mc.HERE, "bin", "moe_cache.py")}"'
+
+
+def agents_lines(say, found, use, cw, url, want_agent, started):
+    """Step 5 when nothing is connected now: no agent found, a plain-chat start (agents need agent mode), or a run that started no server (--dry-run, "show me the
+    commands"). LAUNCHER-1222 (2): names the connect command for the agents found (docs/guides/install.md step 5) and the short `moe-cache launch --agent` line."""
+    names = "|".join(found) if found else "NAME"
+    if not found:
+        say("     none of hermes, opencode, claude found on this PC" + (f" ({want_agent} is not installed; skipped)" if want_agent not in (None, "all") else "")
+            + f" (install one, then: {cw} connect NAME --url {url} --write).")
+    elif use != "agents":
+        say(f"     found: {', '.join(found)}. Coding agents need agent mode (64k context, tool calls): " + ("stop this server and " if started else "") + f"run  {cw} launch --agent"
+            f"  (step 5 then offers: connect {names})")
+    else:
+        say(f"     found: {', '.join(found)}. " + ("Step 5 would offer" if not started else "Offered") + f":  {cw} connect {names} --url {url} --write"
+            "  (after the server is up; the old config is kept as .bak)")
 
 
 def this_pc_lines(spec, ls):
@@ -224,8 +272,13 @@ def this_pc_lines(spec, ls):
     return out
 
 
+SHOW_MEASURED_SPEED = cat.SHOW_MEASURED_SPEED     # v0.3.9 ships no speed figures: the one switch is in moe_cache_catalogue.py
+
+
 def speed_text(r):
     """Expected speed only when it was measured on a PC like this one; otherwise say so."""
+    if not SHOW_MEASURED_SPEED:
+        return "speed: figures follow in a later release"
     if r.get("untested") or not r.get("key"):
         return "speed: not measured on a PC like this one"
     nums = ", ".join(f"{label} {v}" for label, v in r["key"] if label in ("decode", "prompt"))
@@ -281,7 +334,7 @@ def parse(argv):
     ap.add_argument("--no-verify", action="store_true", help="after a download, do not compare the file with the checksum in models.json (a 20 GB file takes a minute or two to check)")
     ap.add_argument("--download", action="store_true", help="the explicit yes to downloading the chosen model when it is not on this PC")
     ap.add_argument("--start", choices=["server", "on-demand", "no"], help="server: run it in this window; on-demand: a listener that loads the model on the first request; no: only print the commands")
-    ap.add_argument("--port", type=int, default=None, help="the port (default 8080)")
+    ap.add_argument("--port", type=mc.port_arg, default=None, help="the port (default 8080)")
     ap.add_argument("--models-dir", action="append", default=[], help="another folder with .gguf files (repeatable)")
     ap.add_argument("--wait", type=int, default=900, help="seconds to wait for the model to load (default 900)")
     ap.add_argument("--dry-run", action="store_true", help="show the steps and the commands; start and download nothing")
@@ -291,7 +344,40 @@ def parse(argv):
     return a
 
 
+def launch_agent(argv, deps):
+    """AGENTS-865: `moe-cache launch claude|opencode|codex [--url URL] [--api-key KEY] [-- agent arguments]`: start the agent against the running server with the
+    API key ONLY in the child's environment. No config file is written, no `connect --write`; the agent's own settings stay as they are."""
+    say = deps.say
+    ap = argparse.ArgumentParser(prog="moe_cache.py launch " + argv[0], allow_abbrev=False,
+                                 description="start the agent against the running server; the API key goes only into the agent's environment, no config file is written. Arguments after -- go to the agent.")
+    ap.add_argument("--url", default=None, help="the server (default: the launcher's default, http://127.0.0.1:8080)")
+    ap.add_argument("--api-key", default=None, help="the server's API key (default: LLAMA_API_KEY, or the stored key for a server this launcher started)")
+    a, rest = ap.parse_known_args(argv[1:])
+    if rest and rest[0] == "--":
+        rest = rest[1:]
+    agent = argv[0]
+    exe = deps.which(agent)       # the full path: on Windows npm agents are .cmd shims that a bare name does not find
+    if not exe:
+        say(f"{agent} is not on PATH; install it first (nothing was changed).")
+        return 1
+    url = a.url or mc.default_agent_url()
+    key = mc.key_for(url, a.api_key or mc.ambient_key(url), mc.launcher_owns(url))
+    name, ctx = mc.server_info(url, key)
+    if not name:
+        say(f"no llama-server answers at {url} (or it refuses the key). Start one with `{command_word()} launch --agent` or `{command_word()} server --agent`; nothing was changed.")
+        return 1
+    ctx = ctx or 65536
+    names = [name] + [n for n in mc.server_models(url, key) if n != name]
+    args, env = mc.agent_run_spec(agent, url, names, ctx, key)
+    if ctx < 64000:
+        say(f"moe-cache: warning: the server's context is {ctx}; coding agents want 64k or more (restart with --agent)")
+    say(f"starting {agent} against {name} at {url} (context {ctx}); no config file is written" + ("; the API key is in its environment only" if key else ""))
+    return deps.run_agent([exe] + args + rest, env)
+
+
 def launch(argv, deps=None):
+    if argv and argv[0] in mc.RUN_AGENTS:
+        return launch_agent(argv, deps or Deps())
     a = parse(argv)
     deps = deps or Deps()
     say = deps.say
@@ -338,6 +424,9 @@ def launch(argv, deps=None):
             recs, whys = [deps.recommend(spec, use, a.model)], [None]
         else:
             recs, whys = candidates(deps, spec, use, a.models_dir)
+            if recs[0].get("nothing_fits"):      # GUI-1155: say so plainly, suggest nothing
+                say("     " + recs[0]["why"][0])
+                return 1
         for i, r in enumerate(recs, 1):
             for line in candidate_lines(i, r, i == 1 and not a.model, whys[i - 1]):
                 say(line)
@@ -397,6 +486,7 @@ def launch(argv, deps=None):
         say("\n3/5  Getting the model: not needed, it is on this PC")
 
     # 4/5 start
+    # fallback when the recommender gives no context of its own: 64k for agents (our test rule: agent work runs at 64k+), 32k otherwise
     ctx = (rec or {}).get("ctx") or (65536 if use == "agents" else 32768)
     sargs = ["--ctx", str(ctx)] + (["--agent"] if use == "agents" else [])
     port = a.port or 8080
@@ -424,8 +514,10 @@ def launch(argv, deps=None):
     if start == "no" or a.dry_run:
         say("     the commands (nothing was started):")
         say("       " + shown["server" if start != "on-demand" else "on-demand"])
-        if use == "agents":
-            say(f"       {cw} connect opencode --url {url} --write      (or hermes, claude; after the server is up)")
+        # LAUNCHER-1222 (4): --dry-run (and "just show me the commands") used to end here, so step 5 was never shown; it now says what step 5 would offer
+        say("\n5/5  Coding agents" + (" (nothing connected: --dry-run)" if a.dry_run else " (nothing connected: the server was not started)"))
+        found = [x for x in AGENTS if deps.which(x)]
+        agents_lines(say, found, use, cw, url, a.agent, started=False)
         return 0
     cmd = server_cmd if start == "server" else od_cmd
     say("     starting: " + shown[start])
@@ -459,17 +551,18 @@ def launch(argv, deps=None):
         stop_child(child)
         say("stopped while loading.")
         return 130
+    except Exception as e:           # review finding 12: any other error here left the llama-server child running detached with nobody to stop it
+        stop_child(child)
+        say(f"     the launcher hit an error while waiting ({type(e).__name__}: {e}); the server it started was stopped.")
+        return 1
 
     # 5/5 agents
     say("\n5/5  Coding agents")
     found = [x for x in AGENTS if deps.which(x)]
     if not ready:
         say(f"     the server is not answering yet, so no agent was connected (a config written now would point at nothing). When {url} answers:  {cw} connect NAME --write")
-    elif not found:
-        say("     none of hermes, opencode, claude found on this PC" + (f" ({a.agent} is not installed; skipped)" if a.agent not in (None, "all") else "")
-            + f" (install one, then: {cw} connect NAME --write).")
-    elif use != "agents":
-        say(f"     found: {', '.join(found)}. Agents need agent mode: run  {cw} launch --agent  to start that way.")
+    elif not found or use != "agents":
+        agents_lines(say, found, use, cw, url, a.agent, started=True)
     else:
         say(f"     found: {', '.join(found)}")
         want = []
@@ -483,21 +576,22 @@ def launch(argv, deps=None):
         if a.agent and a.agent != "all" and a.agent not in found:
             say(f"     {a.agent} is not installed on this PC; skipped.")
         for x in want:
+            if x == "claude":     # AGENTS-865: no settings.local.json with the key in the project folder; `launch claude` puts it in the child's environment only
+                continue
             try:
                 deps.connect([x, "--url", url, "--write"])
-            except SystemExit as e:
+            except (SystemExit, Exception) as e:       # audit row 28: a write error (read-only config, bad JSON) is a message, not a traceback after the server is up
                 say(f"     could not connect {x}: {e}")
-        if "claude" in want:       # AUD-083: Claude Code 2.1.317 ignored ANTHROPIC_BASE_URL from settings.local.json (went to Anthropic, 401); the exported lines work
-            say("     Claude Code: start it from a shell where these are set (the settings file alone was not enough in the version we tested, docs/AGENTS.md):\n"
-                f"       bash/zsh:    export ANTHROPIC_BASE_URL={url} ANTHROPIC_AUTH_TOKEN=none\n"
-                f"       PowerShell:  $env:ANTHROPIC_BASE_URL=\"{url}\"; $env:ANTHROPIC_AUTH_TOKEN=\"none\"\n"
-                f"     (`{cw} connect claude --url {url}` prints the exact lines for your key)")
+        if "claude" in want:
+            say(f"     Claude Code: nothing was written (its settings file would hold the API key). In another terminal start it with:  {cw} launch claude --url {url}\n"
+                "     (the key goes only into Claude Code's own environment)")
         if not want:
             say(f"     not connected. Later:  {cw} connect NAME --write")
 
     say(f"\nRunning at {url}. Ctrl+C stops it." if child.poll() is None else "")
     try:
-        return child.wait() or 0
+        rc = child.wait()
+        return rc if rc >= 0 else 128 + -rc          # review finding 13: a signal ends a child with a NEGATIVE code (-2 for Ctrl+C); sys.exit(-2) was 254 in the shell, now 130 as shells report it
     except KeyboardInterrupt:
         stop_child(child)
         say("stopped.")

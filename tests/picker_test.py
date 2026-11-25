@@ -50,22 +50,22 @@ for label, m, want in TABLE:
 
 # measured vs untested wording: only where docs/RESULTS has a number for that class
 pc = "32 GB / 16 GB (the PC)"
-check(not recs[(pc, "agents")]["untested"] and "47.8 s" in recs[(pc, "agents")]["measured"], "PC agents: measured (OpenCode 47.8 s)")
-check(not recs[(pc, "chat")]["untested"] and "19.9 tok/s" in recs[(pc, "chat")]["measured"], "PC chat: IQ3_XXS, the default Flash-Next file (owner 2026-10-30), measured 19.9 tok/s")
-check(any(a["id"] == "flash-next-q2_0" and "faster" in a["why"] for a in recs[(pc, "chat")]["alternatives"]), "PC chat: Q2_0 offered as the faster alternative")
+check(not recs[(pc, "agents")]["untested"] and "190/202 tasks" in recs[(pc, "agents")]["measured"], "PC agents: measured (190/202 tasks, no speed figure)")
+check(not recs[(pc, "chat")]["untested"] and "193/202 tasks" in recs[(pc, "chat")]["measured"], "PC chat: IQ3_XXS, the default Flash-Next file (owner 2026-10-30), measured 193/202 tasks")
+check(any(a["id"] == "flash-next-q2_0" and "smaller" in a["why"] for a in recs[(pc, "chat")]["alternatives"]), "PC chat: Q2_0 offered as the smaller alternative")
 check(recs[("32 GB / 8 GB", "agents")]["untested"] and recs[("32 GB / 8 GB", "agents")]["measured"] == "untested on this class of machine",
       "32/8 agents (Bolt, measured only with a 16 GB GPU): 'untested on this class of machine'")
 check(recs[("32 GB / 8 GB", "chat")]["untested"] and "IQ2_XS" in recs[("32 GB / 8 GB", "chat")]["why"][0], "32/8 chat: untested, names the sibling file that was measured")
-# owner 2026-11-07: IQ3_XXS is the default Flash-Next file again, Q2_0 is the faster option (v0.3.8)
-check(recs[(pc, "chat")]["id"] == "flash-next-iq3_xxs" and recs[(pc, "chat")]["alternatives"][0]["id"] == "flash-next-q2_0" and "faster option" in recs[(pc, "chat")]["alternatives"][0]["why"],
-      "PC chat: IQ3_XXS first, Q2_0 named as the faster option")
-check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next file (owner 2026-11-07)") and pk.SIBLINGS_WHY["flash-next-q2_0"].startswith("the faster option (owner 2026-11-07)"),
-      "the sibling texts say which file is the default and which is the faster option")
+# owner 2026-11-07: IQ3_XXS is the default Flash-Next file again, Q2_0 is the smaller option (v0.3.8)
+check(recs[(pc, "chat")]["id"] == "flash-next-iq3_xxs" and recs[(pc, "chat")]["alternatives"][0]["id"] == "flash-next-q2_0" and "smaller option" in recs[(pc, "chat")]["alternatives"][0]["why"],
+      "PC chat: IQ3_XXS first, Q2_0 named as the smaller option")
+check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next file") and pk.SIBLINGS_WHY["flash-next-q2_0"].startswith("the smaller option") and not any("owner 20" in v for v in pk.SIBLINGS_WHY.values()),
+      "the sibling texts say which file is the default and which is the smaller option")
 check(not any("86.9" in v or "50.7" in v for v in pk.SIBLINGS_WHY.values()), "no unrecorded 2026-11-05 percentages in the sibling texts")
 check(recs[("64 GB / 16 GB", "chat")]["id"] == "flash-next-iq3_xxs" and not recs[("64 GB / 16 GB", "chat")]["untested"], "64/16 chat: IQ3_XXS with the 16 GB GPU numbers")
-check(not recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["untested"] and "22.6" in recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["measured"],
-      "16/6 agents: Qwen3.6 with moe-cache at 12 GB was measured (22.6 tok/s)")
-check("9.9" in recs[("32 GB, no GPU", "agents")]["measured"], "no GPU: the no-GPU measurement is quoted")
+check(not recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["untested"] and "measured" in recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["measured"],
+      "16/6 agents: Qwen3.6 with moe-cache at 12 GB was measured (no speed figure)")
+check("no GPU" in recs[("32 GB, no GPU", "agents")]["measured"], "no GPU: the no-GPU measurement is named (no speed figure)")
 check(any("without a GPU" in w for w in recs[("32 GB, no GPU", "agents")]["warnings"]), "no GPU + agents: warns that long prompts are slow")
 
 # engine follows the launcher's own stock-or-plugin rule (moe_cache.decide: model + 1.5 GB in the memory the server may use)
@@ -73,8 +73,9 @@ check(recs[(pc, "agents")]["engine"].startswith("stock") and recs[(pc, "chat")][
 check(recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["engine"].startswith("moe-cache"), "engine: Qwen3.6 (21.7 GB) needs moe-cache on 16 GB")
 check(recs[(pc, "agents")]["args"] == ["--agent", "--ctx", "131072"] and "--agent" not in recs[(pc, "chat")]["args"], "args: --agent only for agents")
 check(any(a["id"] == "flash-next-iq3_xxs" for a in recs[(pc, "agents")]["alternatives"]), "PC agents: the Flash-Next line (IQ3_XXS) is offered as the alternative")
-check(any(a["id"] == "flash-next-q2_0" and "--fast" in a["why"] for a in recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["alternatives"]),
-      "16/6 chat: Flash-Next offered only as the --fast alternative (measured at 12 GB)")
+_alt = next((a for a in recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["alternatives"] if a["id"] == "flash-next-q2_0"), None)
+check(_alt is not None and "--fast" not in _alt["why"] and "untested" in _alt["why"] and "slow" in _alt["why"],
+      "16/6 chat: Flash-Next offered as an alternative with no --fast speed quoted (--fast is off and --apply does not set it): 'slow', 'untested' (QUALITY-014 text audit)")
 
 # downloads: printed with size and source, never run here
 d = recs[(pc, "agents")]["download"]
@@ -83,6 +84,11 @@ check(d and d["size"] == pk.MODELS["bolt"]["size"] and "huggingface.co/nvidia/" 
 check("ollama" in recs[("32 GB, no GPU", "chat")]["download"], "Qwen3.6: the Ollama alternative is printed too")
 
 # ---- memory with the context, and a model of the user's own choosing is warned about, never refused ----
+# DOCS-774: a card that reports a hair under 6 or 12 GiB (5.9, 11.9) is picked like the 6 / 12 GiB card, a real 5 / 11 GiB card is not
+for lo, hi in ((5.9, 6), (11.9, 12)):
+    a_, b_ = pk.recommend(machine(32, lo), "agents"), pk.recommend(machine(32, hi), "agents")
+    check(a_["id"] == b_["id"] and a_["ctx"] == b_["ctx"] and a_["args"] == b_["args"], f"DOCS-774: {lo} GiB is picked like {hi} GiB ({a_['id']} {a_['ctx']} vs {b_['id']} {b_['ctx']})")
+check(pk.snap_gib(5.0) == 5.0 and pk.snap_gib(5.7) == 5.7 and pk.snap_gib(11.9) == 12.0 and pk.snap_gib(0) == 0, "DOCS-774: only a rounding-size gap (up to 0.2 GiB) is snapped")
 r = pk.recommend(machine(32, 16), "agents")
 mem = r["memory"]
 check(mem["model"] == pk.MODELS["bolt"]["size"] and mem["kv"] > 0 and abs(mem["total"] - mem["model"] - mem["kv"]) < 1 and mem["available"] > mem["total"],
@@ -471,6 +477,18 @@ check(wt.win_tool("tasklist", windows=True) == os.path.join(_root, "System32", "
 check(wt.win_tool("powershell", windows=True) == os.path.join(_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "win_tool: powershell -> WindowsPowerShell\\v1.0")
 check(wt.win_tool("nosuchtool", windows=True) == "nosuchtool", "win_tool: a tool that is not in System32 keeps its bare name")
 check(wt.win_tool("taskkill", windows=False) == "taskkill" and wt.win_tool("powershell", windows=False) == "powershell", "win_tool: elsewhere the bare name")
+
+# ---- GUI-1155: an 8 GB machine is told plainly that nothing fits; no model, no speeds, no download; a 16 GB PC is not shown as "our PC" speeds ----
+for ram, vr in ((8, 0), (8, 4)):
+    for use in ("agents", "chat", "docs"):
+        r = pk.recommend(machine(ram, vr), use)
+        check(r.get("nothing_fits") is True and "Nothing fits" in r["why"][0] and r["download"] is None and r["alternatives"] == [] and not r["key"] and r["untested"],
+              f"{ram} GB RAM + {vr} GB VRAM, {use}: nothing fits well, no recommendation, no speed, no download")
+        check("Nothing fits" in "\n".join(pk.rec_lines(r)) and "tok/s" not in "\n".join(pk.rec_lines(r)), f"{ram} GB, {use}: the CLI prints the plain message only")
+check(pk.recommend(machine(16, 6), "chat").get("nothing_fits") is False, "16 GB RAM + 6 GB VRAM still gets a recommendation")
+check(pk.recommend(machine(8, 0), "chat", "qwen3.6-35b").get("nothing_fits") is False, "8 GB: a model the user chose is only warned about, never refused")
+check("our test PC" in pk.recommend(machine(32, 16), "agents")["measured"], "the PC's speeds are labelled 'our test PC'")
+
 if _sr is None: os.environ.pop("SystemRoot", None)
 else: os.environ["SystemRoot"] = _sr
 

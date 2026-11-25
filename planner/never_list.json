@@ -1,0 +1,137 @@
+{
+ "schema": 1,
+ "about": "Settings measured as a loss (LAUNCHER-1225 step 2, idea from the scout's planner study). The auto-tune never tries a row's setting inside its scope (the planner does not read this list yet); when the user sets one, the launcher says what was measured and runs it anyway (the user's flags win). Each row names its evidence; one-run rows are forecasts. A row is removed only by a new measurement that beats it.",
+ "rows": [
+  {
+   "id": "dflash-draft",
+   "kind": "flag",
+   "name": "--spec-type",
+   "value": "draft-dflash",
+   "scope": {
+    "backend": "vulkan",
+    "model": "dense",
+    "ctx_min": 65536
+   },
+   "loss": "decode 24.9 vs 27.8 tok/s without a drafter, prompt -46 % (Qwen3.8-27B Q3_K_XL, 64k, RX 9070 XT, one run, forecast)",
+   "source": "DECODE-704"
+  },
+  {
+   "id": "vk-no-host-visible-vidmem",
+   "kind": "env",
+   "name": "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM",
+   "value": "1",
+   "scope": {
+    "backend": "vulkan"
+   },
+   "loss": "decode +12.4 % but prompt -34 % and first token +52 % (Qwen3.8-27B IQ4_XS, 64k, RX 9070 XT, one run, forecast): a prompt loss for agent work",
+   "source": "TEST-1205"
+  },
+  {
+   "id": "vk-suballoc-256m",
+   "kind": "env",
+   "name": "GGML_VK_SUBALLOCATION_BLOCK_SIZE",
+   "value": "*",
+   "scope": {
+    "backend": "vulkan"
+   },
+   "loss": "decode +2.8 %, prompt -36 % (Qwen3.8-27B IQ4_XS, 64k, 256 MiB blocks, RX 9070 XT, one run, forecast)",
+   "source": "TEST-1205"
+  },
+  {
+   "id": "ub-8192",
+   "kind": "flag",
+   "name": "-ub",
+   "min": 8192,
+   "scope": {
+    "backend": "vulkan",
+    "model": "moe",
+    "ctx_min": 65536
+   },
+   "loss": "prompt +8.5 % but decode -28 % against -ub 4096 (Flash-Next, 64k, our test PC)",
+   "source": "PREFILL-185"
+  },
+  {
+   "id": "mtp-dense-128k",
+   "kind": "flag",
+   "name": "--spec-type",
+   "value": "draft-mtp",
+   "scope": {
+    "model": "dense",
+    "ctx_min": 131072
+   },
+   "loss": "decode 9.55 vs 15.4 tok/s without MTP (Qwen3.8-27B Q3_K_XL, 128k, RX 9070 XT)",
+   "source": "LAUNCHER-1133"
+  }
+ ],
+ "answer_classes": {
+  "about": "LAUNCHER-1225 step 2 (main 2026-11-18; critic of 59abd70): what a setting does to the answers. exact = same answers as the plan without it (memory locking, how the file is loaded, the context size, records); placement = the same maths run in another place or order (where weights sit, batch size, slots, threads): speed, and possibly last-bit float differences, NOT shown token-identical; quality = can change tokens on purpose: the auto-tune may pick it on its own only when its quality-gate row in TOKEN_MODES (bin/moe_cache_approx.py) has status 'won' (the gate passed and the speed win was measured); a setting missing from this table counts as quality without a gate (never picked on its own). Keys: auto-tune dimensions and plan-file setting names. planner/never_list.py BUILTIN_CLASSES holds the same table for when this file cannot be read.",
+  "ncmoe": {
+   "class": "placement"
+  },
+  "n_cpu_moe": {
+   "class": "placement"
+  },
+  "gpu_cache": {
+   "class": "placement"
+  },
+  "ub": {
+   "class": "placement"
+  },
+  "b": {
+   "class": "placement"
+  },
+  "np": {
+   "class": "placement"
+  },
+  "slots": {
+   "class": "placement"
+  },
+  "ramlock": {
+   "class": "exact"
+  },
+  "ram_lock": {
+   "class": "exact"
+  },
+  "threads": {
+   "class": "placement"
+  },
+  "engine": {
+   "class": "exact"
+  },
+  "load_mode": {
+   "class": "exact"
+  },
+  "cache_ram_mib": {
+   "class": "exact"
+  },
+  "context": {
+   "class": "exact"
+  },
+  "offload_min_batch": {
+   "class": "placement"
+  },
+  "load_record": {
+   "class": "exact"
+  },
+  "kv": {
+   "class": "quality",
+   "gate": "kv8"
+  },
+  "kv_type": {
+   "class": "quality",
+   "gate": "kv8"
+  },
+  "mtp": {
+   "class": "quality",
+   "gate": "mtp"
+  },
+  "fast": {
+   "class": "quality",
+   "gate": "fast1"
+  },
+  "approx": {
+   "class": "quality",
+   "gate": "approx-tiers"
+  }
+ }
+}

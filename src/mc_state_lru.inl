@@ -99,6 +99,7 @@
 
     // give the physical pages of one expert back to the system (pages shared with a neighbour expert stay)
     void evict(int s) {
+        mcevict::scope_t evict_scope{evict_t, cur_decode};      // DECODE-123: time this eviction (always on)
         // find the tensor that owns node s
         tinfo_t & ti = *tensors[node_owner[(size_t) s]];
         const size_t e = (size_t) (s - ti.node0);
@@ -113,10 +114,6 @@
             }
         }
         evict_age_sum += epoch - nodes[s].epoch;   // how many groups ago this expert was last used
-        if (nodes[s].prefetched) {
-            nodes[s].prefetched = false;
-            pf_wasted++;
-        }
         unlink(s);
         nodes[s].resident = false;
         nodes[s].mapped = false;       // the pages were given back (guard mode: made inaccessible); a later fallback maps them again
@@ -203,23 +200,11 @@
         if (track_crf && cur_decode) {
             const int dl = tensors[tidx[0]]->layer;        // layers ascend within a decode token: a lower layer than the last one starts the next token
             if (dl >= 0) {
-                if (dl < last_dec_layer) { tok++; }
+                if (mclru::starts_new_decode_token(dl, last_dec_layer, loop_start, loop_end, loop_count, loop_pass)) { tok++; }     // a loop pass is not a new token (INKLING-1250 fix 2)
                 last_dec_layer = dl;
             }
         }
-        std::vector<int> wait_list;       // experts a lookahead read is still filling
-        if (lookahead && cur_decode) {
-            auto pf = pred_flags.find(tensors[tidx[0]]->layer);
-            if (pf != pred_flags.end()) {
-                for (size_t e = 0; e < cnt.size() && e < pf->second.size(); e++) {
-                    if (cnt[e]) {
-                        pf_pred_total++;
-                        pf_pred_hit += pf->second[e] ? 1 : 0;
-                    }
-                }
-                pred_flags.erase(pf);
-            }
-        }
+        std::vector<int> wait_list;       // experts a background read (rebalance) is still filling
         groups++;
         (cur_decode ? g_saw_dec : g_saw_pre) = true;
         if (auto_mode && (groups % (async ? 4 : 32)) == 1) {
@@ -311,11 +296,6 @@
                     hits++;
                     if (cur_decode) { hits_dec++; }
                     if (cur_decode ? rb_armed_dec : rb_armed_pre) { (cur_decode ? rb_dec_hits : rb_pre_hits)++; }
-                    if (n.prefetched) {
-                        n.prefetched = false;
-                        pf_used++;
-                        if (n.loading) { pf_late++; }
-                    }
                     if (n.loading) { wait_list.push_back(s); }
                     if (!cur_scan) {          // a long prompt uses (nearly) everything: it does not make an expert "recently used"
                         touch_use(s, true);
@@ -402,7 +382,7 @@
     void flush_reads(std::vector<io_job_t> & jobs, size_t max_nb2) {
         const bool did_reads = !jobs.empty();
         std::vector<pack_job_t *> pjs;
-        pack_extract(jobs, pjs);       // BO-1: experts with two or more slices to read come from the pack, one read each
+        pack_extract(jobs, pjs);       // expert pack: experts with two or more slices to read come from the pack, one read each
         if (coalesce_bytes && jobs.size() > 1) {
             // long prompts need nearly every expert of a layer, and neighbouring experts of a tensor are neighbours in the file and in memory:
             // one large read instead of many half-megabyte ones (the drive reaches its speed only with large or many parallel reads)

@@ -35,6 +35,26 @@ def _read_str(f):
     return f.read(n).decode("utf-8", "replace")
 
 
+def _skip_str_array(f, n):
+    """Skip n length-prefixed strings (the tokenizer: ~150k entries) by walking the lengths in 1 MiB blocks: one read per block, not one read and seek per entry
+    (LAUNCHER-1186: about 4 s per start on the laptop 35B per the 2026-11-16 laptop measurement, one machine). The file size is taken once (one fstat per entry made a dry run take 16 s on Windows)."""
+    size = os.fstat(f.fileno()).st_size
+    pos = f.tell()
+    if n * 8 > size - pos:
+        raise ValueError("GGUF header: array past the end of the file")
+    buf, base = b"", pos
+    for _ in range(n):
+        if pos + 8 - base > len(buf):
+            f.seek(pos)
+            buf, base = f.read(1 << 20), pos
+            if len(buf) < 8:
+                raise ValueError("GGUF header: array past the end of the file")
+        pos += 8 + struct.unpack_from("<Q", buf, pos - base)[0]
+        if pos > size:
+            raise ValueError("GGUF header: length past the end of the file")
+    f.seek(pos)
+
+
 def _skip_value(f, t):
     if t in _FMT:
         _skip(f, struct.calcsize(_FMT[t]))
@@ -47,41 +67,55 @@ def _skip_value(f, t):
         if it in _FMT:
             _skip(f, n * struct.calcsize(_FMT[it]))
         elif it == 8:
-            # string arrays (the tokenizer: ~150k entries): the file size once, not one fstat per entry (that made a dry run take 16 s on Windows)
-            size = os.fstat(f.fileno()).st_size
-            if n * 8 > size - f.tell():
-                raise ValueError("GGUF header: array past the end of the file")
-            for _ in range(n):
-                k = struct.unpack("<Q", f.read(8))[0]
-                if k > size - f.tell():
-                    raise ValueError("GGUF header: length past the end of the file")
-                f.seek(k, 1)
+            _skip_str_array(f, n)
         else:          # arrays of arrays: no GGUF writer makes them, and they would recurse as deep as the file says
             raise ValueError(f"GGUF header: array of type {it}")
     else:
         raise ValueError(f"unknown GGUF value type {t}")
 
 
+_KV = {}
+
+
+def _kv_index(path):
+    """-> (n_tensors, [(key, type, value offset)], offset after the key/value block) or None when the file is not GGUF. The header is walked ONCE per file
+    (kept by path, size and modification time; a file rewritten in place to the same size with the same mtime would be served stale) and the readers below seek to the values they want: model_key, sampling_meta, mtp_layers, read_meta and
+    read_tensors used to walk the tokenizer arrays one pass each (LAUNCHER-1186). Hostile headers raise ValueError exactly as before (nothing is cached then)."""
+    st = os.stat(path)
+    k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    if k not in _KV:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                _KV[k] = None
+            else:
+                f.read(4)
+                n_t, n_kv = struct.unpack("<QQ", f.read(16))
+                ents = []
+                for _ in range(n_kv):
+                    key = _read_str(f)
+                    t = struct.unpack("<I", f.read(4))[0]
+                    ents.append((key, t, f.tell()))
+                    _skip_value(f, t)
+                _KV[k] = (n_t, ents, f.tell())
+    return _KV[k]
+
+
 def model_key(path):
     """'<architecture>-<layers>x<experts>' from the GGUF header (e.g. 'qwen4exp-48x512'): names the shipped starter usage profile for a model family,
     shared by all quants of it; None when the header lacks these keys."""
     meta = {}
+    idx = _kv_index(path)
+    if idx is None:
+        return None
     with open(path, "rb") as f:
-        if f.read(4) != b"GGUF":
-            return None
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in idx[1]:
+            f.seek(off)
             if key == "general.architecture" and t == 8:
                 meta["arch"] = _read_str(f)
                 if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}", meta["arch"]) or ".." in meta["arch"]:
                     return None        # it becomes part of a file name (profiles/<key>.usage): no / \\ or ..
             elif (key.endswith(".block_count") or key.endswith(".expert_count")) and t in (4, 5, 10, 11):
                 meta[key.rsplit(".", 1)[1]] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
-            else:
-                _skip_value(f, t)
     if not all(k in meta for k in ("arch", "block_count", "expert_count")):
         return None
     return f"{meta['arch']}-{meta['block_count']}x{meta['expert_count']}"
@@ -100,21 +134,19 @@ def read_tensors(path):
 
 
 def _read_tensors(path):
+    idx = _kv_index(path)
+    if idx is None:
+        raise ValueError("not a GGUF file")
+    n_t, ents, kv_end = idx
     with open(path, "rb") as f:
-        if f.read(4) != b"GGUF":
-            raise ValueError("not a GGUF file")
-        struct.unpack("<I", f.read(4))
-        n_t, n_kv = struct.unpack("<QQ", f.read(16))
         align = 32
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in ents:
             if key == "general.alignment" and t in (4, 5):
+                f.seek(off)
                 align = struct.unpack(_FMT[t], f.read(4))[0]
                 if not (1 <= align <= 1 << 16 and align & (align - 1) == 0):
                     raise ValueError(f"GGUF header: alignment {align}")
-            else:
-                _skip_value(f, t)
+        f.seek(kv_end)
         infos = []
         for _ in range(n_t):
             name = _read_str(f)
@@ -138,14 +170,13 @@ def sampling_meta(path):
     """-> {"arch", "name", "basename", "file_type", "sampling": {key: value}} from the GGUF header: what picks the model card's sampling defaults
     (general.sampling.* are the publisher's own, which llama.cpp already applies unless a flag is given)."""
     out = {"arch": "", "name": "", "basename": "", "file_type": None, "sampling": {}}
-    with open(shards(path)[0], "rb") as f:
-        if f.read(4) != b"GGUF":
-            return out
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+    first = shards(path)[0]
+    idx = _kv_index(first)
+    if idx is None:
+        return out
+    with open(first, "rb") as f:
+        for key, t, off in idx[1]:
+            f.seek(off)
             if key in ("general.architecture", "general.name", "general.basename") and t == 8:
                 out[{"general.architecture": "arch"}.get(key, key.split(".")[1])] = _read_str(f)
             elif (key == "general.file_type" or key.startswith("general.sampling.")) and t in _FMT:
@@ -154,8 +185,6 @@ def sampling_meta(path):
                     out["file_type"] = v
                 else:
                     out["sampling"][key[len("general.sampling."):]] = v
-            else:
-                _skip_value(f, t)
     return out
 
 
@@ -164,18 +193,14 @@ def mtp_layers(path):
     <arch>.nextn_predict_layers from the header (0 when absent). A quant can keep the key but drop the tensors; only `head` says the head is there."""
     declared = 0
     files = shards(path)
+    idx = _kv_index(files[0])
+    if idx is None:
+        return 0, 0
     with open(files[0], "rb") as f:
-        if f.read(4) != b"GGUF":
-            return 0, 0
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in idx[1]:
             if key.endswith(".nextn_predict_layers") and t in (4, 5, 10, 11):
+                f.seek(off)
                 declared = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
-            else:
-                _skip_value(f, t)
     head = {m.group(1) for p in files for name, _ in read_tensors(p) for m in [re.match(r"blk\.(\d+)\.nextn\.", name)] if m}
     return len(head), declared
 
@@ -185,10 +210,17 @@ def shards(path):
     return sorted(glob.glob(glob.escape(m.group(1)) + f"-*-of-{m.group(3)}.gguf")) if m else [path]      # the folder and name are the user's text
 
 
+def is_host_side(name):
+    """LAUNCHER-1162: tensors llama.cpp keeps in host memory (the input layer) and never puts on the GPU: the token embedding and the per-layer token-embedding
+    table (Gemma-3n style per_layer_token_embd, Flash-Next's n-gram table). The dense planners (dense_ffn_split, dense_gpu_fit) subtract them from the weights
+    they count; model_layout() and planner/commit_guard.py already did, by the same name rule."""
+    return name == "token_embd.weight" or "per_layer_token_embd" in name
+
+
 def model_layout(path):
     """-> dict(n_layers, expert_bytes_per_layer, other_bytes, total_bytes, mtp_blocks). n_layers counts the MTP head's block (blk.N.nextn.*) when it
     has experts (Qwen3.6: 41 = 40 + 1); mtp_blocks says how many of the highest blocks are that head."""
-    layers, other, table, mtp = {}, 0, 0, set()
+    layers, other, table, mtp, emb, has_output = {}, 0, 0, set(), 0, False
     for p in shards(path):
         for name, size in read_tensors(p):
             mm = re.match(r"blk\.(\d+)\.nextn\.", name)
@@ -201,10 +233,41 @@ def model_layout(path):
                 table += size              # n-gram lookup table (qwen4exp): read from the file when needed, never on the GPU (same rule as planner/plan.py)
             else:
                 other += size
+                if name == "token_embd.weight":
+                    emb += size
+                elif name == "output.weight":
+                    has_output = True
     n = (max(layers) + 1) if layers else 0
     per = sum(layers.values()) / len(layers) if layers else 0
+    # token_embd stays on the CPU (llama.cpp keeps the input layer there; laptop 35B log: CUDA0 model buffer 5116.81 MiB = the other weights minus token_embd plus the
+    # GPU expert layers, to the MiB). A model without output.weight reuses token_embd as its output layer, which then IS on the GPU.
     return {"n_layers": n, "expert_bytes_per_layer": per, "other_bytes": other, "table_bytes": table, "total_bytes": other + table + sum(layers.values()),
-            "mtp_blocks": len(mtp & set(layers))}
+            "mtp_blocks": len(mtp & set(layers)), "expert_bytes_by_layer": dict(sorted(layers.items())), "cpu_only_bytes": emb if has_output else 0}
+
+
+def gpu_expert_bytes(lay, n_cpu_moe):
+    """Bytes of expert weights on the GPU with --n-cpu-moe n_cpu_moe (llama.cpp keeps the experts of layers 0 .. n-1 on the CPU): the real sizes of the layers
+    above n (quantisation mixes make some layers bigger: the 35B UD-IQ3_XXS has 262 and 300 MiB layers)."""
+    by = lay.get("expert_bytes_by_layer") or {}
+    if by:
+        return float(sum(v for k, v in by.items() if k >= n_cpu_moe))
+    return float(max(0, lay["n_layers"] - n_cpu_moe) * lay["expert_bytes_per_layer"])
+
+
+def gpu_layers_that_fit(lay, room):
+    """The most expert layers (counted from the top, as --n-cpu-moe places them) whose real sizes fit `room` bytes."""
+    by = lay.get("expert_bytes_by_layer") or {}
+    if not lay["n_layers"] or not lay["expert_bytes_per_layer"] or room <= 0:
+        return 0
+    if not by:
+        return max(0, min(lay["n_layers"], int(room // lay["expert_bytes_per_layer"])))
+    used, g = 0.0, 0
+    for k in range(lay["n_layers"] - 1, -1, -1):
+        used += by.get(k, 0)
+        if used > room:
+            break
+        g += 1
+    return g
 
 
 SMI_GAP_GIB = 0.40           # nvidia-smi (total - used) is 0.4 GiB more than CUDA can allocate on the RTX 4060 8 GB laptop (8146 vs 7745 MiB at idle); the first live run ran out of memory without it
@@ -227,7 +290,7 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
         for pth in shards(path):
             for name, size in read_tensors(pth):
                 total += size
-                emb += size if name == "token_embd.weight" else 0
+                emb += size if is_host_side(name) else 0
                 mm = re.match(r"blk\.(\d+)\.ffn_(up|down|gate|gate_up)\.weight$", name)
                 if mm:
                     ffn[int(mm.group(1))] = ffn.get(int(mm.group(1)), 0) + size
@@ -250,7 +313,29 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
     return out
 
 
-def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0.0, fixed_gib=None, measured_gib=None):
+def nextn_bytes(path):
+    """Bytes of the NextN / MTP layers of a model file (the blocks past the main stack: blk.N with N >= block_count - nextn_predict_layers, ALL their tensors, not only the
+    blk.N.nextn.* ones: Qwen3.8-27B's blk.64 is a whole layer, 0.327 GiB while its nextn.* tensors are 0.04 GiB); 0 when the model has none. llama.cpp builds that know
+    `load_mtp` do not load them unless MTP drafting is on (LAUNCHER-1063 follow-up: the memory plan then must not count them)."""
+    try:
+        m = read_meta(shards(path)[0])
+        arch = m.get("general.architecture")
+        n_next, blocks = int(m.get(f"{arch}.nextn_predict_layers", 0) or 0), int(m.get(f"{arch}.block_count", 0) or 0)
+        if n_next <= 0 or blocks <= n_next:
+            return 0
+        first, total, has_nextn = blocks - n_next, 0, False
+        for pth in shards(path):
+            for name, size in read_tensors(pth):
+                mm = re.match(r"blk\.(\d+)\.", name)
+                if mm and int(mm.group(1)) >= first:
+                    total += size
+                    has_nextn = has_nextn or ".nextn." in name
+        return total if has_nextn else 0      # block_count must really include the NextN layers: no nextn.* tensor there = count nothing
+    except Exception:
+        return 0
+
+
+def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0.0, fixed_gib=None, skip_mtp=False, measured_gib=None):
     """LAUNCHER-982: does a model WITHOUT experts (dense, including the hybrid recurrent Qwen3.5/3.6/3.8 layouts) fit the GPU together with its KV cache?
     -> dict(model_gib, kv_gib, fixed_gib, margin_gib, need_gib, free_gib, fits, over_gib, ctx_fit) or None (unknown KV layout: sliding window, MLA; no GPU memory figure).
     model = file minus the token embedding (it stays on the CPU, laptop-measured); kv = kv_bytes() as llama-server sizes it (attention layers + recurrent state); fixed = CUDA/Vulkan
@@ -266,15 +351,16 @@ def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0
         for pth in shards(path):
             for name, size in read_tensors(pth):
                 total += size
-                emb += size if name == "token_embd.weight" else 0
+                emb += size if is_host_side(name) else 0
         kv = kv_bytes(path, ctx, kv_q8=kv_q8)
         if kv is None:
             return None
-        model = (total - emb) / GiB
+        skipped = nextn_bytes(path) / GiB if skip_mtp else 0.0          # MTP is off and this llama-server does not load the MTP layer: it takes no GPU memory
+        model = (total - emb) / GiB - skipped
         free = free_bytes / GiB - gap_gib
         need = (measured_gib if measured_gib else model + kv / GiB + fixed) + margin_gib
         kv1 = kv_bytes(path, ctx, kv_q8=kv_q8, n_seq=1)
-        out = {"np1_saves_gib": ((kv - kv1) / GiB if kv1 is not None else 0.0), "model_gib": model, "kv_gib": kv / GiB, "fixed_gib": fixed, "margin_gib": margin_gib, "need_gib": need, "free_gib": free,
+        out = {"np1_saves_gib": ((kv - kv1) / GiB if kv1 is not None else 0.0), "model_gib": model, "host_side_gib": emb / GiB, "mtp_skipped_gib": skipped, "kv_gib": kv / GiB, "fixed_gib": fixed, "margin_gib": margin_gib, "need_gib": need, "free_gib": free,
                "fits": need <= free, "over_gib": max(need - free, 0.0), "ctx_fit": ctx if need <= free else 0, "measured": bool(measured_gib)}
         if need > free:
             lo, hi = 0, ctx // 1024
@@ -294,38 +380,30 @@ def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0
 def read_meta(path):
     """-> {key: value} of the GGUF header: numbers and strings, arrays of numbers up to 4096 entries as lists (longer arrays are skipped)."""
     out = {}
+    idx = _kv_index(path)
+    if idx is None:
+        raise ValueError("not a GGUF file")
     with open(path, "rb") as f:
-        if f.read(4) != b"GGUF":
-            raise ValueError("not a GGUF file")
-        f.read(4)
-        _, n_kv = struct.unpack("<QQ", f.read(16))
-        for _ in range(n_kv):
-            key = _read_str(f)
-            t = struct.unpack("<I", f.read(4))[0]
+        for key, t, off in idx[1]:
+            f.seek(off)
             if t in _FMT:
                 out[key] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
             elif t == 8:
                 out[key] = _read_str(f)
             elif t == 9:
-                pos = f.tell()
                 it, n = struct.unpack("<I", f.read(4))[0], struct.unpack("<Q", f.read(8))[0]
                 if it in _FMT and n <= 4096:
                     size = struct.calcsize(_FMT[it])
                     if n * size > _left(f):
                         raise ValueError("GGUF header: array past the end of the file")
                     out[key] = [struct.unpack(_FMT[it], f.read(size))[0] for _ in range(n)]
-                else:
-                    f.seek(pos)
-                    _skip_value(f, t)
-            else:
-                _skip_value(f, t)
     return out
 
 
 KV_ELEM = {False: 2.0, True: 34 / 32, "q4_0": 18 / 32}       # bytes per K/V value: f16, q8_0 (--fast), q4_0 (a block of 32 values is 18 bytes)
 
 
-KV_ELEM_BY_NAME = {"f16": 2.0, "bf16": 2.0, "f32": 4.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32, "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32}      # bytes per value of llama.cpp's -ctk / -ctv types
+KV_ELEM_BY_NAME = {"f16": 2.0, "bf16": 2.0, "f32": 4.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32, "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32}      # bytes per value of llama.cpp's -ctk / -ctv types (checked at the source: ggml's block_q4_1 is d(2) + m(2) + qs[16] = 20 bytes per 32 values; 24 bytes is q5_1)
 
 
 def kv_elems(kv):
@@ -520,29 +598,58 @@ ROOM_RESERVE_MIB = 300      # kept free below the card's size minus the other pr
 
 
 def counters_text(pid=None, timeout=8):
-    """One PowerShell read of '\\GPU Process Memory(*)' Dedicated Usage ('path|value;...', the format others_dedicated_mib reads). '' when it fails."""
+    """One PowerShell read of '\\GPU Process Memory(*)' Dedicated Usage and, in the same read, '\\GPU Adapter Memory(*)' Dedicated Usage ('path|value;...', the format others_dedicated_mib
+    reads; the adapter counter is the card's own total, the figure that caps the sum of the processes). '' when the process read fails."""
     pat = f"pid_{pid}_*" if pid else "*"
-    cmd = ("Get-Counter -Counter '\\GPU Process Memory(P)\\Dedicated Usage' -ErrorAction SilentlyContinue | "
-           "ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';' }").replace("(P)", f"({pat})")
+    cmd = ("$e = 'SilentlyContinue'; "         # two separate reads: if one counter set is missing the other still answers (critic R5)
+           "foreach ($c in @('\\GPU Process Memory(P)\\Dedicated Usage', '\\GPU Adapter Memory(*)\\Dedicated Usage')) { "
+           "Get-Counter -Counter $c -ErrorAction $e | "
+           "ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';' } }").replace("(P)", f"({pat})")
     try:
         return subprocess.run([_win_ps(), "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, errors="replace", timeout=timeout).stdout
     except Exception:
         return ""
 
 
+def _luid(path):
+    m = re.search(r"luid_(0x[0-9a-f]+_0x[0-9a-f]+)", path)
+    return m.group(1) if m else None
+
+
 def others_dedicated_mib(text, exclude_pid=None):
-    """MiB of dedicated GPU memory held by all processes (except exclude_pid) in counters_text(); None when no counter matched. All adapters are added (an integrated GPU's few
-    hundred MiB make the room a little smaller than needed: the safe side)."""
-    tot = None
+    """MiB of dedicated GPU memory the OTHER programs hold on the card; None when no counter matched.
+    2026-11-12 (PC, RX 9070 XT; real capture in tests/data/gpu_counters_pc_20261112_*.csv): the sum of '\\GPU Process Memory(*)\\Dedicated Usage' over the card's own instances was 3.89 GiB while the
+    card's '\\GPU Adapter Memory' Dedicated Usage read 1.92 GiB (gputaskman 1.93). It is NOT a cross-adapter or multi-phys double count (the other luids held ~0): the per-process figures
+    themselves add up ~2 GiB above what the adapter holds (cause not established). So:
+      - with adapter counters in the text: only the card's instances (the adapter with the most dedicated use, as bin/moe_cache_record.py picks it), and never more than that adapter's own
+        figure minus our own share (exclude_pid);
+      - without them (older text, a failed second counter): the plain sum over all adapters, as before (the safe side)."""
+    proc, adapters = [], {}
     for item in text.replace("\n", ";").split(";"):
         path, _, val = item.rpartition("|")
         path = path.lower()
-        if "gpu process memory" not in path or not path.endswith("dedicated usage") or (exclude_pid is not None and f"pid_{exclude_pid}_" in path):
-            continue
         try:
-            tot = (tot or 0.0) + float(val) / 1048576
+            v = float(val) / 1048576
         except ValueError:
-            pass
+            continue
+        if "gpu adapter memory" in path and path.endswith("dedicated usage"):
+            lu = _luid(path)
+            if lu:
+                adapters[lu] = max(adapters.get(lu, 0.0), v)
+        elif "gpu process memory" in path and path.endswith("dedicated usage"):
+            proc.append((path, v))
+    target = max(adapters, key=adapters.get) if adapters else None
+    tot, own = None, 0.0
+    for path, v in proc:
+        mine = exclude_pid is not None and f"pid_{exclude_pid}_" in path
+        if target and _luid(path) not in (None, target):
+            continue                                      # another adapter (the iGPU)
+        if mine:
+            own += v
+            continue
+        tot = (tot or 0.0) + v
+    if tot is not None and target:
+        tot = min(tot, max(adapters[target] - own, 0.0))
     return tot
 
 
@@ -565,12 +672,18 @@ def desk_reserve_gb(total, free, base=0.5):
     return min(2.5, max(base, 0.25 + 0.5 * used)), used
 
 
+LAST_FREE_SOURCE = [None]       # where free_vram_bytes' last figure came from (the plan counts the CUDA gap only for nvidia-smi's figure)
+
+
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
+    LAST_FREE_SOURCE[0] = None
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
         out = out.strip().splitlines()[0].split(",")    # one line per GPU: the first, as plan.py (with two GPUs the whole text failed to parse: no GPU)
-        return (float(out[0]) - float(out[1])) * 1048576
+        v = (float(out[0]) - float(out[1])) * 1048576
+        LAST_FREE_SOURCE[0] = "nvidia-smi"
+        return v
     except Exception:
         pass
     best = None
@@ -585,6 +698,8 @@ def free_vram_bytes():
         # RAM the GPU may borrow) is never counted. Under 1 GiB (e.g. a 512 MiB carve-out) no expert layer fits next to the buffers: skipped
         if tot >= 2**30 and (best is None or tot > best[0]):
             best = (tot, tot - used)
+    if best:
+        LAST_FREE_SOURCE[0] = "amd-sysfs"
     return best[1] if best else None
 
 
@@ -594,7 +709,10 @@ def fit_n_cpu_moe(path, ctx=8192, reserve_gb=1.3, free=None):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return 999, lay, None
-    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)          # weights + compute buffers + KV (from the header when it can)
+    # 0.55e9 is a legacy "compute buffers" estimate with no measurement behind it (the launcher's own path uses the _COMPUTE_MIB table instead,
+    # which shows 0.7-4.6 GiB at 64k+). Not reachable from the launcher: fit_n_cpu_moe runs only from this file's __main__ (a debugging CLI) and
+    # gpu_cache_mib() has no caller — the gpu_cache_mib value in tune()'s dict is computed by the ladder below. Left at the old value on purpose.
+    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)          # weights + compute buffers (legacy estimate) + KV (from the header when it can)
     room = free - fixed - reserve_gb * 1e9
     gpu_layers = max(0, min(lay["n_layers"], int(room // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0
     return lay["n_layers"] - gpu_layers, lay, free
@@ -607,7 +725,7 @@ def gpu_cache_mib(path, ctx=8192, reserve_gb=1.3, free=None):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return 0
-    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)
+    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)      # same legacy compute-buffer estimate as fit_n_cpu_moe above; this function has no caller (dead) — value left as is
     room = free - fixed - reserve_gb * 1e9
     return int(room // (1024 * 1024)) if room > 0.5e9 else 0
 
@@ -702,6 +820,16 @@ def plan_rule_on():
     return os.environ.get("MOE_CACHE_PLAN_RULE") not in (None, "", "0")
 
 
+PLAN_RULE_DEFAULT_ON = False   # when True the plan rule (measured compute buffer via llama-fit-params) is used by default when llama-fit-params is found; MOE_CACHE_PLAN_RULE=0 forces the old table; PC pair decides, LAUNCHER-1236
+
+
+def plan_rule_active(fit_params=None):
+    """LAUNCHER-1236: whether the plan rule decides the reserve: MOE_CACHE_PLAN_RULE=0 forces the old table, =1 turns it on, else the default (and llama-fit-params must be found)."""
+    if os.environ.get("MOE_CACHE_PLAN_RULE") == "0":
+        return False
+    return plan_rule_on() or bool(PLAN_RULE_DEFAULT_ON and fit_params)
+
+
 def formula_buffer_mib(ctx, ub):
     """Compute buffer (MiB) by formula, non-decreasing in ctx and ub: least squares through the 11 measured Flash-Next points (a + b ub + c ub ctx + d ctx,
     ctx in units of 64k) times 1.3, which is the largest ratio of a measured value to the fit. Not model specific: llama-fit-params is the real answer."""
@@ -740,6 +868,32 @@ def fit_disk_file():
     return os.environ.get("MOE_CACHE_FIT_CACHE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache", FIT_DISK_NAME)
 
 
+def drm_driver_version():
+    """The driver an AMD / Intel card on Linux runs with, for the record key (follow-up 6; nvidia-smi's identity already carries its driver version): the kernel
+    driver's name and its module version when it has one, else the kernel release (the amdgpu / i915 driver ships with the kernel). "" when nothing is readable."""
+    names = set()
+    for card in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
+        try:
+            names.add(os.path.basename(os.path.realpath(card + "/driver")))
+        except OSError:
+            pass
+    parts, versioned = [], False
+    for n in sorted(x for x in names if x and x != "driver"):
+        v = ""
+        try:
+            v = open(f"/sys/module/{n}/version").read().strip()
+        except OSError:
+            pass
+        versioned = versioned or bool(v)
+        parts.append(n + (f" {v}" if v else ""))
+    if not versioned:                      # the amdgpu / i915 driver ships with the kernel and has no version of its own: the kernel release stands for it
+        try:
+            parts.append("kernel " + os.uname().release)
+        except AttributeError:
+            pass
+    return ", ".join(parts)
+
+
 def gpu_identity():
     """Which GPU and driver the measured buffers belong to (PREFILL-180): nvidia-smi's name and driver, else the vendor/device ids of the DRM cards (Linux sysfs);
     "" when neither answers, and then nothing is cached on disk. Asked once per process."""
@@ -760,6 +914,8 @@ def gpu_identity():
             except OSError:
                 pass
         ident = "drm:" + ",".join(ids) if ids else ""
+        if ident:
+            ident += ";" + drm_driver_version()
     _GPU_ID.append(ident)
     return ident
 
@@ -876,9 +1032,12 @@ def rule_block_mib(path, lay, ub):
     return (lay["expert_bytes_per_layer"] + (35 + 256) * 1048576 + per_tok * ub) / 1048576 if lay["expert_bytes_per_layer"] else 0.0
 
 
+DECODE_PCT_PER_LAYER = 2.5    # decode speed lost per expert layer moved to the CPU; display-only, read by plan_table(); a guess until PC pair d1 (ncmoe 3 vs 7) decides, PC records suggest ~4
+
+
 def plan_table(path, ctx=8192, free=None, kv_q8=False, reserve_gb=0.5, fit_params=None, ubs=PLAN_UBS):
     """One row per micro-batch candidate under the rule, for the launcher's --dry-run: reserve, block room, layers on the GPU and what that costs.
-    decode_pct: decode speed against the candidate with the most GPU layers at ~2.5 % per layer (scout round 2: 1.5-4 %, a GUESS until the 2 x 2 test).
+    decode_pct: decode speed against the candidate with the most GPU layers, DECODE_PCT_PER_LAYER % per layer (scout round 2: 1.5-4 %, a GUESS until PC pair d1 (ncmoe 3 vs 7) decides).
     prompt_gain: the table's measured prompt speed-up against 512 (6k-token prompt), None above 2048 where nothing is measured."""
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
@@ -897,7 +1056,7 @@ def plan_table(path, ctx=8192, free=None, kv_q8=False, reserve_gb=0.5, fit_param
                      "n_cpu_moe": lay["n_layers"] - gl, "prompt_gain": _PROMPT_GAIN.get(u)})
     top = max(r["gpu_layers"] for r in rows)
     for r in rows:
-        r["decode_pct"] = round(100 - 2.5 * (top - r["gpu_layers"]), 1)
+        r["decode_pct"] = round(100 - DECODE_PCT_PER_LAYER * (top - r["gpu_layers"]), 1)
     return rows
 
 
@@ -908,36 +1067,113 @@ def plan_table_lines(rows, ctx):
         pg = f"{r['prompt_gain']:.2f}x" if r["prompt_gain"] else "not measured"
         out.append(f"moe-cache:   {r['ub']:>4}  {r['reserve_mib']:>11}  {r['old_reserve_mib']:>5}  {r['source']:<16}  {r['block_mib']:>9}  {r['gpu_layers']:>10}  {r['n_cpu_moe']:>11}  "
                    f"{r['decode_pct']:>19.1f} %  {pg}")
-    out.append("moe-cache:   decode column: ~2.5 % per layer moved to the CPU (a guess, 1.5-4 %); the prompt column is the table's 6k-token figure, long prompts differ")
+    out.append(f"moe-cache:   decode column: ~{DECODE_PCT_PER_LAYER} % per layer moved to the CPU (a guess, 1.5-4 %); the prompt column is the table's 6k-token figure, long prompts differ")
     return out
 
 
-def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False):
-    """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left.
+MTP_DRAFT_GIB = 0.85          # MTP's draft context on the GPU (planner/plan.py's figure, GLM on the PC, RESULTS 62); used until a load with MTP on was measured
+GAP_SOURCES = ("nvidia-smi",)  # free figures that overstate what llama.cpp can fill: nvidia-smi's (total - used) is ~0.4 GiB above CUDA's free on the RTX 4060 laptop
 
-    Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use and a list of reasons. Rules come from measurements
-    (docs/internal/PERFORMANCE_ANALYSIS.md): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
+
+def gpu_fixed_weights_bytes(lay):
+    """The model's weights that live on the GPU besides the expert layers: everything but the experts and the tensors that stay on the CPU (token_embd). The one
+    figure tune() and planner/multigpu.py count (follow-up 8)."""
+    return lay["other_bytes"] - lay.get("cpu_only_bytes", 0)
+
+
+def long_prompt_block_bytes(lay, ub):
+    """Room kept free for the plugin's long-prompt GPU block at micro-batch ub (one expert layer plus the batch's results, rule of ours; see tune()). 0 for a dense model."""
+    return ((1.6 if ub > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
+
+
+def room_bytes(free, compute_mib, reserve_gb, block=0):
+    """What is left of one card's free memory (bytes) after the compute buffer, the reserve and the long-prompt block: the subtraction tune() and multigpu.plan() both make."""
+    return free - compute_mib * 1048576 - reserve_gb * 1e9 - block
+
+
+def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False, plugin=True, measured=None,
+         free_source=None, mtp=False, keep_ub=False, loop_n_head=0):
+    """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left. The only placement
+    function of the launcher (planner map fix 1; planner/plan.py's formula no longer decides).
+
+    Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use, a list of reasons and "inputs": every size the plan used with its
+    value, source (measured / probe / constant) and why, for the plan file. Rules come from measurements
+    (the maintainers' private note PERFORMANCE_ANALYSIS): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
     compute buffer that grows with the context; the disk lookup table never counts as GPU weight. ub: a micro-batch the user chose (the rest is
     planned around it; without this a chosen -ub left no room for the long-prompt block and long prompts ran on the CPU, RESULTS 61). long_prompt: the opt-in
     long-prompt mode (--long-prompt): -ub 4096 is tried first and taken only when the memory plan leaves room for it (no GPU cache wanted, no -ub chosen); else the usual ladder.
+    plugin: the plugin runs (only then is the room for its long-prompt GPU block kept free: stock llama-server has no such block). measured: what the last real
+    loads on this machine measured (planner/load_record.py lookup): {"non_expert_mib", "gap_mib", "draft_mib", "buffers": {ub: {"compute_mib", "context_mib"}}}; a missing part
+    falls back to the header (weights, KV) or our tables (compute buffer, gap). free_source: where `free` came from ("nvidia-smi" overstates it by the CUDA
+    reserve and context, SMI_GAP_GIB until measured). mtp: MTP drafting is on (its draft context needs GPU memory, MTP_DRAFT_GIB until a load with MTP was recorded).
+    keep_ub: a stock cache on a CUDA llama-server keeps -ub 2048 (CACHE-1187; measured on one NVIDIA laptop only), see the cache branch below.
     """
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
     why = []
     if not lay["n_layers"] or free is None:
-        return {"n_cpu_moe": 999, "ub": 512, "gpu_cache_mib": 0, "why": ["no GPU memory information: all experts stay on the CPU, default micro-batch"]}
-    kv = _kv_or_flat(path, ctx, kv_q8)
-    fixed = lay["other_bytes"] + kv
+        return {"n_cpu_moe": 999, "ub": 512, "gpu_cache_mib": 0, "why": ["no GPU memory information: all experts stay on the CPU, default micro-batch"], "inputs": []}
+    MiB = 1048576
+    measured = measured or {}
+    mbuf = {int(k): v for k, v in (measured.get("buffers") or {}).items()}
+    inputs = []
 
-    rule = plan_rule_on()
+    def note(name, value_mib, source, text):
+        inputs.append({"setting": name, "value": round(value_mib), "source": source, "why": text})
+    if measured.get("non_expert_mib"):
+        weights = measured["non_expert_mib"] * MiB
+        note("gpu_weights_mib", weights / MiB, "measured", "the model's weights on the GPU besides the expert layers, from llama-server's buffer lines at the last load on this machine and build")
+    else:
+        weights = gpu_fixed_weights_bytes(lay)
+        note("gpu_weights_mib", weights / MiB, "probe", "the model's weights besides the expert layers, from the file's header (token_embd stays on the CPU); no load of this model was recorded here")
+    ctx_m = next((v["context_mib"] for v in mbuf.values() if v.get("context_mib")), None)
+    if ctx_m:
+        kv = ctx_m * MiB
+        note("gpu_kv_mib", ctx_m, "measured", "KV cache and recurrent state at this context and KV type, from llama-server's buffer lines at the last load")
+    else:
+        kv = _kv_or_flat(path, ctx, kv_q8)
+        note("gpu_kv_mib", kv / MiB, "probe", "KV cache and recurrent state at this context and KV type, from the file's header")
+    fixed = weights + kv
+    if measured.get("gap_mib") is not None:
+        gap = measured["gap_mib"] * MiB
+        note("gpu_overhead_mib", gap / MiB, "measured", "what the free figure overstates (driver vs CUDA total, CUDA context, buffers made after load"
+             + "), from the memory tables of the last load")
+    elif free_source in GAP_SOURCES:
+        gap = SMI_GAP_GIB * 2**30
+        note("gpu_overhead_mib", gap / MiB, "constant", "nvidia-smi's free figure is about this much above what CUDA can fill (RTX 4060 laptop, 8146 vs 7745 MiB at idle); no load recorded here")
+    else:
+        gap = 0.0
+        note("gpu_overhead_mib", 0, "constant", f"none counted for this free figure ({free_source or 'given'}); no load recorded here")
+    draft = 0.0
+    if mtp:
+        if measured.get("draft_mib"):
+            draft = measured["draft_mib"] * MiB
+            note("mtp_draft_mib", draft / MiB, "measured", "MTP's draft context on the GPU (KV, recurrent state and compute buffer), from llama-server's buffer lines at the last load with MTP on")
+        else:
+            draft = MTP_DRAFT_GIB * 2**30
+            note("mtp_draft_mib", draft / MiB, "constant", "MTP's draft context on the GPU (one model on our PC); no load with MTP on was recorded here")
+    free = free - gap - draft
+
+    rule = plan_rule_active(fit_params)
     if rule and fit_params:
         prefetch_fit_params(fit_params, path, ctx, [u for u in PLAN_UBS if u <= max(ub or 0, 2048)] + ([ub] if ub else []), kv_q8)
 
+    def loop_bias_mib(u):
+        # LAUNCHER-1284: a looped model's relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor, two alive at once (launcher loop_compute_mib; 2.8 GiB measured at 32k -ub 512
+        # on the laptop vs our 3 GiB estimate). The table and fit-params numbers are for a normal model; a measured load already contains it. loop_n_head 0 = not looped / not asked: 0.
+        return 2 * ctx * u * loop_n_head * 4 / MiB if loop_n_head else 0
+
     def cbm(u, guess):
+        v = cbm0(u, guess)
+        return v if v is None or mbuf.get(u, {}).get("compute_mib") else v + loop_bias_mib(u)
+
+    def cbm0(u, guess):
         if rule:              # MOE_CACHE_PLAN_RULE=1: the table only says whether u is a candidate (as before); the number is the rule's
             if not guess and compute_buffer_mib(ctx, u) is None:
                 return None
             return rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params)[0]
+        if mbuf.get(u, {}).get("compute_mib"):
+            return mbuf[u]["compute_mib"]           # measured at the last load with this context, micro-batch and KV type
         return compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
     # long prompts run their expert block on the GPU and upload one whole layer of experts for it: the micro-batch, the cache and static layers must
     # all leave that room (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 18-24 tok/s instead
@@ -946,9 +1182,11 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     # plus the 256 MiB the plugin itself requires free before it allocates a block (gpu_segment's headroom check): without it the reserve had 24 MiB of
     # slack on Flash-Next at -ub 2048, and at ctx 8192 the block found 423 MiB free where it needed 455, so prompts fell back to the CPU (~20 tok/s)
     def block_for(u):
+        if not plugin:
+            return 0              # stock llama-server: no plugin, no long-prompt GPU block (LAUNCHER-1177: 839 MiB were kept free for nothing on the laptop 35B)
         if rule:
             return rule_block_mib(path, lay, u) * 1048576
-        return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
+        return long_prompt_block_bytes(lay, u)
     best = None
     fixed_ub = ub
     # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
@@ -959,30 +1197,33 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         if buf is None:
             continue
         block = block_for(ub)
-        room = free - fixed - buf * 1048576 - reserve_gb * 1e9 - block
+        room = room_bytes(free, buf, reserve_gb, block) - fixed
         if room > 0 or ub == 512 or fixed_ub:
             best = (ub, room)
             break
-    ub, room = best if best else (512, free - fixed - cbm(512, True) * 1048576 - reserve_gb * 1e9 - block_for(512))
+    ub, room = best if best else (512, room_bytes(free, cbm(512, True), reserve_gb, block_for(512)) - fixed)
     block = block_for(ub)
     if fixed_ub:
         why.append(f"micro-batch {ub} as asked")
-    elif want_cache and ub > 1024 and room > 0:
+    elif want_cache and ub > 1024 and room > 0 and (plugin or not keep_ub or room < 1536 * 1048576):
+        # plugin path and every non-CUDA stock path (keep_ub False): unchanged. Stock CUDA llama-server (CACHE-1187/LAUNCHER-1188, laptop 4060, 35B, b12207, one machine): -ub 1024 cost 14-34 % of the prompt
+        # speed for no decode gain, so a stock cache keeps -ub 2048 as long as the cache still gets 1.5 GiB at that batch; below that the smaller batch buys the room
         ub = 1024
         buf = cbm(1024, False) or 0
         block = block_for(1024)
-        room = free - fixed - buf * 1048576 - reserve_gb * 1e9 - block
+        room = room_bytes(free, buf, reserve_gb, block) - fixed
         why.append("GPU cache requested: micro-batch limited to 1024 (the cache gains more than a bigger batch)")
     cache_room = room
     cache_mib = int(cache_room // 1048576) if cache_room > 0 else 0
     expert_total = lay["expert_bytes_per_layer"] * lay["n_layers"]
+    static_n = lay["n_layers"] - gpu_layers_that_fit(lay, room)       # the static answer for the same room (the launcher falls back to it when no cache size works out)
     if want_cache and expert_total > 0 and cache_mib >= 1536 and cache_mib * 1048576 >= 0.04 * expert_total:
         n_cpu_moe = 999
         why.append(f"GPU expert cache of {cache_mib} MiB ({100 * cache_mib * 1048576 / expert_total:.0f} % of the experts; "
                    f"{int(block // 1048576)} MiB kept free for the long-prompt GPU block)")
     else:
         cache_mib = 0
-        gpu_layers = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0
+        gpu_layers = gpu_layers_that_fit(lay, room)
         n_cpu_moe = lay["n_layers"] - gpu_layers
         # --n-cpu-moe counts from layer 0, so the MTP head's block (the last one) is the first to go to the GPU: say the model's own layers apart
         mtpb = min(lay.get("mtp_blocks", 0), gpu_layers)
@@ -991,11 +1232,21 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         why.append(f"{where} ({int(block // 1048576)} MiB kept free for the long-prompt GPU block"
                    + (")" if not want_cache else "; a cache would be under 1.5 GiB or under 4 % of the experts)"))
     why.append(f"micro-batch {ub} (long-prompt mode: the memory plan leaves room for it)" if ub == 4096 else f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
+    comp = cbm(ub, True) if fixed_ub or not best or ub == 4096 else cbm(ub, False)
+    if mbuf.get(ub, {}).get("compute_mib"):
+        note("gpu_compute_mib", comp or 0, "measured", f"llama-server's compute buffer at -ub {ub} and this context, from the last load (or the size a failed load asked for)")
+    elif rule:
+        note("gpu_compute_mib", comp or 0, "measured" if fit_params else "constant", "compute buffer by MOE_CACHE_PLAN_RULE (" + ("llama-fit-params" if fit_params else "formula") + ")")
+    else:
+        note("gpu_compute_mib", comp or 0, "constant", f"compute buffer at -ub {ub}: our table (measured on Flash-Next on the PC); no load of this model, context and micro-batch recorded here")
+    note("long_prompt_block_mib", block / MiB, "constant",
+         "room for the plugin's long-prompt GPU block (one expert layer plus the batch's results, rule of ours)" if plugin else "0: stock llama-server runs no plugin, so no long-prompt block")
+    note("gpu_reserve_mib", reserve_gb * 1e9 / MiB, "constant", "kept free for other programs and growth (0.5 GB rule of ours, more when the desktop holds GPU memory, --gpu-margin)")
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
-            "compute_mib": cbm(ub, True) if fixed_ub or not best or ub == 4096 else cbm(ub, False), "why": why}
+            "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not mbuf.get(ub, {}).get("compute_mib")) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 
 
-def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
+def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072, fit_params=None):
     """Exact mode keeps llama-server's f16 KV cache (identity with stock). At long contexts (>= 128k) q8_0 KV, which --fast uses, can free enough
     VRAM for more expert layers on the GPU: one plain line saying so when it gains 2+ layers or lets the context fit at all; None otherwise
     (idea N28; the owner keeps exact mode exact, so this only advises)."""
@@ -1005,7 +1256,7 @@ def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return None
-    kw = {"reserve_gb": reserve_gb, "want_cache": False}
+    kw = {"reserve_gb": reserve_gb, "want_cache": False, "fit_params": fit_params}   # LAUNCHER-1236: the same compute-buffer rule as the plan
     if ub:
         kw["ub"] = ub
     a, b = tune(path, ctx, free=free, kv_q8=False, **kw), tune(path, ctx, free=free, kv_q8=True, **kw)

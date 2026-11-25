@@ -97,8 +97,8 @@ ggml_vec_dot_t fast_iq3_dot() {
         if (!tt || !tt->vec_dot) {
             return (ggml_vec_dot_t) nullptr;
         }
-        std::vector<fastk512::block_iq3_xxs> w(8);
-        std::vector<fastk512::block_q8_K> a(8);
+        std::vector<fastk::block_iq3_xxs> w(8);
+        std::vector<fastk::block_q8_K> a(8);
         uint32_t r = 54321;
         auto rnd = [&]() { r = r * 1664525u + 1013904223u; return r >> 8; };
         for (int trial = 0; trial < 64; trial++) {
@@ -222,7 +222,7 @@ bool exec_view_op(ggml_op op) {
 
 // true when every expert op of the graph is a single-token decode step that the executor can reproduce exactly
 bool exec_eligible(state_t & s, ggml_cgraph * cg) {
-    if (!s.exec_on || (s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
+    if (!s.exec_on || s.repack_tag || s.gpu_min_tokens == 1) {
         return false;
     }
     const int n = ggml_graph_n_nodes(cg);
@@ -420,6 +420,17 @@ struct exec_prep_t {
     size_t                 stride_i11 = 0, stride_tok = 0;
 };
 
+// TEST-1170: running counts (and a progress line about every 20000 expert ops, i.e. roughly every 140 decoded tokens on a 48-layer model)
+void test_skip_count(state_t & s, uint64_t skipped, uint64_t computed) {
+    s.test_skipped += skipped;
+    s.test_computed += computed;
+    static thread_local uint64_t ops = 0;
+    if (++ops % 20000 == 0) {
+        fprintf(stderr, "moe-cache: TEST_SKIP_PCT=%d so far: %llu picks skipped, %llu computed (timing test, output not valid)\n", s.test_skip_pct,
+                (unsigned long long) s.test_skipped.load(), (unsigned long long) s.test_computed.load());
+    }
+}
+
 void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip, int slot, exec_prep_t & pr, const exec_prep_t * share = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
@@ -518,12 +529,25 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
         auto rit = s.route_ids.find(ids);
         if (rit != s.route_ids.end()) routed = &rit->second;
     }
+    // TEST-1170 (MOE_CACHE_TEST_SKIP_PCT, timing only): one branch on a cached flag when off; when on, picks chosen by a fixed hash of (layer, expert)
+    // get a zeroed output row and no task (see src/mc_test_skip.h for exactly what is and is not skipped)
+    const int tskip_pct = s.test_skip_pct;
+    const int tskip_layer = tskip_pct >= 0 ? mctestskip::layer_of(w->name) : 0;
+    uint64_t tskip_n = 0, tcomp_n = 0;
     for (int t = 0; t < n_tok; t++) {
         for (int slot = 0; slot < n_ids; slot++) {
             if (skip && (*skip)[(size_t) t * (size_t) n_ids + (size_t) slot]) {   // computed elsewhere (hybrid: the GPU bank)
                 continue;
             }
             int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0] + (size_t) t * ids->nb[1]);
+            if (tskip_pct >= 0) {
+                if (e >= 0 && e < w->ne[2] && mctestskip::skip_pick(tskip_layer, e, tskip_pct)) {
+                    memset((char *) nd->data + (size_t) slot * nd->nb[1] + (size_t) t * nd->nb[2], 0, (size_t) w->ne[1] * sizeof(float));
+                    tskip_n++;
+                    continue;
+                }
+                tcomp_n++;
+            }
             if (routed) {
                 e = (*routed)[(size_t) t * (size_t) n_ids + (size_t) slot];
                 if (e < 0) {            // given up: this pick contributes nothing
@@ -561,6 +585,9 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
     }
     for (const auto & t : all) {
         task_of[(size_t) ((t.w - (const char *) w->data) / (ptrdiff_t) w->nb[2])] = -1;
+    }
+    if (tskip_pct >= 0) {
+        test_skip_count(s, tskip_n, tcomp_n);
     }
     std::vector<exec_task_t> tasks;
     tasks.reserve(all.size());
@@ -693,9 +720,6 @@ int exec_fuse_partner(state_t & s, ggml_cgraph * cg, int i, int n_nodes) {
     return -1;
 }
 
-// set by the AVX-512 kernel block further down (C linkage: independent of the namespace the kernels live in)
-extern "C" { int (*moe_cache_iq512_probe)(void) = nullptr; }
-
 // One line that says what is really active, and why not when something is off (several speed-ups depend on how the plugin was loaded).
 void print_capabilities(state_t & s) {
     std::string o = "moe-cache: active:";
@@ -704,8 +728,8 @@ void print_capabilities(state_t & s) {
     o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
     if (!s.exec_on) {
         o += " executor=off(MOE_CACHE_EXEC=0)";
-    } else if ((s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
-        o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
+    } else if (s.repack_tag || s.gpu_min_tokens == 1) {
+        o += std::string(" executor=off(") + (s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
     } else {
         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") +
              (s.exec_chunk != 128 ? ", " + std::to_string(s.exec_chunk) + " rows per chunk" : "") + ")";
@@ -715,7 +739,6 @@ void print_capabilities(state_t & s) {
                                                                 : upstream_q2_0_enabled() ? "executor(column sums, exact to llama.cpp's #30447)" : "off(llama.cpp's own)")
                                                                : preload ? "on(interposed)" : "executor only(not preloaded)");
     o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0 or MOE_CACHE_IQ3_KERNEL=0, no AVX2, or not Intel: MOE_CACHE_IQ3_KERNEL=1 forces it on)");
-    o += std::string(" iq_avx512=") + (mcenv::env_on("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
 #endif
 #ifdef _WIN32
     cpu_traits(GGML_TYPE_F32);   // resolves the lookup once
@@ -733,7 +756,7 @@ void print_capabilities(state_t & s) {
         o += std::string(" long_prompt_gpu2=") + ggml_backend_dev_name(s.gpu_dev2);
     }
     if (s.fewer > 0) o += std::string(" approx_fewer=") + std::to_string(s.fewer);
-    if (s.route_mode) o += std::string(" approx_route=") + (s.route_mode == 1 ? "skip" : "subst");
+    if (s.route_mode) o += std::string(" approx_route=skip");
     {   // AUD-005: boolean switches that are set to something other than their default (one parse for all: mc_env.h)
         static const struct { const char * name; bool def; } flags[] = {
             { "MOE_CACHE_HOST_OUT", true }, { "MOE_CACHE_GPU_SUM", true }, { "MOE_CACHE_EXEC_SCRATCH", true }, { "MOE_CACHE_EXEC_SHARE_IN", true },

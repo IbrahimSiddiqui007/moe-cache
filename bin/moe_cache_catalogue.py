@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """The model catalogue (models.json at the repo root): one list of the models moe-cache recommends, read by `pick`, `launch`, `models`,
-tools/gen_models_md.py (docs/MODELS.md) and tools/check_model_links.py. Standard library only. This file only loads and checks the JSON and turns an
+tools/gen_models_md.py (docs/reference/models.md) and tools/check_model_links.py. Standard library only. This file only loads and checks the JSON and turns an
 entry into the dict shape the picker has always used (`legacy`); the fit rule is moe_cache_pick.fit()."""
 import json, os
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATH = os.environ.get("MOE_CACHE_MODELS_JSON") or os.path.join(HERE, "models.json")      # the variable is for tests
 USES = ("agents", "chat", "docs")
+SHOW_MEASURED_SPEED = False     # v0.3.9 ships no speed figures (numbers follow in a later release): set True then; models.json keeps the records. The ONE copy: launch, models, ui and tools/gen_models_md.py read it
 METRICS = {"decode_tps": "tok/s decode", "prompt_tps": "tok/s prompt", "tasks_correct": "tasks right (of 202)", "agent_session_s": "s agent session"}
 
 

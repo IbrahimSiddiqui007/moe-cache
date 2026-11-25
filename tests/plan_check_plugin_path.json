@@ -1,0 +1,85 @@
+{
+ "engine": "plugin",
+ "method": "path",
+ "model": "/path/to/models/Qwen3-30B-A3B-Q4_K_M.gguf",
+ "llama_server": "/path/to/llama.cpp/build/bin/llama-server",
+ "ctx": 8192,
+ "port": 8080,
+ "n_cpu_moe": "38",
+ "micro_batch": "2048",
+ "kv_cache": "f16",
+ "prompt_cache_mib": "0",
+ "argv": [
+  "/path/to/llama.cpp/build/bin/llama-server",
+  "-m",
+  "/path/to/models/Qwen3-30B-A3B-Q4_K_M.gguf",
+  "-ngl",
+  "99",
+  "--n-cpu-moe",
+  "38",
+  "-c",
+  "8192",
+  "-fa",
+  "on",
+  "--load-mode",
+  "mmap",
+  "--no-warmup",
+  "--port",
+  "8080",
+  "-C",
+  "0x555",
+  "--cpu-strict",
+  "1",
+  "--temp",
+  "0.6",
+  "--top-p",
+  "0.95",
+  "--top-k",
+  "20",
+  "--min-p",
+  "0",
+  "--presence-penalty",
+  "1.5",
+  "-ub",
+  "2048",
+  "-b",
+  "2048",
+  "--cache-ram",
+  "0"
+ ],
+ "env": [
+  [
+   "GGML_BACKEND_PATH",
+   "/path/to/plugin/libggml-moe-cache.so"
+  ],
+  [
+   "MOE_CACHE_SIZE_GIB",
+   "auto"
+  ],
+  [
+   "MOE_CACHE_GGUF",
+   "/path/to/models/Qwen3-30B-A3B-Q4_K_M.gguf"
+  ],
+  [
+   "MOE_CACHE_PROFILE",
+   "/path/to/cache/moe-cache/Qwen3-30B-A3B-Q4_K_M.gguf.usage"
+  ],
+  [
+   "MOE_CACHE_RAM_GIB",
+   "3.725"
+  ],
+  [
+   "MOE_CACHE_EXEC_ECORES",
+   "4"
+  ],
+  [
+   "MOE_CACHE_HOST_RESERVE_MIB",
+   "0"
+  ],
+  [
+   "LLAMA_ARG_CORS_ORIGINS",
+   "localhost"
+  ]
+ ],
+ "command_line": "env GGML_BACKEND_PATH=/path/to/plugin/libggml-moe-cache.so MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF=/path/to/models/Qwen3-30B-A3B-Q4_K_M.gguf MOE_CACHE_PROFILE=/path/to/cache/moe-cache/Qwen3-30B-A3B-Q4_K_M.gguf.usage MOE_CACHE_RAM_GIB=3.725 MOE_CACHE_EXEC_ECORES=4 MOE_CACHE_HOST_RESERVE_MIB=0 LLAMA_ARG_CORS_ORIGINS=localhost /path/to/llama.cpp/build/bin/llama-server -m /path/to/models/Qwen3-30B-A3B-Q4_K_M.gguf -ngl 99 --n-cpu-moe 38 -c 8192 -fa on --load-mode mmap --no-warmup --port 8080 -C 0x555 --cpu-strict 1 --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5 -ub 2048 -b 2048 --cache-ram 0"
+}

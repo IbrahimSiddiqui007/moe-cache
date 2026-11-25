@@ -1,4 +1,4 @@
-# Quality gate for the approximate mode (docs/QUALITY_GATE.md) on a GitHub runner: Granite 1B-A400M, CPU only, cache forced to evict (0.2 GiB) and the executor
+# Quality gate for the approximate mode (docs/reference/quality-gate.md) on a GitHub runner: Granite 1B-A400M, CPU only, cache forced to evict (0.2 GiB) and the executor
 # forced on, so route skip and the other approximate items really act. Smoke limits (a tiny model is far more sensitive than a 100 B one): every level must run,
 # the plugin must be active, `exact` must stay at KL 0 and 100 % top-1, the approximate levels must stay within an order of magnitude of the real limits.
 # q8_0 KV cannot be tested here: stock llama-perplexity at this pin aborts with -ctk q8_0 on the CPU-only build (ggml-impl.h:330, stock too). The approximate
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   push:
     branches: ["claude/approx"]
-    paths: ["src/**", "tools/quality_gate.py", "tools/quality_yardstick.py", "tools/quality_tasks.json", ".github/workflows/quality.yml", "docs/QUALITY_GATE.md"]
+    paths: ["src/**", "tools/quality_gate.py", "tools/quality_yardstick.py", "tools/quality_tasks.json", ".github/workflows/quality.yml", "docs/reference/quality-gate.md"]
 
 permissions:
   contents: read
@@ -36,7 +36,7 @@ jobs:
           git fetch --depth 1 origin 23b0202a189c44a54625aadcb37a946dd1d6278d
           git checkout --detach FETCH_HEAD
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
-                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_USE_PREBUILT_WEBUI=OFF
           cmake --build build --target llama-server llama-perplexity -j "$(nproc)"
 
       - name: Plugin

@@ -1,5 +1,5 @@
 # approx session 2026-10-30 (re-queue of 54: the runner's `$o = Get-CimInstance` overwrites $O, so Script1 failed at once; this item starts the gate itself).
-# Gate on Flash-Next Q2_0: stock base logits, stock 202 tasks, then level kv KL and tasks (limits in docs/QUALITY_GATE.md). NOT CLEAN: owner desktop VRAM.
+# Gate on Flash-Next Q2_0: stock base logits, stock 202 tasks, then level kv KL and tasks (limits in docs/reference/quality-gate.md). NOT CLEAN: owner desktop VRAM.
 $gjobs = @(
   @("stock", "kv", "stockkl", "C:\moe-cache-kit\approx_b4\ggml-moe-cache.dll"),
   @("stock", "kv", "stocktasks", "C:\moe-cache-kit\approx_b4\ggml-moe-cache.dll"),

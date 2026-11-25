@@ -1,6 +1,6 @@
 # conversation_bench_pair.ps1 (TEST-699): the Windows driver for tools\conversation_bench.py: stock llama-server against moe-cache, ABBA, one multi-turn
 # conversation per run that fills the context (default 65,536 tokens), each run on a cold file cache. PowerShell 5. NOT run by the author on a PC yet: read
-# docs\CONVERSATION_BENCH.md, run it once with -Ctx 8192 -MaxTurns 4 to see it work, then the real run.
+# docs\reference\conversation-bench.md, run it once with -Ctx 8192 -MaxTurns 4 to see it work, then the real run.
 # Same shape as tools\agent_bench_pair.ps1: the model pushed out of Windows' file cache before every run (tools\win_flush_cache.ps1), the server started and
 # stopped by PID, a health wait, a quiet-CPU gate, then `conversation_bench.py run`; at the end `conversation_bench.py assemble` writes ONE bench record.
 # Stock = the llama-server command the launcher prints for --agent --dry-run (computed once). moe-cache = the launcher with --agent --always-plugin and
@@ -80,7 +80,9 @@ foreach ($kind in $kinds) {
   if (-not $ready) { Log "run $k ($kind): the server did not become ready (see $se)"; Stop-Tree $p; exit 1 }
   if ($kind -eq "mc") {
     $cm = @(Get-Content $so, $se -ErrorAction SilentlyContinue | Where-Object { $_ -match "moe-cache: cache mode" })
-    if ($cm.Count -eq 0) { Log "run $k (mc): no 'moe-cache: cache mode' line in the server log (plugin not active): stop"; Stop-Tree $p; exit 1 }
+    # 2026-11-24 (030c): a plugin-off arm (MOE_CACHE_DISABLE=1) never prints the cache-mode line; it runs and is logged as plugin off
+    if ($env:MOE_CACHE_DISABLE -eq "1") { Log "run $k (mc): MOE_CACHE_DISABLE=1, plugin off on purpose (no cache-mode check)" }
+    elseif ($cm.Count -eq 0) { Log "run $k (mc): no 'moe-cache: cache mode' line in the server log (plugin not active): stop"; Stop-Tree $p; exit 1 }
   }
   Start-Sleep 15
   $quiet = 0; $g0 = Get-Date; $load = 0

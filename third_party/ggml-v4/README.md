@@ -1,0 +1,2 @@
+Headers copied from llama.cpp / ggml (MIT license, see LICENSE), commit 46eb1742db6d2caec1bfa848c5702b1bdcc815e5 (ggml 1.0.0, 2026-11-21; backend API version still 3, but ggml renumbered ops: MUL_MAT_ID 30 -> 29, GLU 101 -> 98).
+Used with `GGML_API=4 ./build.sh`; the build is tagged moe-cache-api=4 and the launcher picks it for a llama-server whose libggml-base is 1.x. The API 3 build (../ggml-v3) stays for ggml 0.26-0.29 (b12207).

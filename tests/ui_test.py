@@ -51,8 +51,12 @@ blob = os.path.join(TMP, "sha256-0123")
 gguf_header(blob, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 41), ("qwen35moe.expert_count", 256), ("general.file_type", 15)])
 check(ui.header_quant(blob) == "Q4_K_M", f"quant from general.file_type ({ui.header_quant(blob)})")
 m = ui.measured(blob, 21.7e9)
-check(len(m) == 4 and "22.6" in m[1] and "RESULTS 44" in m[1] and m[1].startswith("laptop,"), "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M)")
-check(m[3].startswith("PC, 32 GB RAM") and "RESULTS 60" in m[3], f"measured: the PC's row too ({m[3]})")
+check(m == [] and not ui.catalogue.SHOW_MEASURED_SPEED, "v0.3.9 shows no measured speed table (SHOW_MEASURED_SPEED False)")
+ui.catalogue.SHOW_MEASURED_SPEED = True
+m = ui.measured(blob, 21.7e9)
+check(len(m) == 4 and "22.6" in m[1] and m[1].startswith("laptop,"), "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M), switch on")
+check(m[3].startswith("PC, 32 GB RAM"), f"measured: the PC's row too ({m[3]})")
+
 fnx = os.path.join(TMP, "fnx-blob")
 gguf_header(fnx, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512), ("general.file_type", 15)])
 mf = ui.measured(fnx, 68.0e9)
@@ -64,6 +68,7 @@ check(any("moe-cache 21.94" in r for r in ui.measured(fnx, 67.5e9)), "measured: 
 m122 = os.path.join(TMP, "q122-blob")
 gguf_header(m122, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 48), ("qwen35moe.expert_count", 256)])
 check(any("stock 15.95 tok/s, moe-cache 19.73" in r and "RESULTS 61" in r for r in ui.measured(m122, 36.6e9)), "measured: the 122B row is RESULTS 61's re-measure (+24 %)")
+ui.catalogue.SHOW_MEASURED_SPEED = False
 check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the same family")
 
 # ---- the plan and its reasons (planner mocked) ----
@@ -94,9 +99,9 @@ check(p["summary"].startswith("Stock llama-server: the model") and "keeps stock 
 _partial[0] = True
 p = ui.plan_model(small["path"], ram="2")
 check(p["kind"] == "cache" and "fits in RAM" in p["verdict"] and "stay on the CPU" in p["verdict"], f"fits in RAM, experts on the CPU: runs with moe-cache ({p['verdict']})")
-check(any("+10 to +29" not in r and "did not reproduce" in r and "our test laptop" in r and "1.06x prompt, 1.07x decode" in r for r in p["reasons"]) and not any("+10 to +29" in r for r in p["reasons"] + [p["summary"]]),
+check(any("+10 to +29" not in r and "did not reproduce" in r and "our test laptop" in r and "1.06x" not in r and "%" not in r for r in p["reasons"]) and not any("+10 to +29" in r for r in p["reasons"] + [p["summary"]]),
       "partial offload: reasons carry the honest evidence (no +10 to +29 % claim, labelled our test laptop / PC)")
-check("fits in" in p["summary"] and "expert executor" in p["summary"] and "1.07x decode" in p["summary"] and "likely be faster" not in p["summary"], f"partial offload: summary ({p['summary']})")
+check("fits in" in p["summary"] and "expert executor" in p["summary"] and "1.07x" not in p["summary"] and "likely be faster" not in p["summary"], f"partial offload: summary ({p['summary']})")
 p = ui.plan_model(small["path"], ram="2", engine="stock")
 check(p["kind"] == "stock", f"--stock still gives stock when the plugin would run ({p['verdict']})")
 TUNE["n_cpu_moe"] = 0
@@ -644,7 +649,7 @@ check("--approx" in _ap and _ap[_ap.index("--approx") + 1] == "careful" and "--e
 check('id="approx"' in _html and "NOT identical" in _html and "approx: $(\"approx\").value" in _html, "QUALITY-970: the control page has the tier choice and says plainly that answers are not identical")
 check("--no-long-prompt" in ui.server_args({"model": "m.gguf", "no_long_prompt": True}) and "--no-long-prompt" not in ui.server_args({"model": "m.gguf"}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
       "Long-prompt mode is the default: --no-long-prompt on the Start command only when unticked (2026-11-08), no --long-prompt")
-check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "reads long prompts about 77 % faster" in _html,
+check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "for agents and documents" in _html,
       "the page has the Long-prompt mode toggle, ticked by default, with its one-line explanation, sent with Start and with the plan request, restored from the last start")
 check("--leave-room" in ui.server_args({"model": "m.gguf", "leave_room": True}) and "--leave-room" not in ui.server_args({"model": "m.gguf"}),
       "Leave room for me: --leave-room on the Start command (owner 2026-10-30)")
@@ -885,7 +890,7 @@ if ui.WINDOWS:
         st, j = preq("/api/busy")
         if j["programs"]:
             break
-    check([p["name"] for p in j["programs"]] == ["EACefSubProcess", "game"] and "23 % faster" in j["programs"][0]["note"] and "not measured" in j["programs"][1]["note"],
+    check([p["name"] for p in j["programs"]] == ["EACefSubProcess", "game"] and "decode and long prompts were faster" in j["programs"][0]["note"] and "not measured" in j["programs"][1]["note"],
           "/api/busy: programs using the GPU, each with what closing it is worth (measured only for the EA app)")
 _pg = open(ui.PAGE, encoding="utf-8").read()
 check('id="busyres"' in _pg and "loadBusy" in _pg and "setInterval(loadBusy" in _pg, "the page has the 'Other programs' list and refreshes it")
@@ -898,6 +903,8 @@ check(saved["last"]["model"] == bolt and saved["pick"]["use"] == "agents", "/api
 st, j = preq("/api/system")
 check(st == 200 and (j.get("pick") or {}).get("id") == "bolt" and j["last"]["model"] == bolt, "/api/system: the page sees the pick at load")
 check("pickuse" in open(ui.PAGE, encoding="utf-8").read(), "the page has the Which model? panel")
+check(j.get("version") == ui.mc.version_label() and j["version"].startswith(ui.mc.VERSION), f"/api/system: version + commit as `moe-cache --version` prints them, no server needed ({j.get('version')})")
+check('$("sys").textContent = "moe-cache " + s.version' in open(ui.PAGE, encoding="utf-8").read(), "the page header shows it (source check)")
 
 # "llama.cpp not found" dialog: /api/system says so, /api/llama checks the path with --version and remembers it in ui.json (no setx)
 import subprocess as _sp, shutil as _sh
@@ -1183,7 +1190,7 @@ srv.shutdown()
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)
 mc = ui.mc
 saved = mc.pick_gpu, mc.list_devices, mc.win_dedicated_vram
-mc.list_devices = lambda ls: "listing"
+mc.list_devices = lambda ls, ttl=60.0: "listing"
 mc.pick_gpu = lambda listing: ("Vulkan1", "AMD Radeon RX 7900 XT", 18000)
 mc.win_dedicated_vram = lambda: {"AMD Radeon RX 7900 XT": 20 * 2**30, "AMD Radeon(TM) Graphics": 512 * 2**20}
 g = ui.windows_gpu_once("llama-server")
@@ -1276,7 +1283,7 @@ _dense_real = ui.mc.is_dense_model
 check(_dense_real(small["path"]) is True, "the synthetic test model is dense (header: no expert layers)")
 # LAUNCHER-1133: a dense model: MTP off by default, also in agent mode, and says why; --mtp still turns it on
 _r = ui.mtp_reason(small["path"], None, True, "ls-new")
-check(_r.startswith("MTP off: a dense model") and "26.8 vs 27.8" in _r and "--mtp turns it on" in _r, f"MTP: dense model, agent mode: off by default, says why ({_r})")
+check(_r.startswith("MTP off: a dense model") and "no figure quoted in this release" in _r and "--mtp turns it on" in _r, f"MTP: dense model, agent mode: off by default, says why ({_r})")
 check(ui.mtp_reason(small["path"], None, False, "ls-new").startswith("MTP off: a dense model"), "MTP: dense model, plain server: the same line (no 'faster decode' hint)")
 check(ui.mtp_reason(small["path"], True, True, "ls-new").startswith("MTP on: the model has an MTP head"), "MTP: dense model with --mtp: on")
 ui.mc.is_dense_model = lambda path: False          # the MoE rule is unchanged: the tests below see an MoE model
@@ -1413,7 +1420,7 @@ _mh = re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0)
 check("long-prompt mode from 32k" in _mh and "q8_0 KV" in _mh and "MTP" in _mh and "not byte-identical to plain llama.cpp" in _mh and "Exact (--exact): same output as plain llama.cpp" in _mh
       and "same output as stock llama.cpp (default)" not in html, "Mode help: Default and Exact wording")
 check('data-v="default">Default</button><button data-v="exact">Exact</button>' in html and 'mode: "default"' in html, "Mode buttons: Default first, S.mode starts as default")
-check("about 1 token in 40-50 comes out different" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Fast says what it changes")
+check("1 token in 40-50 comes out different" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0) and "no win on the PC" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0) and "10 % faster" not in html, "Mode help: Fast says what it changes, no speed figure")
 
 # the card: run the page's own loadPick() under node with a stub DOM and look at the HTML it builds
 node = shutil.which("node")
@@ -1437,7 +1444,7 @@ if node:
     except Exception:
         card = ""; print(out.stdout[-300:], out.stderr[-500:])
     check(card.count("<h5>") >= 1 and "Your machine" in card and all(f"<td>{k}</td>" in card for k in ("RAM", "GPU", "Disk", "CPU", "llama.cpp")), "card: a 'Your machine' table with RAM, GPU, Disk, CPU, llama.cpp")
-    check(len(re.findall(r'<div class="name">', card)) == 1 and 'class="nums"' in card and "decode" in card and "tok/s" in card, "card: the recommendation is one bold name line with its measured numbers")
+    check(len(re.findall(r'<div class="name">', card)) == 1 and 'class="nums"' in card and "tok/s" not in card, "card: the recommendation is one bold name line with its numbers (no speed figures in 0.3.9)")
     check('class="why"' in card and 'class="alts"' in card or jj["recommendations"][0]["alternatives"] == [], "card: a Why line and the alternatives as a list")
     dm = re.search(r"<details>.*</details>", card, re.S)
     check(bool(dm) and "pwarn" in dm.group(0) and "pwarn" not in card[:dm.start()] and 'class="err"' not in card, "card: warnings sit in the collapsed details, in the one warning colour (no red 'err')")
@@ -1632,7 +1639,7 @@ check(mc.vram_for_commit(15.5, 40 * GiB) == 15.5 and mc.vram_for_commit(15.5, No
 check(abs(mc.vram_for_commit(15.5, 12 * GiB) - 8.0) < 1e-9 and mc.vram_for_commit(15.5, 3 * GiB) == 0.0, "GPU plan: capped to free commit minus 4 GiB (8 GiB), never below 0")
 
 # ggml versions newer than the table keep API 3 (task Q: llama.cpp b11966 = ggml 0.28 got no plugin and `check` said the DLL was missing)
-check([mc.ggml_api_of(0, n) for n in (24, 25, 26, 27, 28, 31)] == ["2", "2", "3", "3", "3", "3"] and mc.ggml_api_of(0, 20) is None and mc.ggml_api_of(1, 0) is None,
+check([mc.ggml_api_of(0, n) for n in (24, 25, 26, 27, 28, 31)] == ["2", "2", "3", "3", "3", "3"] and mc.ggml_api_of(0, 20) is None and mc.ggml_api_of(1, 0) == "4" and mc.ggml_api_of(1, 3) is None and mc.ggml_api_of(2, 0) is None,
       "ggml version -> backend API: 0.24-0.25 -> 2, 0.26 and newer 0.x -> 3, older or 1.x unknown")
 d28 = os.path.join(TMP, "ggml028"); os.makedirs(d28); open(os.path.join(d28, "ggml-base.dll"), "wb").write(b"MZ\x00junk\x000.8.0\x00more\x000.28.0\x00tail")
 saved_win = mc.WINDOWS; mc.WINDOWS = True
@@ -1728,7 +1735,7 @@ if node:
     fn = re.search(r"const TOKEN = .*?async function api\(path, body\) \{.*?\n\}\n", page, re.S).group(0)
     harness = ("let removed = false, replaced = null, calls = [];\n"
                "const document = { querySelector: s => s == 'meta[name=\"moe-token\"]' ? { content: 'tok-xyz', remove() { removed = true; } } : null };\n"
-               "const location = { search: '?t=tok-xyz', pathname: '/' }, history = { replaceState: (a, b, u) => { replaced = u; } };\n"
+               "const location = { search: '?t=tok-xyz', pathname: '/', hash: '' }, history = { replaceState: (a, b, u) => { replaced = u; } };\n"
                "const localStorage = { setItem() { throw new Error('storage used'); }, getItem() { throw new Error('storage used'); } };\n"
                "const fetch = async (p, o) => { calls.push([p, o]); return { ok: true, json: async () => ({}) }; };\n" + fn +
                "(async () => { await api('/api/status'); await api('/api/stop', {}); console.log(JSON.stringify([TOKEN, removed, replaced, calls.map(c => [c[1].headers['X-MoeCache-Token'], c[1].method || 'GET', c[1].headers['Content-Type'] || null])])); })();\n")
@@ -1739,6 +1746,72 @@ if node:
     except Exception:
         r_ = None; print(o.stdout[-300:], o.stderr[-500:])
     check(r_ == ["tok-xyz", True, "/", [["tok-xyz", "GET", None], ["tok-xyz", "POST", "application/json"]]], f"SERVER-011: the page keeps the token in memory, clears the address and sends the header on GET and POST ({r_})")
+
+# GUI-839 / TEST-840 (2026-11-12): small control-page fixes run on the page's own code under node, and hostile payloads for the chat message and the server list
+if node:
+    def fnsrc(pat): return re.search(pat, page, re.S).group(0)
+    fn = "".join(fnsrc(p_) for p_ in (r"const esc = [^\n]*\n", r"async function copyText\(t\) \{[^\n]*\n", r"const authHeaders = [^\n]*\n", r"async function api\(path, body\) \{.*?\n\}\n"))
+    harness = ("const TOKEN = 't';\n" + fn + """
+const resp = (ok, status, json) => ({ ok, status, json: async () => { if (json === undefined) throw new SyntaxError("Unexpected token <"); return json; } });
+const run = async (r) => { global.fetch = async () => r; try { return "ok:" + JSON.stringify(await api("/x")); } catch (e) { return "err:" + e.message; } };
+(async () => {
+  const out = {};
+  out.html502 = await run(resp(false, 502));                   // a proxy's HTML error page
+  out.html200 = await run(resp(true, 200));
+  out.json = await run(resp(true, 200, { a: 1 }));
+  out.jsonErr = await run(resp(false, 400, { error: "bad" }));
+  Object.defineProperty(globalThis, "navigator", { value: undefined, configurable: true, writable: true }); out.noClip = await copyText("x");
+  Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => { throw new Error("denied"); } } }, configurable: true, writable: true }); out.denied = await copyText("x");
+  let got = null; Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async t => { got = t; } } }, configurable: true, writable: true }); out.fine = [await copyText("hello"), got];
+  console.log(JSON.stringify(out));
+})();
+""")
+    hf = os.path.join(TMP, "gui839.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and r_["html502"] == "err:502" and r_["html200"].startswith("err:the answer was not JSON") and r_["json"] == 'ok:{"a":1}' and r_["jsonErr"] == "err:bad",
+          f"GUI-839: api() reads the status before the body: a proxy's HTML error page says 502, not a JSON parse error ({r_ and (r_['html502'], r_['html200'])})")
+    check(r_ is not None and r_["noClip"] is False and r_["denied"] is False and r_["fine"] == [True, "hello"],
+          f"GUI-839: copyText is false without navigator.clipboard (LAN http) and when the browser refuses, true only when the text was copied ({r_ and (r_['noClip'], r_['denied'], r_['fine'])})")
+    check("history.replaceState(null, \"\", location.pathname + location.hash)" in page, "GUI-839: stripping the token from the address keeps the #hash")
+    pf = "let pollBusy = false;\n" + fnsrc(r"async function poll\(\) \{.*?\n\}\n")
+    ph = pf + ("let calls = 0, release; async function pollOnce() { calls++; await new Promise(r => { release = r; }); }\n"
+               "(async () => { const a = poll(), b = poll(), c = poll(); const during = calls; release(); await a; await b; await c; poll(); console.log(JSON.stringify([during, calls])); })();\n")
+    hf = os.path.join(TMP, "poll.js"); open(hf, "w", encoding="utf-8").write(ph)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ == [1, 2], f"GUI-839: three poll() calls while one runs start one poll; the next one after it ends starts again ({r_})")
+    check(re.search(r"box\.hidden = false; readyKey = S\.sel;", page) is not None and "readyKey == S.sel) return; readyKey" not in page, "GUI-839: the ready-check key is remembered only after the answer arrived")
+    check("Number(f.tokens).toLocaleString()" in page, "GUI-839: a saved slot's token count goes through Number()")
+    # TEST-840: hostile chat message and server list
+    X = '"><img src=x onerror=alert(1)>'
+    fn = "".join(fnsrc(p_) for p_ in (r"const esc = [^\n]*\n", r"function splitThink\(m\) \{.*?\n\}\n", r"function md\(src\) \{.*?\n\}\n", r"function inline\(t\) \{.*?\n\}\n", r"function block\(.*?\n\}\n",
+                                                                 r"function chips\(m, i, live\) \{.*?\n\}\n", r"function msgHTML\(m, i, live\) \{.*?\n\}\n", r"function paintServers\(\) \{.*?\n\}\n"))
+    harness = ("const els = {}; const $ = id => els[id] || (els[id] = { hidden: false, innerHTML: '', checked: true, value: '' });\n"
+               "const nextPort = () => 8090, pairPanel = () => '', shortName = s => s, C = { chat: { messages: [1, 2] } }; const S = { servers: null, status: { state: 'ready' }, sel: 'm', models: [1, 2], chatPort: null };\n" + fn +
+               "const X = " + json.dumps(X) + ";\n"
+               "const msg = { role: 'assistant', content: X + '<script>alert(2)</script>', error: X, meta: { predicted_per_second: X }, think: X, shown: X, images: [X] };\n"
+               "const user = { role: 'user', content: X, shown: X, images: [X] };\n"
+               "S.servers = { managed: [{ port: X, model: X, state: X, mode: X, main: false, live_tps: 1.5 }], other: [{ port: X, model: X, health: 'ready', ctx: 8192, slots: 2, busy: 1, key: false }], max: 3, groupError: X };\n"
+               "const bad = { managed: [{ port: 80, model: 1, state: 'ready', live_tps: 'x' }], other: [{ port: 81, model: 2, health: 'ready', ctx: 'x', slots: 1 }], max: 3 };\n"
+               "let ps; try { paintServers(); ps = els.servers.innerHTML; S.servers = bad; paintServers(); ps += '|' + els.servers.innerHTML; } catch (e) { ps = 'THROW ' + e.message; }\n"
+               "console.log(JSON.stringify({ ai: msgHTML(msg, 1, false), live: msgHTML(msg, 1, true), user: msgHTML(user, 0, false), ps }));\n")
+    hf = os.path.join(TMP, "hostile2.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    bad_markup = lambda h: "<img src=x" in h or "<script" in h or 'onerror=alert' in h.replace("&quot;", '"').replace("onerror=alert(1)&gt;", "")
+    check(r_ is not None and not any(("<img src=x" in r_[k] or "<script>" in r_[k]) for k in ("ai", "live", "user")), f"TEST-840: a hostile chat message (text, error, shown text, image address) never becomes markup ({r_ and r_['ai'][:160]})")
+    check(r_ is not None and not r_["ps"].startswith("THROW") and "<img src=x" not in r_["ps"] and 'data-chat="\"' not in r_["ps"],
+          f"TEST-840: a hostile server list (port, model, state, mode, group error) never becomes markup, and odd counters (a string tok/s or ctx) do not throw ({r_ and r_['ps'][:200]})")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

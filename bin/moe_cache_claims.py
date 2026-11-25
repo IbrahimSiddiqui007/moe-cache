@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""moe_cache_claims.py: runs, claims and the board (benchmarks/, docs/BENCHMARK_TEMPLATE.md). Standard library only.
+"""moe_cache_claims.py: runs, claims and the board (benchmarks/, docs/reference/benchmark-template.md). Standard library only.
 
   benchmarks/runs/DATE_MACHINE_SHORTID.json   one bench-record record per run set; append-only, never edited (the raw evidence)
   benchmarks/claims/ID.md                     a number we publish: the statement, the runs behind it, and what it is valid for
@@ -10,7 +10,7 @@
                                 --check only validates and prints the comment for the issue (the board row it would give). Reads text, runs nothing from it.
   claim add|show|list           create a claim from run ids; show one with its computed values; list all with their status
   board                         write BOARD.md and JOURNAL.md (--check: exit 1 if they are out of date)
-  lint [FILES]                  README.md, docs/RESULTS_CURRENT.md and docs/benchmark_card.html: every performance number needs a `<!-- claim:ID -->` of a current claim
+  lint [FILES]                  README.md, docs/results/results-current.md and docs/results/benchmark-card.html: every performance number needs a `<!-- claim:ID -->` of a current claim
   replay CLAIM                  the commands that reproduce a claim; with --record NEW.json compare a new record with the claim inside a noise band
 
 A claim's status is computed, never typed: current / stale (the moe-cache version or the llama.cpp pin moved past what the claim is valid for) / superseded (a
@@ -302,7 +302,9 @@ def compute_status(claims, runs, version=None, pin=None):
         if c.get("withdrawn"):
             continue
         for cell in c["cells"]:
-            by_key.setdefault(cell_key(c, cell, runs), []).append(cid)
+            ids_k = by_key.setdefault(cell_key(c, cell, runs), [])
+            if cid not in ids_k:          # DOCS-885: one claim with two cells of one cell-key (two single-run records) is ONE claim there, not a conflict with itself
+                ids_k.append(cid)
     out, conflicts = {}, []
     for key, ids in by_key.items():
         vals = {round(arm_stats(runs[cell["run"]], cell["arm"], cell["metric"])[0] or 0, 2) for cid in ids for cell in claims[cid]["cells"]
@@ -406,6 +408,10 @@ def show_claim(c, runs, st):
             vs = f"{cell['vs']}: {pct(m, arm_stats(rec, cell['vs'], cell['metric'])[0])}"
         lines.append(f"| {cell['arm']} | {METRICS[cell['metric']]} | {fmt(cell['metric'], m)} | {n} | {sp:.1f} % | {vs} | {cell['run']} |")
     gaps = sorted({g for r in c["runs"] for g in rr.not_recorded_fields(runs[r])})
+    for line in dict.fromkeys(filter(None, (rr.env_line_for(runs[cell["run"]], cell["arm"]) for cell in c["cells"]))):
+        lines += ["", f"Measured on a {line}"]
+    if not any(rr.env_of(runs[r])[0] for r in c["runs"]):
+        lines += ["", f"Environment: {NR} (the run predates the environment block, or no sampler ran)."]
     lines += ["", f"{len(gaps)} fields say `{NR}` in the runs behind this claim." + (" First ones: " + ", ".join(gaps[:6]) if gaps else "")]
     return "\n".join(lines)
 
@@ -449,8 +455,10 @@ def board_text(claims, runs, version=None, pin=None):
     rows = {}
     for (machine, model, setting, arm, metric), (d, cid, cell) in win.items():
         rows.setdefault((machine, model, setting, arm), {})[metric] = (d, cid, cell)
+    has_env = any(rr.env_of(rec)[0] for rec in runs.values())             # BENCH-1150: the column appears once a run carries an environment block
     for machine in sorted({k[0] for k in rows}):
-        out += [f"## {machine_label(runs, machine)}", "", "| Model | Setting | Arm | Prompt tok/s | Decode tok/s | Date | Status | Claims |", "|---|---|---|---|---|---|---|---|"]
+        out += [f"## {machine_label(runs, machine)}", "", "| Model | Setting | Arm | Prompt tok/s | Decode tok/s | Date | Status | Claims |" + (" Working desktop |" if has_env else ""),
+                "|---|---|---|---|---|---|---|---|" + ("---|" if has_env else "")]
         for key in sorted(k for k in rows if k[0] == machine):
             cells, parts = rows[key], {}
             for metric in METRICS:
@@ -464,7 +472,8 @@ def board_text(claims, runs, version=None, pin=None):
             ids = sorted({v[1] for v in cells.values()})
             sts = sorted({status[i][0] for i in ids})
             out.append(f"| {md(key[1])} | {md(key[2])} | {md(key[3])} | {parts['prompt_tps']} | {parts['decode_tps']} | {max(v[0] for v in cells.values())} | {', '.join(sts)} | "
-                       + ", ".join(f"[{i}](claims/{claims[i]['file']})" for i in ids) + " |")
+                       + ", ".join(f"[{i}](claims/{claims[i]['file']})" for i in ids) + " |"
+                       + ((" " + md(next(filter(None, (rr.env_line_for(runs[cl["run"]], cl["arm"]) for cl in cells.values() for cl in [cl[2]])), NR)) + " |") if has_env else ""))
         out.append("")
     bad = [(cid, st) for cid, st in sorted(status.items()) if st[0] != "current"]
     out += ["## Claims that are not current", ""]
@@ -509,19 +518,57 @@ def cmd_board(a, bdir):
 
 PERF = re.compile(r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?(?:tok/s|tokens/s)|(?<![\w.])[+\-−–]\d+(?:[.,]\d+)?\s?%|(?<![\w.])\d+(?:\.\d+)?\s?(?:×|x)(?![\w])")
 
+_WIDE_UNIT = r"(?:ms|seconds|secs?|minutes|mins?|s)"
+_WIDE_NEXT = r"(?=\s*,?\s*(?:faster|slower|latency|per[\s-]token|to[\s-]first[\s-]token|TTFT|load[\s-]time|startup)\b)"
+# --wide only: throughput, latency/duration near a comparison word, unsigned comparison percents, N-fold / N times faster
+PERF_WIDE = re.compile(PERF.pattern + "|" + "|".join((
+    r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?(?:GiB|GB|MB)/(?:s|sec)\b",
+    r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?" + _WIDE_UNIT + r"\b" + _WIDE_NEXT,
+    r"(?:TTFT|latency|time\s+to\s+first\s+token)[\s:]*(?:of\s+)?(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?" + _WIDE_UNIT + r"\b",
+    r"(?<![\w.+\-−–≈])\d+(?:\.\d+)?\s?%(?=\s*(?:faster|slower|speedup|lower|higher|less|reduction|gain|improvement)\b)",
+    r"(?<![\w.])[+\-−–≈]?\d[\d,]*(?:\.\d+)?\s?(?:-\s?fold|\s?times\s+(?:faster|slower))",
+)))
 
-def perf_numbers(line):
-    """The performance numbers a line shows (tok/s values, signed percents, N× multipliers), outside HTML tags and comments."""
+
+def perf_numbers(line, wide=False):
+    """The performance numbers a line shows (tok/s values, signed percents, N× multipliers; with wide: GB/s, latency and comparison forms), outside HTML tags and comments."""
     text = re.sub(r"<!--.*?-->", " ", line)
     text = re.sub(r"<[^>]+>", " ", text)
-    return [m.group(0).strip() for m in PERF.finditer(text)]
+    return [m.group(0).strip() for m in (PERF_WIDE if wide else PERF).finditer(text)]
 
 
-def lint_file(path, claims, status, root=ROOT):
+WIDE_PATTERNS = ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/*.md", "docs/guides/*.md", "docs/reference/*.md", "docs/results/*.md",
+                 "docs/releases/*.md", "docs/*.html", "docs/results/*.html", "docs/mockup/*.html", "benchmarks/README.md")
+WIDE_EXCLUDE = re.compile(r"(?:^|/)(?:docs/internal|docs/results-archive|archive|third_party|benchmarks/claims|tests)(?:/|$)")
+
+
+def wide_files(root=ROOT):
+    """The public text files `lint --wide` reads, found with glob (no git call): sorted, generated files and older release notes left out."""
+    out = []
+    for p in WIDE_PATTERNS:
+        for f in glob.glob(os.path.join(root, p)):
+            rel = os.path.relpath(f, root).replace(os.sep, "/")
+            if rel in ("benchmarks/BOARD.md", "benchmarks/JOURNAL.md") or WIDE_EXCLUDE.search(rel):
+                continue
+            m = re.fullmatch(r"docs/releases/RELEASE_NOTES_v(.+)\.md", rel)
+            if m:
+                cur, v = vtuple(current_version(root)), vtuple(m.group(1))
+                if v is not None and cur is not None and v < cur:
+                    continue
+            out.append(f)
+    return sorted(out)
+
+
+def lint_file(path, claims, status, root=ROOT, wide=False):
     """Problems [(line, kind, text)] and the count of lines that show numbers."""
     probs, shown, ok = [], 0, 0
     fence = skip = False
+    heads = 0
     for n, line in enumerate(open(path, encoding="utf-8").read().splitlines(), 1):
+        if wide and os.path.basename(path) == "CHANGELOG.md" and line.startswith("## "):
+            heads += 1
+            if heads > 1:
+                break  # --wide reads only the newest CHANGELOG section; older ones are history
         if path.endswith((".md", ".markdown")) and line.lstrip().startswith("```"):
             fence = not fence
             continue
@@ -533,7 +580,7 @@ def lint_file(path, claims, status, root=ROOT):
             continue
         if fence or skip:
             continue
-        nums = perf_numbers(line)
+        nums = perf_numbers(line, wide)
         if not nums:
             continue
         shown += 1
@@ -556,10 +603,10 @@ def lint_file(path, claims, status, root=ROOT):
 def cmd_lint(a, bdir):
     claims, runs = load_claims(bdir), load_runs(bdir)
     status, _ = compute_status(claims, runs)
-    files = a.files or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "RESULTS_CURRENT.md"), os.path.join(ROOT, "docs", "benchmark_card.html")]
+    files = a.files or (wide_files() if a.wide else [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "results", "results-current.md"), os.path.join(ROOT, "docs", "results", "benchmark-card.html")])
     total = 0
     for f in files:
-        probs, shown, ok = lint_file(f, claims, status)
+        probs, shown, ok = lint_file(f, claims, status, wide=a.wide)
         rel = os.path.relpath(f, ROOT) if f.startswith(ROOT) else f
         for n, kind, text in probs:
             print(f"{rel}:{n}: {kind}: {text}")
@@ -663,6 +710,7 @@ def main(argv=None, prog_cmd=None):
     b = sub.add_parser("board", help="write BOARD.md and JOURNAL.md"); b.add_argument("--check", action="store_true")
     l = sub.add_parser("lint", help="every performance number in README.md / the card needs a current claim marker"); l.add_argument("files", nargs="*")
     l.add_argument("--warn", action="store_true", help="print the problems, exit 0"); l.add_argument("--strict", action="store_true", help="exit 1 on a problem (default)")
+    l.add_argument("--wide", action="store_true", help="every public text file (README, CHANGELOG, CONTRIBUTING, docs, benchmarks/README) and more number forms: GB/s, latency near faster/slower/TTFT, unsigned comparison percents, N-fold")
     r = sub.add_parser("replay", help="commands to reproduce a claim; --record NEW.json compares")
     r.add_argument("claim"); r.add_argument("--run", action="store_true", help="execute the commands (asks before each one)"); r.add_argument("--yes", action="store_true", help="with --run: do not ask (read the commands first)"); r.add_argument("--record"); r.add_argument("--band", type=float, default=NOISE_MIN_PCT)
     r.add_argument("--arm-map", action="append", help="CLAIMARM=NEWARM when the new record names the arms differently")

@@ -1,7 +1,0 @@
-node_modules/
-src-tauri/target/
-src-tauri/gen/
-src-tauri/resources/*
-!src-tauri/resources/moe-cache/
-src-tauri/resources/moe-cache/*
-!src-tauri/resources/moe-cache/.gitkeep

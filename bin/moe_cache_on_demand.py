@@ -28,6 +28,8 @@ NOT_FOUND_PROBES = ("/api/v1/models", "/api/tags", "/v1/props", "/version")
 CHOICE_FILE = os.path.join(mc.CACHE_DIR, "on-demand.json")
 LOG_FILE = os.path.join(mc.CACHE_DIR, "on-demand.log")       # the launcher's and llama-server's output
 PID_FILE = os.path.join(mc.CACHE_DIR, "on-demand.pid")
+STOP_WORST_S = 60 + (30 if WINDOWS else 0) + 5      # the longest a normal stop holds the server lock: p.wait(60), plus the 30 s usage-profile save on Windows, plus a beat
+LOAD_STOP_GRACE = 15         # SERVER-836: seconds a stop() during a model load waits after SIGTERM before it kills the launcher (not on macOS)
 CUSTOM_KEY_FILE = os.path.join(mc.CACHE_DIR, "on-demand.key")      # the --api-key given with the default model (mode 0600)
 LISTENER_LOG = os.path.join(mc.CACHE_DIR, "on-demand-listener.log")   # the listener's own lines when it has no console (Windows)
 LAUNCHER = [mc.python_cmd(), os.path.join(mc.HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
@@ -85,6 +87,28 @@ def save_choice(c):
     write_private(CHOICE_FILE, json.dumps(c, indent=2))
 
 
+def write_pid_file(port):
+    """The listener's PID, port and start token in PID_FILE, content `PID PORT START\\n`: through a private (0600 from the first byte) per-process
+    temp file in the same folder and an atomic os.replace, so a reader never sees a half-written file and no fixed .tmp name is followed (AUD-045)."""
+    text = f"{os.getpid()} {port} {mc.pid_start(os.getpid())}\n".replace("  ", " ")
+    tmp = "%s.%d.tmp" % (PID_FILE, os.getpid())
+    try:
+        os.unlink(tmp)               # a leftover of a crashed run with the same pid
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, PID_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_custom_key(k):
     """A user-given --api-key is kept here (mode 0600), not in on-demand.json and not in any argument list (AUD-029)."""
     write_private(CUSTOM_KEY_FILE, k + "\n")
@@ -99,7 +123,7 @@ def custom_key():
 
 def model_alias(model, args):
     """The model name the launcher gives llama-server in agent mode (its --alias, else the file name without .gguf and the shard suffix)."""
-    extra = args[args.index("--") + 1:] if "--" in args else []
+    extra = mc.split_equals_flags(args[args.index("--") + 1:]) if "--" in args else []          # `--alias=x` too (the launcher gives llama-server the split form)
     return mc.arg_after(extra, "-a", "--alias") or mc.default_alias(model)
 
 
@@ -127,7 +151,7 @@ def local_origin(origin):
 
 def model_facts(b):
     """What the memory split needs to know about a backend's model: file size, MoE or dense, its fixed part, the projector next to it."""
-    sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+    mc.planner_path()
     from gguf_plan import model_layout, _kv_or_flat
     size = sum(os.path.getsize(p) for p in mc.model_parts(b.c["model"]))
     lay = model_layout(b.c["model"])
@@ -198,6 +222,7 @@ class Backend:
         self.count = threading.Lock()
         self.p, self.port, self.state, self.active, self.last, self.t0 = None, None, "idle", 0, time.time(), 0.0
         self.profile = None
+        self.stop_asked = False                  # SERVER-836: set by stop() when it ended a model load
         self.alias = model_alias(choice["model"], choice.get("args", []))
         self.ctx = model_ctx(choice.get("args", []))
         self.seen = choice.get("seen") or {}     # the real /v1/models and /props answers, kept from the last start
@@ -234,6 +259,7 @@ class Backend:
 
     def _start_locked(self, why):
         port = free_port()
+        self.stop_asked = False
         self.state, self.t0, self.port, self.profile = "starting", time.time(), port, None
         self.log(f"starting {os.path.basename(self.c['model'])} (first request: {why}; idle stop after {self.idle / 60:g} min)")
         got, ready = {}, threading.Event()
@@ -247,6 +273,8 @@ class Backend:
         while time.time() - self.t0 < self.start_timeout:
             if p.poll() is not None:
                 self.state = "idle"
+                if self.stop_asked:          # SERVER-836: stop() ended the load: no second try
+                    raise RuntimeError("the model server was stopped while it was loading")
                 self.log(f"the server did not start (exit code {p.returncode}); its output is in {LOG_FILE}")
                 if self._log_tail_has("is already in use"):
                     raise PortTaken(f"port {port} was taken before the launcher bound it")
@@ -359,8 +387,32 @@ class Backend:
         self.log(f"stopped ({reason}) after {(time.time() - self.t0) / 60:.1f} min; the memory is free until the next request")
 
     def stop(self, reason):
-        with self.lock:
+        if not self.lock.acquire(timeout=5):
+            # SERVER-836: a model load holds the lock for up to start_timeout (minutes): end the loading process instead of waiting for it; the start loop sees it end
+            p = self.p
+            if self.state == "starting" and p is not None and p.poll() is None:      # only a load: a stop already in progress (graceful, may save the usage profile) is left to finish
+                self.stop_asked = True
+                try:
+                    # SIGTERM first (the launcher passes it on to llama-server, as in the normal stop); SIGKILL only if it is still there after the grace, and never on macOS:
+                    # there is no parent-death signal there, so a killed launcher would leave llama-server running (Linux has PR_SET_PDEATHSIG, Windows the job object)
+                    p.terminate()
+                    try:
+                        p.wait(timeout=LOAD_STOP_GRACE)
+                    except subprocess.TimeoutExpired:
+                        if sys.platform != "darwin" and p.poll() is None:
+                            p.kill()
+                except OSError:
+                    pass
+                self.log(f"stopped while the model was loading ({reason})")
+                return
+            # a hung holder must not block the handler thread forever: raise, so the HTTP caller answers 503 and the swap can start again. The wait is the
+            # worst case of a normal stop (STOP_WORST_S), so a stop that is merely slow is waited for, not reported as hung
+            if not self.lock.acquire(timeout=STOP_WORST_S):
+                raise RuntimeError(f"could not stop ({reason}): the server lock is held (a stop or swap in progress)")
+        try:
             self._stop_locked(reason)
+        finally:
+            self.lock.release()
 
     def watch(self, every=5):
         """Stop the server after `idle` seconds without a request (a request that streams for an hour counts as busy all along)."""
@@ -412,12 +464,12 @@ class Pool:
         """MM1 (PROTOTYPE): several servers alive at once, each with a fixed share of the ONE memory cap, of the VRAM and its own CPU cores. Falls back to
         one at a time (swap) when the floors do not fit. The arguments are for tests; by default the machine's cap, free VRAM and cores are read."""
         import moe_cache_concurrent as cc
-        log("on-demand --concurrent is a PROTOTYPE: static split, not speed-tested with two models at once (docs/PLATFORMS.md)")
+        log("on-demand --concurrent is a PROTOTYPE: static split, not speed-tested with two models at once (docs/reference/platforms.md)")
         try:
             if cap is None:
                 cap = mc.mem_cap() or mc.mem_for_server(None)
             if vram is None:
-                sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+                mc.planner_path()
                 from gguf_plan import free_vram_bytes
                 vram = free_vram_bytes()
             cores = cores if cores is not None else cc.physical_core_ids()
@@ -493,8 +545,14 @@ class Pool:
         return {"object": "list", "data": data}
 
     def stop(self, reason):
-        for b in self.bs:
-            b.stop(reason)
+        first = None
+        for b in self.bs:              # one backend that cannot stop must not leave the others running: try all, then report the first failure
+            try:
+                b.stop(reason)
+            except Exception as e:
+                first = first or e
+        if first:
+            raise first
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -576,6 +634,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Content-Length") not in (None, "0") or self.headers.get("Transfer-Encoding"):
                 self.close_connection = True
         if path in ("/health", "/v1/health"):        # public, as in llama-server; never starts the model
+            if not self.local_host():                # Host check: a DNS-rebinding page cannot read even the health answer
+                return self.reply(403, {"error": "forbidden host"})
             r = pool.running()
             return self.reply(200, dict({"status": "ok", "on_demand": pool.state}, **({"model": r.alias} if r and len(pool.bs) > 1 else {})))
         if not self.authed():
@@ -778,7 +838,20 @@ def running_pid():
         return None
     if mc.http(f"http://127.0.0.1:{port}/health", timeout=2)[1].find('"on_demand"') < 0:
         return None
+    if not _is_listener(pid):          # SERVER-836: a stale PID file whose number now belongs to another program is not ours to kill
+        return None
     return pid
+
+
+def _is_listener(pid):
+    """True when process `pid` is an on-demand listener (its command line says so). Where the command line cannot be read (Windows, no /proc) the PID file and the
+    health answer stand as before."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = f.read().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return not os.path.isdir("/proc")       # no /proc at all (Windows, macOS): unknown, trust; /proc exists but not this pid: it is gone
+    return "on-demand" in cmd or "moe_cache_on_demand" in cmd
 
 
 def stop_running():
@@ -962,8 +1035,7 @@ def on_demand(argv):
     b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout, release_min=c.get("idle_release", 5)) for e in [c] + list(c.get("extra") or [])],
              concurrent=bool(c.get("concurrent")) and len(c.get("extra") or []) > 0, peers=bool(c.get("peers")))
     srv = serve(b, port, srv=srv)
-    with open(PID_FILE, "w") as f:
-        f.write(f"{os.getpid()} {port} {mc.pid_start(os.getpid())}\n".replace("  ", " "))
+    write_pid_file(port)
     d = b.bs[0]
     log(f"listening on http://127.0.0.1:{port}/v1 for {', '.join(x.alias for x in b.bs)} (context {d.ctx}); the model starts on the first request "
         f"and stops after {d.idle / 60:g} idle min" + (("; all models at once (--concurrent, prototype)" if b.concurrent else "; one model at a time") + ", the request's model name picks it" if len(b.bs) > 1 else "")
@@ -978,7 +1050,10 @@ def on_demand(argv):
         pass
     finally:
         srv.server_close()
-        b.stop("the listener was stopped")
+        try:
+            b.stop("the listener was stopped")
+        except RuntimeError:
+            pass      # a stop/swap already in progress holds the server lock — its own thread finishes that stop
         try:
             if open(PID_FILE).read().split()[0] == str(os.getpid()):
                 os.remove(PID_FILE)

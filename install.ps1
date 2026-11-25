@@ -14,10 +14,11 @@
 # Run it again to update in place (same version: it only repairs the command and the PATH entry; -Force reinstalls).
 #
 #   -Uninstall   remove exactly what it added: the kit folder, the command, the PATH entry (only when this installer added it), the record.
-#                Your models, your settings (%LOCALAPPDATA%\... moe-cache cache) and every other file stay.
+#                Your models, your settings (the moe-cache folder under your user cache; for an install in its own -Root: <root>\cache) and every other file stay.
 #   -DryRun      print what it would do and stop
 #   -Version X   install release X (default: the release this file belongs to; run from a checkout: the newest)
-#   -Root DIR    install somewhere else (default %LOCALAPPDATA%\moe-cache)
+#   -Root DIR    install somewhere else (default %LOCALAPPDATA%\moe-cache). A NEW install in another folder keeps its own settings, key and chats in DIR\cache\moe-cache
+#                (not shared with other kits); an install that already exists keeps using the cache it had.
 #   -NoPath      do not touch the PATH
 #   -YesUnverified  install even though the build attestation could not be checked (gh missing / not logged in / GitHub unreachable; a verification that ran and FAILED is never overridden); same as $env:MOE_CACHE_ALLOW_UNVERIFIED='1'
 #                (the only way with `| iex`). The sha256 check is never skipped.
@@ -39,6 +40,15 @@ $Repo = 'IbrahimSiddiqui007/moe-cache'
 $Marker = 'rem moe-cache command written by install.ps1'
 
 function Say([string]$m) { Write-Host $m }
+
+# PACKAGING-832 item 20: Windows PowerShell 5.1's Remove-Item -Recurse can follow a junction inside the tree and empty its target. [IO.Directory]::Delete removes a junction itself, never what it points to.
+function Remove-Tree([string]$p, [switch]$Quiet) {
+    if (-not (Test-Path -LiteralPath $p)) { return }
+    try { [IO.Directory]::Delete($p, $true) } catch {
+        try { & "$env:SystemRoot\System32\cmd.exe" /d /c rmdir /s /q "`"$p`"" 2>&1 | Out-Null } catch { }      # read-only files: rmdir also does not follow junctions
+        if ((Test-Path -LiteralPath $p) -and -not $Quiet) { throw "could not remove $p ($($_.Exception.Message))" }
+    }
+}
 
 function Get-UserPathRaw {
     $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
@@ -91,11 +101,16 @@ function Expand-Kit([string]$zipPath, [string]$stage) {
     $stageFull = [IO.Path]::GetFullPath($stage).TrimEnd('\') + '\'
     $zip = [IO.Compression.ZipFile]::OpenRead($zipPath)
     try {
-        $n = 0
+        $n = 0; $total = 0
         foreach ($e in $zip.Entries) {
             $parts = @($e.FullName.Replace('\', '/').Split('/') | Where-Object { $_ -ne '' })
             if ($parts.Count -lt 1) { continue }
             if ($parts -contains '..' -or $e.FullName -match '^[A-Za-z]:' -or $e.FullName.StartsWith('/') -or $e.FullName.StartsWith('\')) { throw "REFUSED: the zip has an unsafe path ($($e.FullName))" }
+            # PACKAGING-832 item 18: names Windows treats specially (NTFS alternate stream 'x:s', device names CON/NUL/AUX/COM1.., trailing dot or space) and a size cap (zip bomb)
+            foreach ($pt in ($parts | Select-Object -Skip 1)) {
+                if ($pt -match '[:<>"|?*]' -or $pt -match '[. ]$' -or $pt -match '^(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') { throw "REFUSED: the zip has a name Windows treats specially ($($e.FullName))" }
+            }
+            $total += $e.Length; if ($total -gt 3GB) { throw 'REFUSED: the zip unpacks to more than 3 GB' }
             if ($parts.Count -lt 2) { if ($e.Name -eq '') { continue } else { throw "REFUSED: the zip has a file outside its folder ($($e.FullName))" } }
             $sub = ($parts | Select-Object -Skip 1) -join '\'
             $dest = [IO.Path]::GetFullPath((Join-Path $stage $sub))
@@ -119,14 +134,14 @@ function Install-MoeCache {
     }
     $Root = [IO.Path]::GetFullPath($Root)
     $kit = Join-Path $Root 'kit'; $bin = Join-Path $Root 'bin'; $shim = Join-Path $bin 'moe-cache.cmd'; $rec = Join-Path $Root 'install.json'
-    $old = $null
+    $old = $null; $kitExistedBefore = Test-Path -LiteralPath $kit      # LAUNCHER-1222 item 5: a kit with no usable record is an existing install, not a new one
     if (Test-Path -LiteralPath $rec) { try { $old = Get-Content -LiteralPath $rec -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $old = $null } }
 
     if ($Uninstall) {
         if (-not $old) { Say "moe-cache: nothing to remove: $rec does not exist (this installer added nothing under $Root)"; return 0 }
         if ($DryRun) { Say "install.ps1: would remove $kit, $shim, the PATH entry $bin$(if ($old.added_path) { '' } else { ' (not added by us: stays)' }) and $rec"; return 0 }
-        if (Test-Path -LiteralPath $kit) { Remove-Item -LiteralPath $kit -Recurse -Force; Say "removed $kit" }
-        $kitPrevU = Join-Path $Root 'kit.prev'; if (Test-Path -LiteralPath $kitPrevU) { Remove-Item -LiteralPath $kitPrevU -Recurse -Force; Say "removed $kitPrevU" }
+        if (Test-Path -LiteralPath $kit) { Remove-Tree $kit; Say "removed $kit" }
+        $kitPrevU = Join-Path $Root 'kit.prev'; if (Test-Path -LiteralPath $kitPrevU) { Remove-Tree $kitPrevU; Say "removed $kitPrevU" }
         if ((Test-Path -LiteralPath $shim) -and ((Get-Content -LiteralPath $shim -Raw) -like "*$Marker*")) { Remove-Item -LiteralPath $shim -Force; Say "removed $shim" }
         if ($old.added_path -and -not $NoPath) {
             $list = Split-PathList (Get-UserPathRaw)
@@ -136,7 +151,8 @@ function Install-MoeCache {
         }
         Remove-Item -LiteralPath $rec -Force
         foreach ($d in $bin, $Root) { if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force } }
-        Say 'moe-cache was removed. Kept: your models and your settings (the moe-cache folder under your user cache), and any other file you put in these folders.'
+        $keptCache = if ($old.own_cache) { (Join-Path $Root 'cache\moe-cache') } else { 'the moe-cache folder under your user cache' }
+        Say "moe-cache was removed. Kept: your models and your settings ($keptCache), and any other file you put in these folders."
         return 0
     }
 
@@ -149,15 +165,20 @@ function Install-MoeCache {
         return 1
     }
     if (-not $BaseUrl -and $env:MOE_CACHE_BASE_URL) { $BaseUrl = $env:MOE_CACHE_BASE_URL }
-    if ($Version -like '@*@') {       # run from a checkout, not from a release: take the newest release (pre-releases included)
+    if ($Version -like '@*@') {       # run from a checkout, not from a release: take the newest release (not a pre-release or draft: the same one `releases/latest` gives; PACKAGING-832 item 17)
         try { $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=10" -Headers @{ 'User-Agent' = 'moe-cache-install' } } catch { throw "could not ask GitHub for the newest release ($($_.Exception.Message)); pass -Version X.Y.Z" }
-        $Version = ($rels | Where-Object { -not $_.draft } | Select-Object -First 1).tag_name
+        $Version = ($rels | Where-Object { -not $_.draft -and -not $_.prerelease } | Select-Object -First 1).tag_name
         if (-not $Version) { throw 'GitHub lists no release; pass -Version X.Y.Z' }
     }
     $Version = $Version.TrimStart('v')
     if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)*$') { throw "odd version '$Version'" }
     $name = "moe-cache-v$Version-windows-x64"
     if (-not $BaseUrl) { $BaseUrl = "https://github.com/$Repo/releases/download/v$Version" }
+    # RELEASE-686: a plain-http mirror is refused (only this machine may use http), as install.sh and `update --apply` do
+    if ($BaseUrl -match '^(?i)http://' -and $BaseUrl -notmatch '^(?i)http://(127\.0\.0\.1|localhost|\[::1\])([:/]|$)') { throw "REFUSED: the download address $BaseUrl is not https (-BaseUrl / MOE_CACHE_BASE_URL may be https, a folder or this machine)" }
+    # PACKAGING-832 item 9: a UNC path (\\host\share or //host/share) makes Windows send the user's NTLM sign-in to that host; only a local folder (drive letter) or an address is allowed
+    if ($BaseUrl -match '^(\\\\|//)' -or $BaseUrl -match '^(?i)(file:|ftp:)') { throw "REFUSED: the download address $BaseUrl is a network share or not http(s) (-BaseUrl / MOE_CACHE_BASE_URL may be https or a folder on this PC)" }
+    if ($BaseUrl -match '^(?i)https?://[^/]*@') { throw "REFUSED: the download address $BaseUrl has a user part (user@host)" }
     Say "moe-cache $Version for Windows: installing into $Root (Python $($py.Version) found)"
     if ($DryRun) { Say "install.ps1: would download $BaseUrl/$name.zip and SHA256SUMS-windows, check the hash, unpack to $kit, write $shim$(if (-not $NoPath) { " and add $bin to your user PATH" })"; return 0 }
 
@@ -204,6 +225,7 @@ function Install-MoeCache {
                     $vcode = $LASTEXITCODE
                     $vtail = $vout.Trim(); if ($vtail.Length -gt 300) { $vtail = $vtail.Substring($vtail.Length - 300) }
                     if ($vcode -eq 0) { $attOk = $true }
+                    elseif ($vout -match '(?i)unknown command|unknown subcommand|no such command|is not a (gh )?command') { $attWhy = 'this gh is too old: it has no `attestation` command (update gh, then try again)' }      # the check could not run: -YesUnverified may go on
                     elseif ($vout -match '(?i)no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5\d\d|rate limit|unexpected EOF') { $attWhy = "gh could not reach GitHub to verify (network): $vtail" }      # the check could not run: -YesUnverified may go on
                     elseif ($vout -match '(?i)gh auth login|not logged in|authentication required|requires authentication|HTTP 401|bad credentials|GH_TOKEN') { $attWhy = 'gh has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working `gh auth login` (see: gh auth status)' }
                     else { $attFailed = $true; $attWhy = "gh attestation verify FAILED: $vtail" }
@@ -222,20 +244,20 @@ function Install-MoeCache {
                 else { throw 'REFUSED: the build attestation could not be checked. Nothing was installed. Log in with gh and run this again, or accept the risk with -YesUnverified (or $env:MOE_CACHE_ALLOW_UNVERIFIED=''1''; the only way with | iex). Check by hand: gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache' }
             }
             Say '2/3 unpack (into a temporary folder; the old kit stays until the new one is complete)'
-            if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+            if (Test-Path -LiteralPath $stage) { Remove-Tree $stage }
             [void](New-Item -ItemType Directory -Force -Path $stage)
-            try { Expand-Kit (Join-Path $tmp "$name.zip") $stage } catch { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue; throw }
-            if (-not (Test-Path -LiteralPath (Join-Path $stage 'bin\moe_cache.py'))) { Remove-Item -LiteralPath $stage -Recurse -Force; throw 'REFUSED: the zip has no bin\moe_cache.py. Nothing was installed.' }
+            try { Expand-Kit (Join-Path $tmp "$name.zip") $stage } catch { Remove-Tree $stage -Quiet; throw }
+            if (-not (Test-Path -LiteralPath (Join-Path $stage 'bin\moe_cache.py'))) { Remove-Tree $stage; throw 'REFUSED: the zip has no bin\moe_cache.py. Nothing was installed.' }
             # RELEASE-1104: more than the launcher must be there. Antivirus programs quarantine unsigned DLLs / exes right after the unpack; an install that reports success without them fails later with a puzzling message.
             $required = @('bin\moe_cache.py', 'moe-cache.exe', 'ggml-moe-cache-api3.dll', 'llama\llama-server.exe')
             $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stage $_)) })
-            if ($missing.Count) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue; throw ("REFUSED: after unpacking, the kit is missing: " + ($missing -join ', ') + ". If your antivirus (Windows Security, Defender) removed or quarantined a file, restore it or add an exception for the install folder and run this again; otherwise the zip is incomplete. Nothing was installed.") }
+            if ($missing.Count) { Remove-Tree $stage -Quiet; throw ("REFUSED: after unpacking, the kit is missing: " + ($missing -join ', ') + ". If your antivirus (Windows Security, Defender) removed or quarantined a file, restore it or add an exception for the install folder and run this again; otherwise the zip is incomplete. Nothing was installed.") }
             [IO.File]::WriteAllText((Join-Path $stage '.moe-cache-complete'), "$Version`r`n")
             Fail-At 'unpack'
             # swap by renames ([IO.Directory]::Move is a real rename; Move-Item falls back to copy + delete when the rename is refused and then leaves a half kit behind, seen on Windows CI): kit -> kit.old (fails at once when a running llama-server / python holds a file in it, and then nothing has changed),
             # kit.part -> kit; the old kit is deleted last, after the command and the record are written
             try {
-                if (Test-Path -LiteralPath $kitOld) { Remove-Item -LiteralPath $kitOld -Recurse -Force }
+                if (Test-Path -LiteralPath $kitOld) { Remove-Tree $kitOld }
                 if (Test-Path -LiteralPath $kit) { [IO.Directory]::Move($kit, $kitOld) }
                 try { [IO.Directory]::Move($stage, $kit) } catch { if ((Test-Path -LiteralPath $kitOld) -and -not (Test-Path -LiteralPath $kit)) { [IO.Directory]::Move($kitOld, $kit) }; throw }
                 $swapped = $true
@@ -243,7 +265,7 @@ function Install-MoeCache {
                 throw "could not replace $kit ($($_.Exception.Message)). Close a running moe-cache server or llama-server and run this again. The previous install is untouched."
             }
             Fail-At 'swap'
-        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue } }
+        } finally { Remove-Tree $tmp -Quiet; if (Test-Path -LiteralPath $stage) { Remove-Tree $stage -Quiet } }
     }
 
     Say '3/3 the moe-cache command'
@@ -280,7 +302,16 @@ function Install-MoeCache {
         $list = Split-PathList (Get-UserPathRaw)
         if (-not ($list | Where-Object { Same-Dir $_ $bin })) { $needPath = $true; $added = $true }
     }
-    $json = [ordered]@{ version = $Version; root = $Root; kit = $kit; bin = $bin; command = $shim; added_path = $added }
+    # LAUNCHER-1222 item 5: an install in its own -Root keeps its own launcher cache (<root>\cache\moe-cache; bin\moe_cache.py reads this flag, so the shim, the Startup link and the Start-menu / .bat paths all agree).
+    # An install that already exists keeps what it had (a record without the flag = it uses the shared user cache: nothing moves under anyone); a new one is isolated when its root is not the default.
+    $defaultRoot = if ($env:LOCALAPPDATA) { [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'moe-cache')) } else { '' }
+    if ($old) { $ownCache = [bool](($old.PSObject.Properties.Name -contains 'own_cache') -and $old.own_cache) }
+    elseif ($kitExistedBefore) { $ownCache = $false }
+    else { $ownCache = [bool]($Root.TrimEnd('\') -ine $defaultRoot.TrimEnd('\')) }
+    # an older kit (-Version X) ignores the flag and would use the user cache while the record says otherwise: only a kit that reads it gets it
+    $kitPy = Join-Path $kit 'bin\moe_cache.py'
+    if ($ownCache -and -not ((Test-Path -LiteralPath $kitPy) -and (Select-String -LiteralPath $kitPy -SimpleMatch 'own_cache_base' -Quiet))) { $ownCache = $false }
+    $json = [ordered]@{ version = $Version; root = $Root; kit = $kit; bin = $bin; command = $shim; added_path = $added; own_cache = $ownCache }
     $recWritten = $true
     [IO.File]::WriteAllText($rec, ($json | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
     Fail-At 'record'
@@ -295,10 +326,10 @@ function Install-MoeCache {
             if ($recWritten) { if ($null -ne $oldRecText) { [IO.File]::WriteAllText($rec, $oldRecText, (New-Object Text.UTF8Encoding($false))) } else { Remove-Item -LiteralPath $rec -Force -ErrorAction SilentlyContinue } }
             if ($shimTouched) { if ($null -ne $oldShimText) { [IO.File]::WriteAllText($shim, $oldShimText, (New-Object Text.ASCIIEncoding)) } else { Remove-Item -LiteralPath $shim -Force -ErrorAction SilentlyContinue } }
             if ($swapped) {
-                if (Test-Path -LiteralPath $kit) { Remove-Item -LiteralPath $kit -Recurse -Force }
+                if (Test-Path -LiteralPath $kit) { Remove-Tree $kit }
                 if (Test-Path -LiteralPath $kitOld) { [IO.Directory]::Move($kitOld, $kit) }
             }
-            if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $stage) { Remove-Tree $stage -Quiet }
             foreach ($d in $bin, $Root) { if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } }
         } catch { $msg += " (and the rollback hit: $($_.Exception.Message))" }
         throw "$msg`nStopped: the previous install (if any) was put back and the half-done files were removed."
@@ -306,15 +337,28 @@ function Install-MoeCache {
     if (Test-Path -LiteralPath $kitOld) {
         if ($env:MOE_CACHE_KEEP_PREVIOUS -eq '1') {      # set by `moe_cache.py update --apply`: the kit that was installed stays as kit.prev, for a roll back
             $kitPrev = Join-Path $Root 'kit.prev'
-            try { if (Test-Path -LiteralPath $kitPrev) { Remove-Item -LiteralPath $kitPrev -Recurse -Force }; [IO.Directory]::Move($kitOld, $kitPrev) } catch { Say "note: could not keep the previous kit ($($_.Exception.Message))" }
-        } else { Remove-Item -LiteralPath $kitOld -Recurse -Force -ErrorAction SilentlyContinue }      # last, best effort
+            try { if (Test-Path -LiteralPath $kitPrev) { Remove-Tree $kitPrev }; [IO.Directory]::Move($kitOld, $kitPrev) } catch { Say "note: could not keep the previous kit ($($_.Exception.Message))" }
+        } else { Remove-Tree $kitOld -Quiet }      # last, best effort
     }
 
     $shown = (& $shim --version 2>&1 | Select-Object -First 1)
     Say ''
     Say "installed: $shown$(if ($old -and $old.version -ne $Version) { " (was $($old.version))" })"
     Say "  files:   $kit"
-    Say "  command: $shim   (folder on your user PATH: $(if ($added) { 'added by this installer' } else { 'was already there' }))"
+    # LAUNCHER-1222 (1): with -NoPath nothing was checked or added, and the old text said 'was already there' when the folder was not on the PATH at all
+    $onPath = [bool]((Split-PathList (Get-UserPathRaw)) | Where-Object { Same-Dir $_ $bin })
+    $pathWords = if ($NoPath -and -not $onPath) { "NOT on your user PATH (-NoPath): type the full path above, or add $bin to the PATH yourself" }
+                 elseif ($added -and -not $NoPath) { 'folder added to your user PATH by this installer' }
+                 elseif ($onPath) { 'folder on your user PATH: was already there' }
+                 else { 'folder not on your user PATH' }
+    Say "  command: $shim   ($pathWords)"
+    $userCache = Join-Path $(if ($env:XDG_CACHE_HOME) { $env:XDG_CACHE_HOME } else { Join-Path $env:USERPROFILE '.cache' }) 'moe-cache'      # the launcher reads XDG_CACHE_HOME first (bin/moe_cache.py CACHE_DIR)
+    Say ("  cache:   " + $(if ($ownCache) { (Join-Path $Root 'cache\moe-cache') + '   (this install keeps its own settings, key and chats)' } else { "your user cache ($userCache): settings, key and chats" }))
+    if ($ownCache -and -not $old) {
+        if ((Test-Path -LiteralPath (Join-Path $userCache 'api.key')) -or (Test-Path -LiteralPath (Join-Path $userCache 'ui.json'))) {
+            Say "  note:    settings, key and chats you made with another kit are in $userCache; this install starts with its own empty cache. Copy what you want from there."
+        }
+    }
     Say '  undo:    powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall      (removes exactly the above; your models stay)'
     Say ('           or, without the file:  & ([scriptblock]::Create((irm https://github.com/' + $Repo + '/releases/latest/download/install.ps1))) -Uninstall')
     Say ''

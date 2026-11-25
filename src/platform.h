@@ -4,6 +4,7 @@
 // A reserved range has no memory behind it. "commit" gives pages to the range, "decommit" gives the physical pages back.
 // On Linux commit is a no-op (pages appear when touched) and decommit is madvise(DONTNEED).
 #pragma once
+#include <atomic>
 #include <cerrno>
 #include "mc_ramguard.h"
 #ifndef _WIN32
@@ -347,7 +348,12 @@ inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) 
     if (r == MAP_FAILED) {
         // a failed MAP_FIXED may already have unmapped the range (ENOMEM from vm.max_map_count): put the reservation back, or a later
         // allocation could land inside our buffer and the next expert read would write over it
-        mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+        void * back = mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+        if (back == MAP_FAILED) {
+            // the reservation is gone; nothing below this point is safe to continue with (silent buffer overlap = wrong tokens)
+            fprintf(stderr, "moe-cache: FATAL: file mmap failed and the reservation at %p (%zu bytes) could not be restored; stopping\n", p, size);
+            abort();
+        }
         return false;
     }
     madvise(p, size, MADV_WILLNEED);
@@ -561,6 +567,8 @@ inline bool file_view_load(const char * p, size_t n) {
     return true;
 #endif
 }
+struct view_drop_stats_t { std::atomic<uint64_t> calls{0}, bytes{0}, failed{0}; };
+inline view_drop_stats_t & view_drop_stats() { static view_drop_stats_t v; return v; }
 // take whole pages of a file view out of the working set: they move to the standby list (still in RAM until the system needs the memory)
 inline void file_view_drop(const void * p, size_t n) {
 #ifdef _WIN32
@@ -572,7 +580,11 @@ inline void file_view_drop(const void * p, size_t n) {
     // inactive list before the unmap). MOE_CACHE_LINUX_VIEW_DROP=pageout drops them from the page cache at once instead
     if (n) {
         static const bool pageout = getenv("MOE_CACHE_LINUX_VIEW_DROP") && strcmp(getenv("MOE_CACHE_LINUX_VIEW_DROP"), "pageout") == 0;
-        madvise((void *) p, n, pageout ? MADV_PAGEOUT : MADV_COLD);
+        view_drop_stats().calls++;      // CACHE-972: counted, so a log says whether the page-out ever ran and whether the kernel took it
+        view_drop_stats().bytes += n;
+        if (madvise((void *) p, n, pageout ? MADV_PAGEOUT : MADV_COLD) != 0) {
+            view_drop_stats().failed++;
+        }
         madvise((void *) p, n, MADV_DONTNEED);
     }
 #else
@@ -591,7 +603,7 @@ inline bool process_exiting() {
 #endif
 }
 // idle release (N3): drop the hard working-set minimum and empty the working set; file-view pages move to the standby list (still in RAM).
-// The same two calls as the PC measurement (C:\dl\pc_n3.ps1); no-op on Linux
+// The same two calls as the PC measurement (the PC measurement script); no-op on Linux
 inline void ws_release() {
 #ifdef _WIN32
     SetProcessWorkingSetSizeEx(GetCurrentProcess(), (size_t) 200 << 20, (size_t) 1 << 30, QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);
@@ -822,6 +834,40 @@ inline size_t rss_private() {
     }
 #endif
     return r;
+}
+
+// RAM-LIVE logging: what the process holds in RAM, split: total working set (Linux VmRSS), its private part (RssAnon / PrivateWorkingSetSize) and the mapped-file part
+// (Linux RssFile + RssShmem; Windows: total minus private). All 0 when unknown. Only for the status line: no decision reads it.
+struct proc_mem_t { size_t total = 0, priv = 0, mapped = 0; };
+inline proc_mem_t proc_mem() {
+    proc_mem_t m;
+#ifdef _WIN32
+    struct {
+        DWORD  cb, PageFaultCount;
+        SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage,
+               PagefileUsage, PeakPagefileUsage, PrivateUsage, PrivateWorkingSetSize;
+        ULONG64 SharedCommitUsage;
+    } ex2;
+    memset(&ex2, 0, sizeof(ex2));
+    ex2.cb = sizeof(ex2);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &ex2, sizeof(ex2))) {
+        m.total = (size_t) ex2.WorkingSetSize;
+        m.priv = (size_t) ex2.PrivateWorkingSetSize;
+        m.mapped = m.total > m.priv ? m.total - m.priv : 0;
+    }
+#else
+    if (FILE * f = fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            unsigned long long kb = 0;
+            if (sscanf(line, "VmRSS: %llu kB", &kb) == 1) { m.total = (size_t) kb * 1024; }
+            else if (sscanf(line, "RssAnon: %llu kB", &kb) == 1) { m.priv = (size_t) kb * 1024; }
+            else if (sscanf(line, "RssFile: %llu kB", &kb) == 1 || sscanf(line, "RssShmem: %llu kB", &kb) == 1) { m.mapped += (size_t) kb * 1024; }
+        }
+        fclose(f);
+    }
+#endif
+    return m;
 }
 
 // Windows: take the pages of this process's views of the given files out of its working set (VirtualUnlock on a range that is not locked does

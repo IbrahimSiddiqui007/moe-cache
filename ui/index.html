@@ -90,7 +90,7 @@ p.whysum { margin:4px 0 6px; font-size:13px; line-height:1.45; }
 .app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
 .top { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--top); border-bottom:2px solid var(--ink); min-width:0; position:relative; }
 .top .logo { image-rendering:pixelated; margin-right:6px; vertical-align:middle; flex:none; }
-.top .brand { font-weight:600; font-size:15px; cursor:default; white-space:nowrap; }
+.top .brand { font-weight:600; font-size:15px; cursor:default; white-space:nowrap; max-width:24em; overflow:hidden; text-overflow:ellipsis; }
 @media (max-width: 1000px) { .top .seg[data-seg=mode] { display:none; } }
 .top .grow { flex:1; }
 .modelpick { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:4px 10px; background:var(--bg); cursor:pointer; min-width:0; max-width:460px; }
@@ -302,8 +302,7 @@ button.danger { border-color:var(--ink); }
 .badge { border-radius:3px; }
 .empty { margin-top:8vh; }
 .empty b { font-size:21px; margin-top:10px; }
-.empty svg { width:84px; height:auto; display:block; margin:0 auto; color:var(--text); }
-.empty svg .c { color:var(--accent); }
+.empty .dragon { width:128px; height:128px; display:block; margin:0 auto; image-rendering:pixelated; image-rendering:crisp-edges; }   /* concept D, 64x64 map at exactly 2x */
 .dot.ok { box-shadow:none; }
 .dot { border-radius:1px; width:9px; height:9px; }
 .dot.ok { animation:pulse 1.6s steps(2) infinite; }
@@ -345,7 +344,7 @@ button.danger { border-color:var(--ink); }
     <button class="icon" id="tglLeft" title="Chats, agent sessions, models">☰</button>
     <img class="logo only-wide" alt="" width="16" height="16" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA3ElEQVR42mNkYGBgyJ65+T8DGWBqui8jIz7NvWFiDAwMDAxGOt4MjnXzsaphwaeJIWwrVkORDcQw4EJoIlY2Mjh3ZSvcEAwDDFZDnarjjcLe35QI13juCsJlKGEAcz4x4EJoIkPS9VcIFyBrxhVo+5tQvQT3Ai6bY1eXw9mLQzuxGsqCL7DwRS9KIMIDCwZ0vBl6w8QYLqxG1VS86hVGTLDA/IwcshgxgiecmGCBYaTjjWI6rrSBDlCiERbX+ADMIqwpEd0l2AB6TDCSmxNhgGlqui8juZqnpvsyAgC+smIzN+7F6wAAAABJRU5ErkJggg=="><span class="brand only-wide" id="sys" title="">moe-cache</span>
     <div class="modelpick" id="modelpick" title="The model Start uses (pick one in the list on the left)"><b id="topmodel">scanning…</b><span class="badge wait" id="topverdict"></span></div>
-    <div class="seg only-wide" data-seg="mode" title="Default: the launcher's own settings (long-prompt mode from 32k, q8_0 KV, MTP in agent mode; not byte-identical to plain llama.cpp) · Exact: same output as plain llama.cpp, all of that off · Fast: about 10 % faster, about 1 token in 40-50 comes out different · Hybrid: experimental"><button data-v="default">Default</button><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <div class="seg only-wide" data-seg="mode" title="Default: the launcher's own settings (long-prompt mode from 32k, q8_0 KV, MTP in agent mode; not byte-identical to plain llama.cpp) · Exact: same output as plain llama.cpp, all of that off · Fast: skips rarely needed experts, about 1 token in 40-50 comes out different (faster only in a laptop test, no win on the PC) · Hybrid: experimental"><button data-v="default">Default</button><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <span class="grow"></span>
     <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
     <span class="startgrp"><button class="primary" id="start">Start</button><button class="primary" id="switch" hidden title="Stop the running model and start the selected one with the settings shown">Switch</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
@@ -585,10 +584,10 @@ button.danger { border-color:var(--ink); }
     <h4>Agents</h4>
     <label class="check"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
     <label class="check"><input type="checkbox" id="nowarm"> Don't restore saved agent sessions <span class="small">(--no-warm: nothing is saved either)</span></label>
-    <label class="check"><input type="checkbox" id="longprompt" checked> Long-prompt mode <span class="small">(on by default from 32k context: reads long prompts about 77 % faster, answers as fast; for agents and documents. Needs room on the graphics card, otherwise nothing changes. Untick it for answers identical to stock llama.cpp: this mode stores the KV cache as q8_0, so wording may differ slightly)</span></label>
+    <label class="check"><input type="checkbox" id="longprompt" checked> Long-prompt mode <span class="small">(on by default from 32k context: for agents and documents. Needs room on the graphics card, otherwise nothing changes. Untick it for answers identical to stock llama.cpp: this mode stores the KV cache as q8_0, so wording may differ slightly)</span></label>
     <label>Approximate speed tiers (--approx) <span class="small">off by default</span></label>
     <select id="approx"><option value="">Off: same answers as the settings above</option><option value="safe">Safe: 8-bit KV cache, the model's own drafting</option><option value="careful">Careful: also skips rarely used experts</option><option value="aggressive">Aggressive: skips more experts</option></select>
-    <div class="hint" id="approxhint">Off. Every tier below changes some answers: they are NOT identical to plain llama.cpp's. Each mode has a quality limit (docs/QUALITY_GATE.md) and runs only for models it was measured on; at the start a short check against the exact setting steps the tier down when the answers drift too far. The plan above does not show a tier.</div>
+    <div class="hint" id="approxhint">Off. Every tier below changes some answers: they are NOT identical to plain llama.cpp's. Each mode has a quality limit (docs/reference/quality-gate.md) and runs only for models it was measured on; at the start a short check against the exact setting steps the tier down when the answers drift too far. The plan above does not show a tier.</div>
     <label class="check"><input type="checkbox" id="leaveroom"> Leave room for me <span class="small">(--leave-room: I use this PC while the model runs; more RAM, GPU memory and CPU stay mine, the model is slower)</span></label>
     <h4>Server</h4>
     <div class="row">
@@ -632,12 +631,15 @@ async function loadBusy() {      // never blocks: the page server answers with i
 /* The per-run token: handed over once inside this page (a <meta> the server fills in), kept in memory only (no cookie, no storage), sent in a header
    with every request. The address (?t=...) is replaced at once so the token stays out of the history; reloading needs the launcher's address again. */
 const TOKEN = (() => { const m = document.querySelector('meta[name="moe-token"]'); const t = m ? m.content : ""; if (m) m.remove();
-  try { if (location.search) history.replaceState(null, "", location.pathname); } catch (e) {} return t; })();
+  try { if (location.search) history.replaceState(null, "", location.pathname + location.hash); } catch (e) {} return t; })();
+// GUI-839: navigator.clipboard does not exist on a LAN http address (not a secure context) and a refusal is a rejected promise: true only when the text was copied
+async function copyText(t) { try { if (!navigator.clipboard) return false; await navigator.clipboard.writeText(t); return true; } catch (e) { return false; } }
 const authHeaders = h => Object.assign({ "X-MoeCache-Token": TOKEN }, h);
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? { headers: authHeaders() } : { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || r.status);
+  let j = null; try { j = await r.json(); } catch (e) {}            // GUI-839: a proxy's HTML error page is not JSON: say the status, not a parse error
+  if (!r.ok) throw new Error((j && j.error) || r.status);
+  if (j === null) throw new Error("the answer was not JSON (" + r.status + ")");
   return j;
 }
 
@@ -673,13 +675,13 @@ function seg(sel, key, cb) {
   paint(); segPainters.push(paint); return paint;
 }
 const MODEHINT = { default: "Default (no flag): the launcher's own settings: long-prompt mode from 32k context when the card has room, q8_0 KV cache, MTP where the model has it. Answers are not byte-identical to plain llama.cpp's. Exact turns all of that off.",
-                   exact: "Exact (--exact): same output as plain llama.cpp. Turns off the long-prompt mode, the q8_0 KV default and MTP.", fast: "Fast (--fast): skips experts that are rarely needed and not in RAM. About 10 % faster; about 1 token in 40-50 comes out different.",
+                   exact: "Exact (--exact): same output as plain llama.cpp. Turns off the long-prompt mode, the q8_0 KV default and MTP.", fast: "Fast (--fast): skips experts that are rarely needed and not in RAM. About 1 token in 40-50 comes out different; faster only in a laptop test with memory far below the model, no win on the PC.",
                    hybrid: "Hybrid (--hybrid, experimental): the most used experts run on the GPU, the rest on the CPU; some tokens come out different from stock." };
-const APPROXHINT = { "": "Off. Every tier below changes some answers: they are NOT identical to plain llama.cpp's. Each mode has a quality limit (docs/QUALITY_GATE.md) and runs only for models it was measured on; at the start a short check against the exact setting steps the tier down when the answers drift too far. The plan above does not show a tier.",
+const APPROXHINT = { "": "Off. Every tier below changes some answers: they are NOT identical to plain llama.cpp's. Each mode has a quality limit (docs/reference/quality-gate.md) and runs only for models it was measured on; at the start a short check against the exact setting steps the tier down when the answers drift too far. The plan above does not show a tier.",
   safe: "Safe: answers are NOT identical to stock. The KV cache is stored in 8 bit (mean KL 0.0045-0.015 against stock) and, if the model has the head, it drafts 2 tokens ahead and checks them. Every expert is still computed. Limit: KL 0.015, same top token 95 %.",
-  careful: "Careful: answers are NOT identical to stock. Rarely picked experts that are not in RAM are skipped (about +10 %; about 1 token in 40-50 differs), 8-bit KV cache, own drafting. Limit: KL 0.040, same top token 90 %.",
+  careful: "Careful: answers are NOT identical to stock. Rarely picked experts that are not in RAM are skipped (about 1 token in 40-50 differs; faster only in a laptop test, no win on the PC), 8-bit KV cache, own drafting. Limit: KL 0.040, same top token 90 %.",
   aggressive: "Aggressive: answers are NOT identical to stock. Up to 4 low-ranked experts per token are skipped (about 1 token in 28 differs); for memory much smaller than the model. Fastest, least faithful. Limit: KL 0.060, same top token 88 %." };
-const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (faster decode; the output can differ slightly for some models); the plan's Why list says what it will do.",
+const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (speculative decoding; the output can differ slightly for some models); the plan's Why list says what it will do.",
                   on: "--mtp: always use the model's MTP head (Start stops with a message when the model or llama-server cannot).",
                   off: "--no-mtp: never." };
 const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM and all its experts fit on the card; moe-cache when it does not fit, or when some expert layers stay on the CPU (recommended).",
@@ -689,6 +691,7 @@ const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM and al
 async function loadSystem() {
   S.sys = await api("/api/system");
   const s = S.sys, last = s.last || {};
+  if (s.version) $("sys").textContent = "moe-cache " + s.version;
   $("sys").title = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "") +
     "\nllama-server: " + s.llama_server + "\nplugin: " + s.plugin;
   $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
@@ -812,14 +815,14 @@ async function loadPick() {
       row("Disk", `${gbs(m.disk_free)} free <span class="small">· ${esc(m.disk_kind || "SSD or HDD unknown")}</span>`) +
       row("CPU", `AVX2 ${yn(m.avx2)} · AVX-512 ${yn(m.avx512)}`) + row("llama.cpp", m.llama_build ? "b" + esc(m.llama_build) : "not found") +
       row("Models here", esc(local)) + `</table>` +
-      `<div class="rec"><div class="name">${esc(r.name)}</div><div class="small">${fmtGB(r.size)} · context ${Math.round(r.ctx / 1024)}k · ${esc(r.engine)}</div>` +
-      `<div class="nums">${key || `<span class="small">${esc(r.measured)}</span>`}</div><div class="why">${r.why.map(esc).join(" ")}</div></div>` +
+      (r.nothing_fits ? `<div class="rec"><div class="name">Nothing fits this machine well</div><div class="why">${r.why.map(esc).join(" ")}</div></div>` : `<div class="rec"><div class="name">${esc(r.name)}</div><div class="small">${fmtGB(r.size)} · context ${Math.round(r.ctx / 1024)}k · ${esc(r.engine)}</div>` +
+      `<div class="nums">${key || `<span class="small">${esc(r.measured)}</span>`}</div><div class="why">${r.why.map(esc).join(" ")}</div></div>`) +
       (r.alternatives.length ? `<h5 style="margin-top:12px">Other options</h5><ul class="alts">${r.alternatives.map(a => `<li><b>${esc(a.name)}</b>: ${esc(a.why)}</li>`).join("")}</ul>` : "") +
-      (noDisk ? `<div class="get pwarn">Not on this machine, and ${fmtGB(r.disk_missing)} of disk is missing: no download is offered.</div>`
+      (r.nothing_fits ? "" : noDisk ? `<div class="get pwarn">Not on this machine, and ${fmtGB(r.disk_missing)} of disk is missing: no download is offered.</div>`
         : !r.local ? `<div class="get">Not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code>. Download it yourself, then add its folder above and press Use it again:${(d.steps || [d.command]).map(x => `<div><code>${esc(x)}</code></div>`).join("")}${d.note ? `<div class="small">${esc(d.note)}</div>` : ""}` +
           (d.ollama ? `<div>Ollama: <code>${esc(d.ollama)}</code></div>` : "") + `</div>` : "") +
       `<details><summary>Memory, measurements and notes${r.warnings.length ? ` (${r.warnings.length} ${r.warnings.length == 1 ? "warning" : "warnings"})` : ""}</summary><div>${notes}</div></details>`;
-    $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice"; $("pickapply").hidden = !r.local && r.fits_disk === false;
+    $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice"; $("pickapply").hidden = (!r.local && r.fits_disk === false) || !!r.nothing_fits;
   } catch (e) { $("pickres").textContent = "could not read this machine: " + e.message; }
 }
 async function applyPick() {
@@ -955,7 +958,12 @@ async function rowMenuDo(id) {
   else if (id == "stop") $("stop").click();
   else if (id == "plan") { $("planbox").open = true; $("planbox").scrollIntoView({ block: "nearest" }); }
 }
-async function poll() {
+let pollBusy = false;
+async function poll() {       // GUI-839: a slow answer must not start a second poll on top of the first (duplicate log lines)
+  if (pollBusy) return; pollBusy = true;
+  try { await pollOnce(); } finally { pollBusy = false; }
+}
+async function pollOnce() {
   let st;
   try { st = await api("/api/status"); } catch (e) { $("state").textContent = "page server not reachable"; $("statedot").className = "dot bad"; return; }
   S.status = st;
@@ -1034,7 +1042,7 @@ function paintSessions(j) {
   h += j.files.map(f => { const busy = f.this_server && live.some(x => x.id == f.slot && x.processing);
     return `<div class="item" title="${esc(f.model)} · ctx ${esc(f.ctx ?? "?")}, KV ${esc(f.kv)} · ${f.size >= 1e9 ? fmtGB(f.size) : (f.size / 1e6).toFixed(0) + " MB"}">
       <span class="dot ${busy ? "ok" : ""}" style="margin-top:6px"></span><div><span class="t">${esc(f.agent || (f.this_server && st.state == "ready" ? "unknown agent" : "agent"))} · ${esc(shortName(f.model))}</span>
-      <span class="s">slot ${f.slot} · ${f.tokens != null ? f.tokens.toLocaleString() : "?"} tokens · ${state(f)}${busy ? " · working" : ""}</span></div>
+      <span class="s">slot ${f.slot} · ${Number.isFinite(Number(f.tokens)) && f.tokens != null ? Number(f.tokens).toLocaleString() : "?"} tokens · ${state(f)}${busy ? " · working" : ""}</span></div>
       <button class="x" data-trash="${esc(f.name)}" title="Move to the Trash">✕</button></div>`; }).join("");
   if (!j.files.length) h += `<div class="small" style="margin:0 8px">No saved agent conversations${live.length ? "" : " (Agent mode saves them)"}.</div>`;
   if (live.length) h += `<div class="small" style="margin:4px 8px">Live slots: ${live.map(x => `${esc(x.id)}: ${Number.isFinite(Number(x.tokens)) ? Number(x.tokens) : 0} tok${x.processing ? " (working)" : ""}`).join(" · ")}</div>`;
@@ -1076,14 +1084,14 @@ let shareKey = "", shareUrl = "", readyKey = "", shareRec = null, readyMinutes =
 async function paintReady(force) {
   const box = $("ready"), card = $("c-bench");
   if (!S.sel || !card.open) { box.hidden = true; return; }
-  if (!force && readyKey == S.sel) return; readyKey = S.sel;
+  if (!force && readyKey == S.sel) return;
   try {
     const j = await api("/api/ready?model=" + encodeURIComponent(S.sel) + "&pairs=2&chat=" + ($("sharechat").checked ? 1 : 0) + "&limit=" + encodeURIComponent($("sharelimit").value));
     const dot = { ok: "ok", warn: "warn", bad: "bad", info: "" };
     readyMinutes = j.minutes || 0;
     const pr = j.preset;
     box.innerHTML = (pr ? `<div><b>Your machine:</b> ${esc(pr.text)} <button class="small" id="usepreset">Use</button></div>` : "") + `<b>Ready to measure?</b>` + j.checks.map(c => `<div><span class="dot ${dot[c.level]}"></span>${esc(c.text)}${c.fix ? ` <span class="${c.level == "bad" ? "err" : ""}">${esc(c.fix)}</span>` : ""}</div>`).join("");
-    box.hidden = false;
+    box.hidden = false; readyKey = S.sel;           // GUI-839: remembered only after the answer arrived, so a failed fetch is tried again
     if (pr && $("usepreset")) $("usepreset").onclick = () => { $("sharechat").checked = pr.chat; if (pr.emulate_gb && [...$("sharelimit").options].some(o => +o.value == pr.emulate_gb)) $("sharelimit").value = pr.emulate_gb; paintReady(true); };
   } catch (e) { box.hidden = true; }
 }
@@ -1304,7 +1312,7 @@ async function paintShare(st) {
   if (sh.state == "failed") { box.innerHTML = `<span class="err">${esc(sh.error || "failed")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "cancelled") { box.textContent = "cancelled. The server is stopped: press Start to run a model again."; $("shareout").hidden = true; return; }
   if (sh.state == "done") {
-    const j = await api("/api/share");
+    let j; try { j = await api("/api/share"); } catch (e) { shareKey = null; return; }          // GUI-839: a failed fetch is tried again at the next poll
     shareUrl = j.issue_url || "";
     $("sharemd").value = j.markdown || "";
     const vd = verdictOf(j.markdown);
@@ -1392,12 +1400,12 @@ async function loadServers() {
 function paintServers() {
   const { managed, other } = S.servers, can = S.status.state == "ready" && S.sel && managed.length <= S.servers.max;
   $("c-servers").hidden = !(managed.length > 1 || other.length || S.models.length > 1);
-  const chatBtn = (port, why) => `<button class="rowbtn" data-chat="${port}" ${why ? `disabled title="${esc(why)}"` : ""}>${(S.chatPort || (managed.find(x => x.main) || {}).port) == port ? "chatting here" : "Chat here"}</button>`;
-  $("servers").innerHTML = managed.map(x => `<div class="line"><span class="dot ${x.state == "ready" ? "ok" : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
-    <br><span class="small">${x.main ? "main server of this page" : "started here"} · ${esc(x.state)}${x.mode ? " · " + esc(x.mode) : ""}${x.live_tps ? ` · ${x.live_tps.toFixed(1)} tok/s` : ""}${x.vision ? " · images" : ""}</span></span>
-    ${x.state == "ready" || x.state == "waiting" ? chatBtn(x.port) : ""}${x.main ? "" : `<button class="rowbtn" data-stop="${x.port}">Stop</button>`}</div>`).join("") +
-    other.map(x => `<div class="line"><span class="dot ${x.health == "ready" ? (x.busy ? "ok" : "") : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
-    <br><span class="small">started elsewhere · ${x.health == "ready" ? "ready" : "loading"}${x.ctx ? " · ctx " + x.ctx.toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span>
+  const chatBtn = (port, why) => `<button class="rowbtn" data-chat="${esc(port)}" ${why ? `disabled title="${esc(why)}"` : ""}>${(S.chatPort || (managed.find(x => x.main) || {}).port) == port ? "chatting here" : "Chat here"}</button>`;
+  $("servers").innerHTML = managed.map(x => `<div class="line"><span class="dot ${x.state == "ready" ? "ok" : "warn"}"></span><span class="n"><b>:${esc(x.port)}</b> ${esc(shortName(x.model || "") || "?")}
+    <br><span class="small">${x.main ? "main server of this page" : "started here"} · ${esc(x.state)}${x.mode ? " · " + esc(x.mode) : ""}${Number(x.live_tps) > 0 ? ` · ${Number(x.live_tps).toFixed(1)} tok/s` : ""}${x.vision ? " · images" : ""}</span></span>
+    ${x.state == "ready" || x.state == "waiting" ? chatBtn(x.port) : ""}${x.main ? "" : `<button class="rowbtn" data-stop="${esc(x.port)}">Stop</button>`}</div>`).join("") +
+    other.map(x => `<div class="line"><span class="dot ${x.health == "ready" ? (x.busy ? "ok" : "") : "warn"}"></span><span class="n"><b>:${esc(x.port)}</b> ${esc(shortName(x.model || "") || "?")}
+    <br><span class="small">started elsewhere · ${x.health == "ready" ? "ready" : "loading"}${Number(x.ctx) > 0 ? " · ctx " + Number(x.ctx).toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span>
     ${x.health == "ready" ? chatBtn(x.port, x.key ? "this server wants an API key; the page sends its key only to servers it started" : "") : ""}</div>`).join("") +
     (other.length ? `<div class="hint">Servers started outside this page (a script, the terminal, another page) can be chatted with here when they need no key; Start and Stop act on this page's own servers only.</div>` : "") +
     (S.servers.groupError ? `<div class="pwarn small">${esc(S.servers.groupError)}</div>` : "") +
@@ -1592,7 +1600,7 @@ function paintChat() {
   $("chatinfo").textContent = c.messages.length ? `· ${shortName(c.model) || "?"}` + (c.system ? " · own system prompt" : "") + chatHitsText(c.messages) : "";
   $("chatinfo").title = chatHits(c.messages).n ? "The expert-cache hits and misses counted while this chat's answers were written, added up. The server counts them, so another chat or an agent running at the same time is included" : "";
   $("inner").innerHTML = c.messages.length ? c.messages.map((m, i) => msgHTML(m, i, C.busy && i == c.messages.length - 1 && m.role == "assistant")).join("") :
-    `<div class="empty"><svg viewBox="0 0 21 32" shape-rendering="crispEdges" aria-hidden="true"><g fill="currentColor"><rect x="10" y="0" width="1" height="6"/><rect x="8" y="5" width="5" height="3"/><rect x="9" y="8" width="3" height="24"/><rect x="3" y="10" width="15" height="1"/><rect x="2" y="11" width="3" height="6"/><rect x="16" y="11" width="3" height="6"/><rect x="5" y="19" width="11" height="1"/><rect x="4" y="20" width="3" height="5"/><rect x="14" y="20" width="3" height="5"/></g><g class="c" fill="currentColor"><rect x="9" y="12" width="3" height="1"/><rect x="9" y="24" width="3" height="1"/><rect x="2" y="13" width="1" height="2"/></g></svg><b>What are we working on?</b>${S.status.state == "ready" ? "Type below. Speed, MTP and cache hits show under each answer." : (S.models.length ? "Pick a model on the left and press Start (top right)." : "No model found yet. Open Settings > Which model? for a recommendation and the download command, or put a .gguf file in a model folder and press Rescan.")}</div>`;
+    `<div class="empty"><img class="dragon" alt="" width="128" height="128" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACtElEQVR42u1bMW4DIRAERJE2kpXGL4h1RXRNHkHtB9gPSx6Q2t+wXFjOC9xE/sOluuiEgYNldwHnkNycOQzL7LA7rIVY2tL+dZPUP7BZrwbX88v1JmswgKZe/PF8uHvedwZsQGzDqRZgejwfhMuQ1SOA07WgyFCi4YaBCk1Bcim7Qe3jRVxgs14NMQtxkWTfmYHTCBqb5W2GP213VbuRegQCrPoUePv6vH8YGQfYCDueD6LvzOBCW6zboRsgF+Kp7/uYv+8MyAjVu0DfmaTIkR0BdxBPnGzu+5Z7tEOCISIbv4P49Ga9Gqaf4iQIha9v8tPxbD6AoEBz7/B00j7/zglxUwMrVTJ2hywUOyuUHDvN3U7b3R+59p0JcomuLUsL+Xg1x2CIXTEn3XcGNJ4z+sQywLj4uSQI64QY+1ChQZWM8KiP05h3JMbu+34wtp9PEEnJ+kKIDJGgxFp8CLaxC6ZIgefGLyqKpoS6rr5zRokZX+bo+1Dfw5S8ci9eNKf6UhpFLC7g2v1arsHIDRC7+FhUcRhOl9AAPl5fovrvhSCXyDWX9icWWbxBDkgJfoQQYD0P45aJzAVykxCMYzRHIyxCgnYI7CuS8JHh/vvHKZ9RoEFRiiGY2l6zBRJQ3SBFB8i5otelihqwb3tsQz09v7ddIoNFvtnpMES5CU1+Ot5IdjHjUN0Pakq5K1c3tPuzH4OX603aBJOiCGHtWtFAqKRfzxkwOVLlygUoCxvZETDCrxZlaDoPDCMrzhJXykoPKNmCCxoxRVJMLkk9OTTHTqQYayq8pNzxQY9NxV35wQX72KNTpZzF9qC1GCFnHs2Wy2NJ8BoalY2kiF3j81B/meGEOjRc1rnxuStA4uaGnFyhOlnclyL7jJqbKMnay9mps0PZSl0/VVqsWtmpmm+Yl7a0htsva7mgE5HgWO4AAAAASUVORK5CYII="><b>What are we working on?</b>${S.status.state == "ready" ? "Type below. Speed, MTP and cache hits show under each answer." : (S.models.length ? "Pick a model on the left and press Start (top right)." : S.scanning ? "Scanning for models…" : "No model found yet. Open Settings > Which model? for a recommendation and the download command, or put a .gguf file in a model folder and press Rescan.")}</div>`;
   paintAttached(); paintContext();
   $("msgs").scrollTop = $("msgs").scrollHeight;
 }
@@ -1612,7 +1620,7 @@ $("inner").onclick = e => {
   const rc = e.target.closest("[data-risk]");
   if (rc) { const m = C.chat.messages[+rc.dataset.risk]; if (m) { m.showRisk = !m.showRisk; paintChat(); } return; }
   const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.copy != null) { navigator.clipboard && navigator.clipboard.writeText(splitThink(C.chat.messages[+b.dataset.copy])[1]); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); }
+  if (b.dataset.copy != null) { copyText(splitThink(C.chat.messages[+b.dataset.copy])[1]).then(ok => { b.textContent = ok ? "Copied" : "Copy not available here"; setTimeout(() => b.textContent = "Copy", 1500); }); }
   if (b.dataset.regen != null && !C.busy) { C.chat.messages.pop(); paintChat(); ask(); }
 };
 function paintChatState(st, running) {
@@ -1916,7 +1924,8 @@ function monTiles() {
   const d = M.data, cap = d.cap, last = M.samples[M.samples.length - 1] || {}, ram = last.rss, tot = d.totals || {}, t = [];
   const tile = (v, l, cls, tip) => t.push(`<div class="mtile ${cls || ""}" title="${esc(tip || "")}"><b>${esc(v)}</b><span>${esc(l)}</span></div>`);
   const busy = last.busy;
-  tile(nz(last.dec) ? last.dec.toFixed(1) : "–", "decode tok/s");
+  const lastDec = (d.requests || []).slice().reverse().find(r => nz(r.decode_tps));   // idle sample: show the last answer's speed, as the prompt tile does
+  tile(nz(last.dec) ? last.dec.toFixed(1) : lastDec ? lastDec.decode_tps.toFixed(1) + " (last)" : "–", "decode tok/s");
   tile(nz(last.pre) ? last.pre.toFixed(0) : (M.data.requests || []).length ? (M.data.requests.slice(-1)[0].prefill_tps || 0).toFixed(0) + " (last)" : "–", "prompt tok/s");
   tile(d.ctx && nz(d.ctx.depth) ? d.ctx.depth + (d.ctx.max ? " / " + d.ctx.max : "") : "–", "context tokens", d.ctx && d.ctx.max && d.ctx.depth > d.ctx.max * 0.9 ? "warn" : "");
   tile(pct(lastOf("hit")), "hit rate (now)"); tile(pct(tot.hits_total), "hit rate (run)");
@@ -1935,12 +1944,12 @@ function monPanels() {
   const d = M.data, p = d.plan || {}, ex = d.extra || {}, a = d.approx || {}, m = d.mtp || {};
   const kv = p.kv_k || p.kv_v ? (p.kv_k || "f16") + (p.kv_v && p.kv_v != p.kv_k ? " / " + p.kv_v : "") : "";
   monKv("monplan", [["mode", p.mode], ["device", p.device || (d.totals || {}).gpu], ["GPU layers (-ngl)", p.ngl], ["experts on the CPU, layers", p.cpu_moe_all ? "all" : p.cpu_moe_layers], ["-ub / -b", p.ub ? p.ub + (p.b ? " / " + p.b : "") : ""],
-    ["KV cache type", kv], ["context", p.ctx], ["threads", p.threads], ["parallel slots", p.parallel], ["flash attention", p.flash_attn], ["agent mode", p.agent ? "yes" : ""], ["MTP", p.mtp ? "on" : ""], ["approximate tier", p.approx], ["cache policy", ex.policy]].concat(Object.entries(p.env || {}).filter(([k]) => !/_(LIB|GGUF|PROFILE)$/.test(k)).map(([k, v]) => [k.replace("MOE_CACHE_", ""), v])));
+    ["KV cache type", kv + (p.kv_approx ? " (" + p.kv_approx + ")" : "")], ["context", p.ctx], ["threads", p.threads], ["parallel slots", p.parallel], ["flash attention", p.flash_attn], ["agent mode", p.agent ? "yes" : ""], ["MTP", p.mtp ? "on" : ""], ["approximate tier", p.approx], ["cache policy", ex.policy]].concat(Object.entries(p.env || {}).filter(([k]) => !/_(LIB|GGUF|PROFILE)$/.test(k)).map(([k, v]) => [k.replace("MOE_CACHE_", ""), v])));
   $("mondec").innerHTML = (p.decisions || []).slice(-8).map(l => `<li>${esc(l)}</li>`).join("");
   monKv("moncount", [["MTP accepted / drafted", m.generated ? `${m.accepted} / ${m.generated} (${pct(m.rate)})` : ""],
-    ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up, ${a.replaced} replaced of ${a.considered} looked at (${a.live ? "live" : "at last stop"})` : ""],
+    ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up${a.replaced ? ", " + a.replaced + " replaced" : ""} of ${a.considered} looked at (${a.live ? "live" : "at last stop"})` : ""],
     ["fewer experts", a.fewer ? `${a.fewer}: ${a.fewer_dropped} dropped of ${a.fewer_considered || "?"} looked at` : ""],
-    ["evictions", ex.evictions], ["prefetch used / issued / wasted", ex.pf_issued != null ? `${ex.pf_used} / ${ex.pf_issued} / ${ex.pf_wasted}` : ""], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
+    ["evictions", ex.evictions], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
     ["cache resident / budget", ex.resident_bytes != null ? fmtGiB(ex.resident_bytes) + " / " + fmtGiB(ex.budget) : ""], ["requests running / queued", (d.metrics || {}).requests_processing != null ? `${d.metrics.requests_processing} / ${d.metrics.requests_deferred || 0}` : ""]]);
   const rq = (d.requests || []).slice().reverse();
   $("monreq").innerHTML = '<tr><th>time</th><th class="num">prompt tok</th><th class="num">prompt t/s</th><th class="num">decoded</th><th class="num">decode t/s</th><th class="num">MTP</th></tr>' +

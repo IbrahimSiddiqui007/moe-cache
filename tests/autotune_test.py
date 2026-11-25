@@ -123,9 +123,45 @@ def cold_runner(cand, left, n):
     return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n)                                                               # +20 % over the cold C0 only
 clk = Clock()
 r = at.tune(cands, cold_runner, clock=clk)
-check([x["id"] for x in r["rows"]][-1] == "C0b" and r["rows"][-1]["status"] == "measured", "the plan as it is runs a second time (C0b) when the budget allows")
+_ids = [x["id"] for x in r["rows"]]
+check("C0b" in _ids and r["rows"][_ids.index("C0b")]["status"] == "measured" and _ids[-1] in ("C0b", "confirm") and (_ids[-1] != "confirm" or _ids[-2] == "C0b"),
+      "the plan as it is runs a second time (C0b) when the budget allows; the leader's confirm run, if any, comes after it")
+
 check(r["picked"] == "C0" and not r["changed"] and "moved" in r["why"], "a candidate that only beats the COLD baseline is not picked; the why names the baseline spread")
 check(r.get("baseline_spread", 0) > 0.05, "the baseline spread is stored")
+# --- LAUNCHER-1225 step 2: the leader is confirmed by a second run after C0b (A B .. A B); both of its runs must win ---
+def confirm_case(second, budget=180.0):
+    """C0 20 tok/s both runs; candidate ids[1] 25 tok/s on its first run, `second` tok/s (or a failure for None) on its confirm run."""
+    n_ = {"x": 0}
+    def runner(cand, left, n):
+        clk.t += 20
+        if cand.id == "C0":
+            return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n)
+        if cand.id == ids[1]:
+            n_["x"] += 1
+            if n_["x"] == 2:
+                return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=second, decode_n=n) if second else dict(ok=False, error="llama-server stopped while loading")
+            return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=25, decode_n=n)
+        return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=19, decode_n=n)
+    c_ = Clock()
+    def runner2(cand, left, n):
+        globals()["clk"] = c_
+        return runner(cand, left, n)
+    globals()["clk"] = c_
+    return at.tune(cands, runner2, clock=c_, budget_s=budget)
+r = confirm_case(24.5)
+_ids = [x["id"] for x in r["rows"]]
+check(_ids[-2:] == ["C0b", "confirm"] and r["rows"][-1]["of"] == ids[1] and r["picked"] == ids[1] and "confirmed by a second run" in r["why"],
+      f"a lead that holds on its confirm run is picked ({_ids}, {r['picked']})")
+r = confirm_case(20.2)
+check(r["picked"] == "C0" and "the best other was" in r["why"] and r.get("confirm_spread", 0) > 0.05, f"a lead that falls back to the baseline on its confirm run is not picked ({r['picked']}: {r['why'][:120]})")
+r = confirm_case(None)
+check(r["picked"] == "C0" and "confirm run failed" in r["why"], "a lead whose confirm run does not load is not picked")
+r = confirm_case(24.5, budget=75.0)
+check("confirm" not in [x["id"] for x in r["rows"]] and r["picked"] == "C0" and not r["changed"] and "no time was left for its confirm run" in r["why"],
+      f"no time for the confirm run: the one-run leader is NOT picked, the plan as it is stays ({r['picked']}: {r['why'][:140]})")
+r = at.tune(cands, lambda c, l, n: (clk.__setattr__("t", clk.t + 20), dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n))[1], clock=Clock())
+check("confirm" not in [x["id"] for x in r["rows"]], "the plan as it is leads: no confirm run (nothing to confirm)")
 seen["C0"] = 0; clk = Clock()
 r = at.tune(cands, cold_runner, clock=clk, budget_s=70.0)
 check(all(x["id"] != "C0b" for x in r["rows"]), "no time for the second baseline run: not attempted")
@@ -247,7 +283,7 @@ try:
         os.unlink(os.path.join(_dir, f))
     calls.clear()
     cmd, env, info, out = stage(machine=M(tmp, free_mib=7600))
-    check(info["state"] == "tuned" and at.flag_value(cmd, "--n-cpu-moe") == "18", "room test setup: tuned with 7600 MiB free, pick ncmoe-2")
+    check(info["state"] == "tuned" and at.flag_value(cmd, "--n-cpu-moe") == "18", f"room test setup: tuned with 7600 MiB free, pick ncmoe-2 (state {info['state']}, total {info.get('total_s')} s of {info.get('budget_s')}, rows {[(r['id'], r['status'], r.get('took_s'), str(r.get('error') or '')[:50]) for r in info.get('rows', [])]})")
     _f = os.path.join(_dir, [f for f in os.listdir(_dir) if f.endswith(".json")][0])
     _rec = _json.load(open(_f))
     check(_rec.get("free_vram_mib") == 7600, f"the stored result records the free GPU memory it was measured with ({_rec.get('free_vram_mib')} MiB)")
@@ -311,21 +347,51 @@ try:
     seen_ = []
     def counting(cmd, env, left, n):
         seen_.append(cmd); return fake_runner(cmd, env, left, n)
-    for size_, avail_, what in ((75.8e9, 90e9, "75 GB on a 32 GB computer (> 40 % of RAM)"), (5e9, 3e9, "bigger than the memory the server may use (spill)")):
-        seen_.clear()
-        cmd, env, info, out = stage2(counting, size=size_, avail=avail_)
-        check(info["state"] == "skipped" and not seen_ and cmd == BASE_CMD and not stored_files() and any("skipped" in l and "budget" in l for l in out), f"{what}: no probe, one clear line, nothing stored")
     seen_.clear()
-    cmd, env, info, out = stage2(counting, probe=False, size=75.8e9, avail=90e9)
-    check(info["state"] == "skipped" and not out and "40 %" in info["lines"][0], "dry-run / plan-json / control page: the plan says the model will not be tuned (not 'the first start measures')")
+    cmd, env, info, out = stage2(counting, size=5e9, avail=3e9)
+    check(info["state"] == "skipped" and not seen_ and cmd == BASE_CMD and not stored_files() and any("skipped" in l and "budget" in l for l in out),
+          "bigger than the memory the server may use (spill): no probe, one clear line, nothing stored")
+    cmd, env, info, out = stage2(counting, probe=False, size=5e9, avail=3e9)
+    check(info["state"] == "skipped" and not out and "bigger than the memory" in info["lines"][0], "dry-run / plan-json / control page: the plan says the model will not be tuned (not 'the first start measures')")
+    # LAUNCHER-1225 step 2 (replaces the 40 %-of-RAM part of 1044): a 30B (18.6 GB) on a 32 GB machine with 24 GB for the server is tuned
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, size=18.6e9, avail=24e9)
+    check(info["state"] == "tuned" and len(seen_) > 2, f"an 18.6 GB model on a 32 GB computer (over 40 % of its RAM, fits the server's memory) is tuned ({len(seen_)} loads)")
+    check(any("tuning now, once" in l and f"{at.BUDGET_S:.0f} s" in l and "later starts skip this" in l for l in out), "a first start says how long tuning takes and that it happens once")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     cmd, env, info, out = stage2(counting, size=5e9, avail=20e9)
     check(info["state"] == "tuned" and seen_, "a model of 5 GB on 32 GB RAM is tuned")
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     # a stored pick is still applied for a big model (only the measuring is skipped)
     cmd, env, info, out = stage2(fake_runner, size=5e9, avail=20e9)
     seen_.clear()
-    cmd, env, info, out = stage2(counting, size=75.8e9, avail=90e9)
+    cmd, env, info, out = stage2(counting, size=5e9, avail=3e9)
     check(info["state"] == "cached" and not seen_, "a stored pick is still used when the size rule would skip measuring")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    # the dense spill rule set -ub and -np: the tuner leaves both alone (critic of 59abd70)
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, size=5e9, avail=20e9, spill_locked=True)
+    check({"ub", "np"} <= set(info["locked"]) and all(at.flag_value(c, "-np") == at.flag_value(BASE_CMD, "-np") and at.flag_value(c, "-ub") == at.flag_value(BASE_CMD, "-ub") for c in seen_),
+          f"dense spill rule on: ub and np locked, no probe changes them ({sorted(info['locked'])})")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    # the load-time gate (critic of 59abd70): C0's load is capped at SLOW_LOAD_S; a load that hits the cap stops there, nothing else is loaded, nothing is stored
+    seen_.clear(); caps = []
+    def slow(cmd, env, left, n, load_cap=None):
+        seen_.append(cmd); caps.append(load_cap)
+        return {"ok": False, "slow_load": True, "load_s": 60.4, "error": "the load took over 60 s"} if load_cap else fake_runner(cmd, env, left, n)
+    cmd, env, info, out = stage2(slow, size=18.6e9, avail=24e9)
+    check(caps[:1] == [at.SLOW_LOAD_S] and len(seen_) == 1 and cmd == BASE_CMD and info["state"] == "slow_load" and not stored_files(),
+          f"C0 is loaded with a {at.SLOW_LOAD_S:.0f} s load cap; at the cap: one load, the plan stays, nothing stored ({len(seen_)} loads, {info['state']}, caps {caps})")
+    check(any("60 s" in l and "next start tries again" in l for l in out), "...and the line says the limit and that the next start tries again")
+    seen_.clear(); caps.clear()
+    cmd, env, info, out = stage2(slow, size=18.6e9, avail=24e9)
+    check(info["state"] == "slow_load" and len(seen_) == 1, "...so the next start measures again (it is not stored as too slow for good)")
+    seen_.clear(); caps.clear()
+    def warm(cmd, env, left, n, load_cap=None):
+        seen_.append(cmd); caps.append(load_cap); return fake_runner(cmd, env, left, n)
+    cmd, env, info, out = stage2(warm, size=18.6e9, avail=24e9)
+    check(info["state"] == "tuned" and len(seen_) > 2 and caps[0] == at.SLOW_LOAD_S and all(c is None for c in caps[1:]), "a warm load under the cap: tuned as usual (only C0 carries the cap)")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
     # 1042: the commit check on every command that is loaded
     asked = []
@@ -395,6 +461,27 @@ with tempfile.TemporaryDirectory() as lk:
     json.dump({"pid": 1, "t": time.time()}, open(at.lock_path(lk), "w"))
     at.release_lock(lk)
     check(os.path.exists(at.lock_path(lk)), "release_lock leaves a lock that is not ours")
+    open(at.lock_path(lk), "w").close()      # an empty file is a half-created lock (mkstemp+link): held while it is young
+    ok, h = at.acquire_lock(lk)
+    check(not ok and h is None, "tuning lock: a young empty lock file counts as held (no pid to report)")
+    old_t = time.time() - at.LOCK_STALE_S - 5          # the same file, abandoned: stale by its mtime, taken over
+    os.utime(at.lock_path(lk), (old_t, old_t))
+    ok, h = at.acquire_lock(lk)
+    check(ok and h is None and json.load(open(at.lock_path(lk)))["pid"] == os.getpid(), "tuning lock: an empty lock older than LOCK_STALE_S is taken over")
+    at.release_lock(lk)
+    # a filesystem without hard links: os.link raises EPERM, the lock falls back to O_CREAT|O_EXCL
+    real_link = os.link
+    def no_link(*a, **k): raise PermissionError(1, "Operation not permitted")
+    os.link = no_link
+    try:
+        ok, h = at.acquire_lock(lk)
+        check(ok and json.load(open(at.lock_path(lk)))["pid"] == os.getpid(), "tuning lock: no hard links (EPERM): taken with O_CREAT|O_EXCL")
+        ok2, h2 = at.acquire_lock(lk)
+        check(not ok2 and h2 == os.getpid(), "tuning lock: no hard links: a second launcher still sees it held")
+        check(not [x for x in os.listdir(os.path.dirname(at.lock_path(lk))) if x.startswith(".moe_autotune_lock_")], "tuning lock: no temp file left behind")
+    finally:
+        os.link = real_link
+    at.release_lock(lk)
 
 tmp3 = tempfile.mkdtemp(prefix="autotune-c-")
 saved3 = (mc.CACHE_DIR, mc.port_busy)
@@ -522,11 +609,17 @@ class Big(M):
 saved4 = (mc.CACHE_DIR, mc.port_busy, mc.autotune_probe, mc.run_child, mc.WINDOWS)
 mc.CACHE_DIR = os.path.join(tmp3, "cache2"); mc.port_busy = lambda port: False; mc.WINDOWS = False
 ref = {"n": None}
-def runner_rel(cmd_, env_, left_, n_):          # fewer CPU expert layers than the first (the plan as it is) is the fast one, whatever the planner chose
+def runner_rel(cmd_, env_, left_, n_, record=None):          # fewer CPU expert layers than the first (the plan as it is) is the fast one, whatever the planner chose
     nc = int(at.flag_value(cmd_, "--n-cpu-moe")); ref["n"] = nc if ref["n"] is None else ref["n"]
     fast = nc < ref["n"]
     return dict(ok=True, load_s=5, prompt_tps=400 if fast else 300, decode_tps=22 if fast else 20, decode_n=n_)
 mc.autotune_probe = runner_rel
+saved_floor = mc.walk_floor
+_floors = []
+def _floor_spy(*a_, **k_):
+    _floors.append(saved_floor(*a_, **k_))
+    return None                # this block tests the fall-back mechanics: the walk's fit limit on the fake GPU is tested in placement_test
+mc.walk_floor = _floor_spy
 try:
     def make_plan():
         ref["n"] = None
@@ -579,6 +672,7 @@ try:
         mc.commit_stage = real_stage
 finally:
     mc.CACHE_DIR, mc.port_busy, mc.autotune_probe, mc.run_child, mc.WINDOWS = saved4
+    mc.walk_floor = saved_floor
 
 # --- the real commit check (commit_fits over commit_stage) on a Windows fake machine ---
 class WM(M):
@@ -598,6 +692,14 @@ try:
     n0 = len(getattr(mc._TL, "notes", ()))
     mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
     check(len(getattr(mc._TL, "notes", ())) == n0, "commit_fits says nothing and leaves the plan's notes alone")
+    # review finding 6: a flag the user gave after `--` locks the commit check's layout choice like one before it (the launcher passes argv + the flags after `--`)
+    r_free = mc.commit_stage(a_w, list(wcmd), [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4]
+    r_lock = mc.commit_stage(a_w, list(wcmd), [], ["m", "-ngl", "30"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4]
+    check(r_free and "not changed" not in r_free and r_lock and "given by you are not changed" in r_lock, "commit_stage: -ngl from the user's own flags locks the weights layout (finding 6)")
+    check("given by you are not changed" in (mc.commit_stage(a_w, list(wcmd), [], ["m"] + mc.split_equals_flags(["--n-gpu-layers=30"]), model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))[4] or ""),
+          "commit_stage: `--n-gpu-layers=30` after -- (split) locks it too")
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "moe_cache.py"), encoding="utf-8").read()
+    check(src.count("list(argv) + user_extra, model, ctx, ncmoe") >= 1 and "= commit_stage(a, cmd, env, argv, model" not in src, "the launch plan hands commit_stage argv + the user's flags after -- (finding 6 call site)")
     a_w.no_commit_check = True
     ok_nc, _w = mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
     check(ok_nc, "--no-commit-check: everything fits (the user's choice)")
@@ -773,6 +875,39 @@ try:
     check(not r["ok"] and not r.get("kv_abort"), f"...and does not flag another exit ({r})")
 finally:
     mc.CACHE_DIR, mc.port_busy = saved4
+
+# --- LAUNCHER-1169 / LAUNCHER-1225 step 2: opt-in MTP and thread candidates (test switches) ---
+import types as _ty
+_a = _ty.SimpleNamespace(ub="auto", exact=False, n_cpu_moe=None, hybrid=False, mtp=None, leave_room=False)
+_lk = at.locked_dims(_a, ["m.gguf"], {}, engine="stock")
+_c = at.build_candidates(["llama-server", "-m", "m", "-t", "8", "-ub", "512"], [], _lk, 65536, None, mtp=True, threads=8)
+_ids = [c.id for c in _c]
+check("mtp" in _ids and "t6" in _ids and _ids[0] == "C0", f"opt-in: MTP and -t 6 (two fewer than 8) are candidates ({_ids})")
+_cm = next(c for c in _c if c.id == "mtp")
+_cmd, _, _ = at.apply_edits(["llama-server", "-t", "8"], [], _cm.edits)
+check(at.flag_value(_cmd, "--spec-type") == "draft-mtp" and at.flag_value(_cmd, "--spec-draft-n-max") == "2", "the MTP candidate adds --spec-type draft-mtp --spec-draft-n-max 2")
+_c0 = at.build_candidates(["llama-server", "-m", "m", "-t", "8"], [], _lk, 65536, None)
+check(not any(c.id in ("mtp", "t6") for c in _c0), "switches off (default): no MTP or thread candidate")
+_lk2 = at.locked_dims(_ty.SimpleNamespace(**dict(vars(_a), mtp=False)), ["m.gguf", "--no-mtp", "-t", "4"], {}, engine="stock")
+check("mtp" in _lk2 and "threads" in _lk2, "your --no-mtp / -t lock those dimensions")
+check(not any(c.id in ("mtp", "t6") for c in at.build_candidates(["llama-server", "-t", "8"], [], _lk2, 65536, None, mtp=True, threads=8)), "...and no candidate is built for them")
+check("mtp" in at.locked_dims(_ty.SimpleNamespace(**dict(vars(_a), exact=True)), ["m.gguf"], {}, engine="stock"), "--exact locks MTP (it can change tokens)")
+check("threads" in at.locked_dims(_ty.SimpleNamespace(**dict(vars(_a), leave_room=True)), ["m.gguf"], {}, engine="stock"), "--leave-room locks the thread count")
+check(not any(c.id.startswith("t") for c in at.build_candidates(["llama-server"], [], _lk, 65536, None, threads=3)), "fewer than 4 threads: no thread candidate")
+_k, _o = mc.never_filter(_c, {"backend": "vulkan", "model": "dense", "ctx": 131072})
+check("mtp" not in [c.id for c in _k] and any("LAUNCHER-1133" in x for x in _o), "dense at 128k: the MTP candidate is vetoed by the never-list")
+_k, _o = mc.never_filter(_c, {"backend": "vulkan", "model": "dense", "ctx": 65536})
+check("mtp" in [c.id for c in _k], "dense at 64k: the MTP candidate stays")
+_saved = {k: os.environ.pop(k, None) for k in ("MOE_CACHE_TUNE_MTP", "MOE_CACHE_TUNE_THREADS")}
+check(mc.tune_threads_of(["x", "-t", "8"]) is None and mc.tune_mtp_ok(_ty.SimpleNamespace(plan_facts={"model": "dense"}, model="m"), ["x"]) is False, "switches off: no thread count, no MTP")
+os.environ["MOE_CACHE_TUNE_THREADS"] = "1"; os.environ["MOE_CACHE_TUNE_MTP"] = "1"
+check(mc.tune_threads_of(["x", "-t", "8"]) == 8 and mc.tune_threads_of(["x"]) == mc.physical_cores(), "MOE_CACHE_TUNE_THREADS=1: the plan's -t, else the physical cores")
+check(mc.tune_mtp_ok(_ty.SimpleNamespace(plan_facts={"model": "moe"}, model="m"), ["x"]) is False, "MOE_CACHE_TUNE_MTP=1 on a MoE model: no candidate (dense only)")
+check(mc.tune_mtp_ok(_ty.SimpleNamespace(plan_facts={"model": "dense"}, model="/no/such.gguf"), ["x"]) is False, "...unreadable model: no candidate")
+for _k2, _v2 in _saved.items():
+    os.environ.pop(_k2, None)
+    if _v2 is not None:
+        os.environ[_k2] = _v2
 
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)

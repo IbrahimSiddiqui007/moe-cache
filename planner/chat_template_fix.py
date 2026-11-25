@@ -56,7 +56,7 @@ def fixed_template_file(model, cache_dir, write=True):
         os.makedirs(d, exist_ok=True)
     path = os.path.join(d, "midsystem-" + hashlib.sha1(f.encode("utf-8")).hexdigest()[:12] + ".jinja")
     if write and (not os.path.isfile(path) or open(path, encoding="utf-8").read() != f):
-        tmp = path + ".tmp"
+        tmp = f"{path}.{os.getpid()}.tmp"       # pid-uniquified like load_record.py / gguf_plan.py — two launches fixing the same template must not interleave writes into one tmp file
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(f)
         os.replace(tmp, path)

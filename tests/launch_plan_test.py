@@ -6,7 +6,7 @@ only on the launcher's code and on the model's GGUF header.
    python3 tests/launch_plan_test.py                       the same on a synthetic 18 GB MoE header (sparse file, no download): tests/launch_plan_golden_synth.json
    python3 tests/launch_plan_test.py MODEL.gguf            compare with tests/launch_plan_golden.json (skipped when the model is not the recorded one)
    python3 tests/launch_plan_test.py MODEL.gguf --record   write the golden file from the current code
-The recorded model is Qwen3.6-35B-A3B (Ollama blob sha256-d372de8e...): reading its header is cheap, nothing is loaded."""
+The recorded model is Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf (13 211 155 424 bytes, the dense_fits file; re-recorded 2026-11-23 from the code at experimental 9114606 because the first recorded Ollama blob was deleted): reading its header is cheap, nothing is loaded."""
 import contextlib, io, json, os, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,6 +16,7 @@ GOLDEN = os.path.join(HERE, "tests", "launch_plan_golden.json")
 GIB = 2**30
 
 import moe_cache as mc            # noqa: E402
+mc.cgroup_mem_limit = lambda *a, **k: None   # the plans must not depend on the cgroup this test runs in (cool_run's MemoryMax changed one plan: release-prep-3, LAUNCHER-1267 follow-up)
 import gguf_plan                  # noqa: E402
 
 LINUX_LIST = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 7600 MiB free)\n"
@@ -155,7 +156,7 @@ def fake_machine(m, tmp):
     mc.win_gpu_process_text = lambda: m.get("gpu_proc", "\\\\pc\\gpu process memory(pid_4_luid_0x0_0x1_phys_0)\\dedicated usage|%d" % (_others_mib() * 1048576))
     mc.win_driver_version = lambda name: m["driver"]
     mc.win_cores = lambda: m["cores"]
-    mc.list_devices = lambda ls: m["listing"]
+    mc.list_devices = lambda ls, ttl=60.0: m["listing"]
     mc.nvidia_reports = lambda: m["nvidia"]
     mc.ls_found_line = lambda ls: None
     mc.ls_looked = lambda: "(fake)"
@@ -191,7 +192,7 @@ def fake_machine(m, tmp):
 def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None):
     m = MACHINES[machine_name]
     saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy(), mc.other_llama_servers)
-    for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH")]:
+    for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_ARG_HOST", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH", "LD_LIBRARY_PATH")]:
         del os.environ[k]
     out, err = io.StringIO(), io.StringIO()
     rc = None
@@ -240,6 +241,8 @@ class FakeMachine(mc.Machine):
     def ls_looked(self): return "(fake)"
     def ls_api(self, ls): return "3"
     def lib_api(self, lib): return "3"
+    def cgroup_limit(self): return None                    # the real one reads this process's cgroup: under cool_run's MemoryMax the plans changed (release-prep-3)
+    def llama_candidates(self): return []                 # no other installed llama-server (the real search would read this computer's folders)
     def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], "preload"
     def vk_cache_cap(self, ls, model, listing=None): return None, None
     def free_vram_bytes(self): return self.free_mib * 2**20
@@ -322,6 +325,99 @@ def lib_env_test(model):
     return bad
 
 
+def api_mismatch_test(model):
+    """LAUNCHER-1224: a plugin build for another ggml backend API than llama-server (and no build that matches) gives a plan made for stock llama-server (no plugin
+    environment, engine stock, the advice printed); with --always-plugin / --fast / --hybrid the start stops with the advice. Matching APIs keep the plugin plan."""
+    bad = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in ("llama-server", "libggml-moe-cache.so"):
+            open(os.path.join(tmp, f), "w").close()
+        saved = (mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS, os.environ.get("MOE_CACHE_LIB"))
+        mc.CACHE_DIR = os.path.join(tmp, "cache"); mc.KEY_FILE = os.path.join(mc.CACHE_DIR, "api.key")
+        mc.WINDOWS = False
+        mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
+        os.environ.pop("MOE_CACHE_LIB", None)
+
+        def make(ls_api_, lib_api_):
+            class M(FakeMachine):
+                def ls_api(self, ls): return ls_api_
+                def lib_api(self, lib): return lib_api_
+            return M(tmp)
+
+        def plan(machine, *more, named=True):
+            a, extra, argv = mc.parse_server([model] + (["--llama-server", os.path.join(tmp, "llama-server")] if named else []) + ["--ram", "12", "--no-pin", "--plan-json", *more])
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    return mc.launch_plan(a, extra, argv, machine=machine, quiet=False), out.getvalue()
+            except SystemExit as e:
+                return None, str(e.code)
+        try:
+            p, txt = plan(make("3", "2"))
+            env = dict(p.env) if p else {}
+            checks = [(p is not None and p.engine == "stock" and not any(k.startswith("MOE_CACHE") or k == "LD_PRELOAD" for k in env) and "API 2" in txt and "API 3" in txt,
+                       "API 3 server, API 2 plugin: stock plan, no plugin environment, the advice printed")]
+            p2, txt2 = plan(make("3", "2"), "--always-plugin")
+            checks.append((p2 is None and "--always-plugin needs it" in txt2 and "ggml0.26" in txt2, "--always-plugin with the wrong build: stops with the advice"))
+            p3, txt3 = plan(make("3", "2"), "--fast")
+            checks.append((p3 is None and "--fast needs it" in txt3, "--fast with the wrong build: stops"))
+            p4, _ = plan(make("3", "3"))
+            checks.append((p4 is not None and p4.engine == "plugin", "matching APIs: the plugin plan is kept"))
+            p5, _ = plan(make(None, "2"))
+            checks.append((p5 is not None and p5.engine == "plugin", "server API unreadable: nothing assumed, plugin plan kept"))
+            # LAUNCHER-1224 follow-up: another installed server that a plugin build fits is used before the stock fall-back (two fake servers)
+            other = os.path.join(tmp, "kit", "llama", "llama-server"); os.makedirs(os.path.dirname(other)); open(other, "w").close()
+            lib2 = os.path.join(tmp, "libggml-moe-cache-api2.so"); open(lib2, "w").close()
+            class Two(FakeMachine):
+                def ls_api(self, ls): return "2" if ls == other else "3"
+                def lib_api(self, lib): return "2"
+                def pick_lib(self, ls): return lib2 if ls == other else os.path.join(self.tmp, "libggml-moe-cache.so")
+                def llama_candidates(self): return [other, os.path.join(self.tmp, "llama-server")]
+            p6, txt6 = plan(Two(tmp), named=False)          # found by the launcher's own search (no --llama-server given)
+            checks.append((p6 is not None and p6.engine == "plugin" and p6.cmd[0] == other and p6.lib == lib2 and "using " + other in txt6,
+                           f"two servers: the one a plugin build fits is used, plugin plan, one line says so ({p6 and p6.cmd[0]}, {p6 and p6.engine})"))
+            class TwoNone(Two):
+                def llama_candidates(self): return [os.path.join(self.tmp, "llama-server")]
+            p7, _ = plan(TwoNone(tmp), named=False)
+            p6b, txt6b = plan(Two(tmp))                      # critic of 59abd70: --llama-server on the command line, the same path the search finds: kept
+            checks.append((p6b is not None and p6b.engine == "stock" and p6b.cmd[0] != other and "--llama-server " + other in txt6b,
+                           "--llama-server given on the command line (same path as the search's): never switched away from, the line names the other server"))
+            asked = []
+            class TwoWin(Two):
+                windows = True
+                def nvidia_reports(self): return False
+                def win_dedicated_vram(self): return {}
+                def win_driver_version(self, name): return "1.0"
+                def list_devices(self, ls):
+                    asked.append(ls)
+                    return ("Available devices:\n  Vulkan0: New GPU (16304 MiB, 15000 MiB free)\n" if ls == other else "Available devices:\n  Vulkan0: Old GPU (8188 MiB, 2000 MiB free)\n")
+            mc.WINDOWS = True
+            try:
+                p9, txt9 = plan(TwoWin(tmp), named=False)
+            finally:
+                mc.WINDOWS = False
+            checks.append((p9 is not None and p9.cmd[0] == other and other in asked and "New GPU" in txt9 and
+                           any("New GPU" in l and "GiB free" in l for l in txt9.splitlines()[txt9.splitlines().index(next(l for l in txt9.splitlines() if "using " + other in l)):]),
+                           f"Windows: after the switch the device listing and the GPU pick are read from the new server ({[os.path.basename(os.path.dirname(x)) for x in asked]})"))
+            checks.append((p7 is not None and p7.engine == "stock", "no other matching server: the stock plan, as before"))
+            saved_def = mc.default_llama_server
+            mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "somewhere-else", "llama-server")      # the user named this server (not the launcher's find)
+            try:
+                p8, txt8 = plan(Two(tmp))
+            finally:
+                mc.default_llama_server = saved_def
+            checks.append((p8 is not None and p8.engine == "stock" and p8.cmd[0] != other and "--llama-server " + other in txt8,
+                           "a server the user named is kept: stock plan, the line names the matching server to use instead"))
+            for ok, what in checks:
+                print("  " + ("ok  " if ok else "FAIL") + " API mismatch: " + what)
+                bad += not ok
+        finally:
+            mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS = saved[:4]
+            if saved[4] is not None:
+                os.environ["MOE_CACHE_LIB"] = saved[4]
+    return bad
+
+
 def leave_room_test(model):
     """--leave-room (owner 2026-10-30): RAM = total minus max(8 GiB, 25 %), 2 GB of GPU memory kept free, -t = physical cores - 2, the low-priority marker;
     a --ram or -t the user gave is kept."""
@@ -398,6 +494,28 @@ def fingerprint(model):
     return f"{os.path.getsize(model)}:{h.hexdigest()[:16]}"
 
 
+def plan_file_problems(plan):
+    """The plan file (plan["settings"], bin/moe_cache_planfile.py) must describe the command the launcher built: schema, one row per setting, source from the fixed list,
+    a reason on every row, and the values of --n-cpu-moe, -ub, -c and the KV types equal to what is in argv. Returns the problems (empty = fine)."""
+    st = plan.get("settings")
+    if not isinstance(st, dict) or st.get("schema") != 1 or not st.get("settings"):
+        return ["no plan file content"]
+    bad, rows, argv = [], {r["setting"]: r for r in st["settings"]}, plan["argv"]
+    for r in st["settings"]:
+        if r["source"] not in ("probe", "measured", "constant", "user", "llama") or not str(r.get("why", "")).strip():
+            bad.append(f"row {r.get('setting')}: source/reason missing")
+    def after(*names):
+        v = None
+        for i, x in enumerate(argv):
+            if x in names and i + 1 < len(argv):
+                v = argv[i + 1]
+        return v
+    for key, names in (("n_cpu_moe", ("--n-cpu-moe", "-ncmoe")), ("ub", ("-ub", "--ubatch-size")), ("context", ("-c", "--ctx-size")), ("load_mode", ("--load-mode",))):
+        if key not in rows or rows[key]["value"] != after(*names):
+            bad.append(f"row {key}: {rows.get(key, {}).get('value')!r} but the command has {after(*names)!r}")
+    return bad
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     record = "--record" in sys.argv
@@ -416,7 +534,7 @@ def main():
             for cname, opts, extra in CASES:
                 results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
     fp = fingerprint(model)
-    inj_bad = injection_test(model) + lib_env_test(model) + leave_room_test(model) + page_test(model)
+    inj_bad = injection_test(model) + lib_env_test(model) + api_mismatch_test(model) + leave_room_test(model) + page_test(model)
     # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
     consistent_bad = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -442,6 +560,10 @@ def main():
                     plan = json.loads(r["stdout"])
                     got = [l.replace(tmp, "<TMP>").replace(model, "<MODEL>").replace(HERE, "<HERE>") for l in plan["dry_run_lines"]]
                     ok = got == want and r["stderr"] == "" and plan["engine"] in ("stock", "plugin") and plan["argv"]
+                    bad_rows = plan_file_problems(plan)
+                    if bad_rows:
+                        ok = False
+                        got = bad_rows
                 except Exception as e:
                     ok = False
                     got = [str(e)]

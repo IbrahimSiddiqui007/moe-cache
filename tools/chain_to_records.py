@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Turn the *.facts.json files of an overnight PC chain (one file per server start, written by the chain runner; chain.json holds the machine) into
-benchmark records (docs/BENCHMARK_TEMPLATE.md) and, with --ingest, put them into benchmarks/runs/.
+benchmark records (docs/reference/benchmark-template.md) and, with --ingest, put them into benchmarks/runs/.
    python3 tools/chain_to_records.py FACTS_DIR [--out DIR] [--ingest] [--date YYYY-MM-DD] [--only ITEM ...]
 Two kinds of item are known (ITEMS below): card rows (c_*: stock / plugin / mtp arms, a 13-token water request, order ABBA) and the quant table
 (q_<quant>_<34k|64k>: the plugin on a long prompt, two passes; the number is the speed of the short answer that follows the prompt, stored as

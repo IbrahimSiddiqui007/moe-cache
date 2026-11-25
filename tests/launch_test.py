@@ -80,7 +80,7 @@ t = f.text()
 check(rc == 0, "interactive walk-through ends 0")
 check("RAM:" in t and "Test GPU" in t and "8.0 GiB" in t and "llama-server:  /kit/llama/llama-server" in t, "step 1 shows RAM, GPU/VRAM and the llama-server")
 check(t.index("1) Alpha") < t.index("2) Beta") < t.index("3) Gamma"), "step 2 lists up to three models")
-check("speed: decode 42 tok/s" in t and t.count("speed: not measured on a PC like this one") == 2, "speed is shown only where it was measured; 'not measured' otherwise")
+check("tok/s" not in t and "speed: figures follow in a later release" in t, "no speed figure in 0.3.9: the launch walk-through says they follow in a later release")
 check("on this PC: no (download 22.0 GB" in t and "on this PC: yes" in t, "each model says whether it is already downloaded")
 check(len(f.started) == 1 and f.started[0][2:4] == ["server", MODEL + ".b"] and "--agent" in f.started[0] and "65536" in f.started[0], f"it started the server for the chosen model in agent mode ({f.started[0][2:] if f.started else None})")
 check(f.downloaded == [], "nothing was downloaded (the chosen model was here)")
@@ -122,7 +122,15 @@ rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode")
 check(rc == 0 and "--agent" in f.started[0] and f.connected == [["opencode", "--url", "http://127.0.0.1:8080", "--write"]], "--agent opencode: agent mode, connects only that one")
 f = Fake(agents=("opencode", "claude", "hermes"))
 rc = run(f, "--yes", "--model", MODEL, "--agent")
-check([c[0] for c in f.connected] == ["hermes", "opencode", "claude"], f"bare --agent: every agent found ({[c[0] for c in f.connected]})")
+check([c[0] for c in f.connected] == ["hermes", "opencode"] and "launch claude" in f.text(), f"bare --agent: every agent found except claude, which gets no config file (AGENTS-865) ({[c[0] for c in f.connected]})")
+class FakeBadConnect(Fake):       # audit row 28: a connect that fails with a write error (not SystemExit) is a message, not a traceback
+    def connect(self, argv): raise PermissionError("config is read-only")
+f = FakeBadConnect(agents=("opencode",))
+try:
+    rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode"); err = None
+except Exception as e:
+    rc, err = None, e
+check(err is None and rc == 0 and "could not connect opencode: config is read-only" in f.text(), f"a connect that raises OSError: said, the launch goes on ({err!r}, rc {rc})")
 f = Fake(agents=())
 rc = run(f, "--yes", "--model", MODEL, "--agent", "claude")
 check(rc == 0 and f.connected == [] and "not installed" in f.text(), "--agent NAME that is not installed: said, skipped")
@@ -138,6 +146,46 @@ check(rc == 0 and f.started == [] and "nothing was started" in f.text(), "--dry-
 f = Fake()
 rc = run(f, "--yes", "--model", MODEL, "--start", "no")
 check(rc == 0 and f.started == [], "--start no: prints the commands only")
+# LAUNCHER-1222 (4) and (2): --dry-run and --start no reach step 5 and say what it offers; a plain-chat start names the short `launch --agent` line and the connect step
+f = Fake()
+rc = run(f, "--yes", "--model", MODEL, "--dry-run", "--use", "agents")
+t = f.text()
+check(rc == 0 and "5/5  Coding agents (nothing connected: --dry-run)" in t and "connect opencode|claude --url http://127.0.0.1:8080 --write" in t and f.connected == [],
+      "--dry-run shows step 5 with the connect command for the agents found, connects nothing")
+f = Fake()
+rc = run(f, "--yes", "--model", MODEL, "--start", "no", "--use", "chat")
+t = f.text()
+check("5/5" in t and "launch --agent" in t and "stop this server" not in t and "connect opencode|claude" in t, "--start no, plain chat: step 5 names `launch --agent` and the connect step")
+f = Fake()
+rc = run(f, "--yes", "--model", MODEL, "--use", "chat")
+t = f.text()
+check("stop this server and run" in t and "launch --agent" in t and "connect opencode|claude" in t and f.connected == [], "plain chat with agents found: `launch --agent`, then connect is offered")
+f = Fake(agents=())
+rc = run(f, "--yes", "--model", MODEL, "--dry-run")
+check("none of hermes, opencode, claude found" in f.text(), "--dry-run with no agent installed says so in step 5")
+# the command word: the installer's command (install.json / .installed) when moe-cache is not on the PATH
+import tempfile, json as _json
+_saved_here, _saved_which = L.mc.HERE, L.shutil.which
+try:
+    with tempfile.TemporaryDirectory() as td:
+        kit = os.path.join(td, "root", "kit"); os.makedirs(kit)
+        shim = os.path.join(td, "root", "bin", "moe-cache.cmd"); os.makedirs(os.path.dirname(shim)); open(shim, "w").close()
+        L.mc.HERE = kit
+        L.shutil.which = lambda n: None
+        check(L.command_word().startswith('"') and "moe_cache.py" in L.command_word(), "no record, not on the PATH: interpreter and file")
+        with open(os.path.join(td, "root", "install.json"), "w", encoding="utf-8") as fh:
+            _json.dump({"command": shim}, fh)
+        check(L.command_word() == shim, f"install.ps1 record (-NoPath): the installed command's full path ({L.command_word()})")
+        os.remove(os.path.join(td, "root", "install.json"))
+        cur = os.path.join(td, "pre", "current"); os.makedirs(cur); sh2 = os.path.join(td, "b in", "moe-cache"); os.makedirs(os.path.dirname(sh2)); open(sh2, "w").close()
+        with open(os.path.join(td, "pre", ".installed"), "w") as fh:
+            fh.write(f"version=9\nprefix={td}/pre\ncommand={sh2}\n")
+        L.mc.HERE = cur
+        check(L.command_word() == f'"{sh2}"', f"install.sh record: the command, quoted when the path has a space ({L.command_word()})")
+        L.shutil.which = lambda n: "/usr/bin/moe-cache" if n == "moe-cache" else None
+        check(L.command_word() == "moe-cache", "on the PATH: just moe-cache")
+finally:
+    L.mc.HERE, L.shutil.which = _saved_here, _saved_which
 
 # ---- 3b. the download is checked against models.json (AUD-030) ----
 f = Fake(); f.verify_err = "the downloaded file does not match the catalogue: x. Nothing was started."
@@ -167,7 +215,7 @@ check("missing" in (real.verify(r_, lines.append) or ""), "Deps.verify: a missin
 L.pk.CAT = orig
 
 f = Fake(); rc = run(f, "--yes", "--model", MODEL, "--agent", "claude")
-check("export ANTHROPIC_BASE_URL=http://127.0.0.1:8080" in f.text() and "$env:ANTHROPIC_BASE_URL" in f.text(), "connecting Claude Code also prints the exported lines (the settings file alone was ignored in 2.1.317; AUD-083)")
+check(f.connected == [] and "launch claude --url http://127.0.0.1:8080" in f.text(), "--agent claude: no settings file written, the key-free `launch claude` line is printed (AGENTS-865, replaces the AUD-083 export lines)")
 f = Fake(); rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode")
 check("export ANTHROPIC" not in f.text(), "...and only for Claude Code")
 
@@ -181,6 +229,19 @@ class Ctrl(Fake):
 f = Ctrl(); f.terminated = False
 rc = run(f, "--yes", "--model", MODEL)
 check(rc == 130 and "stopped while loading" in f.text() and f.connected == [], "Ctrl+C while loading: no traceback, the server is stopped, exit 130")
+
+class Boom(Fake):
+    def up(self, url, od): raise OSError("boom")
+f = Boom(); f.terminated = False
+rc = run(f, "--yes", "--model", MODEL)
+check(rc == 1 and "hit an error while waiting" in f.text() and "OSError" in f.text() and f.proc.waited and f.connected == [], "review 12: an error other than Ctrl+C while loading stops the child (stop_child waits for it) and exits 1, no traceback")
+class Sig(Fake):
+    def start(self, cmd):
+        p = super().start(cmd); p.wait = lambda timeout=None: -2; return p
+f = Sig(); rc = run(f, "--yes", "--model", MODEL)
+check(rc == 130, f"review 13: a child ended by Ctrl+C (wait() = -2) exits 130, not 254 (got {rc})")
+f = Fake(); rc = run(f, "--yes", "--model", MODEL)
+check(rc == 0, "review 13: a child that ends 0 still exits 0")
 
 # ---- 3d. LAUNCHER-690: ready needs our own live child and our own model ----
 class Squat(Fake):

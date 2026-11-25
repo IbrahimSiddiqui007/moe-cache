@@ -56,9 +56,10 @@ def facts_from_model(path):
             m = re.match(r"blk\.(\d+)\.ffn_(up|down|gate|gate_up)\.weight$", name)
             if m:
                 ffn[int(m.group(1))] = ffn.get(int(m.group(1)), 0) + size
+    emb += lay["table_bytes"]      # the n-gram lookup table (Flash-Next: 28.8 GB in shard 2) is read from the file, never put on the GPU: host side like the token embedding, the same rule as gguf_plan.model_layout
     dense = not lay["n_layers"]
     n_layers = lay["n_layers"] or len(ffn)
-    return {"total": total, "emb": emb, "n_layers": n_layers, "dense": dense, "expert_per_layer": lay["expert_bytes_per_layer"],
+    return {"total": total, "emb": emb, "table": lay["table_bytes"], "n_layers": n_layers, "dense": dense, "expert_per_layer": lay["expert_bytes_per_layer"],
             "ffn_per_layer": (sum(ffn.values()) / len(ffn)) if ffn else 0.0, "ffn_layers": sorted(ffn),
             "kv": lambda ctx, q8: gp._kv_or_flat(path, ctx, q8)}
 
@@ -81,7 +82,11 @@ def compute_bytes(f, ctx, ub):
 def estimate(f, L, windows=True):
     """Bytes of commit the whole llama-server asks for in layout L (a dict, see layout_from_cmd): {part: bytes, ..., "total": bytes}.
     On Windows the GPU's allocations count; on Linux (windows=False) they do not and only host memory is summed."""
-    model = max(0.0, f["total"] - f["emb"])
+    emb = f["emb"]
+    model = max(0.0, f["total"] - emb)
+    if L.get("table_on_gpu") and f.get("table"):       # LAUNCHER-1163: -ot put the per-layer token-embedding table on the GPU: it is GPU weights then, not host memory
+        model += f["table"]
+        emb = max(0.0, emb - f["table"])
     cpu_only = L.get("cpu_only")
     off_moe = min(L.get("n_cpu_moe") or 0, f["n_layers"]) * f["expert_per_layer"]
     off_ffn = min(L.get("ffn_off") or 0, f["n_layers"]) * f["ffn_per_layer"]
@@ -94,7 +99,7 @@ def estimate(f, L, windows=True):
     if L.get("fit") and vram and gpu > vram:        # llama.cpp --fit puts what does not fit on the GPU in host memory (mmapped unless copies are on)
         spill = gpu - vram
         gpu = vram
-    cpu_w = (model - gpu_w + f["emb"]) if not cpu_only else model + f["emb"]
+    cpu_w = (model - gpu_w + emb) if not cpu_only else model + emb
     cpu_w += spill
     # --fit puts the part that does not fit in host memory. Weights there are mapped (no commit unless copied); the KV cache and compute buffers there are PRIVATE host memory.
     # Which share of the spill is which is not known before the load, so the spill counts as private up to kv + compute (errs high, never counted twice with copied weights).
@@ -155,7 +160,7 @@ def _more_weights_to_ram(f, L, est, free, limit, windows=True):
 
 
 def decide(f, L, free, limit, locked=(), allow_q8=True, windows=True):
-    """Pre-load check. free / limit: free commit and commit limit in bytes. locked: knobs the user fixed ("ub", "kv", "cache", "weights"); they are never touched.
+    """Pre-load check. free / limit: free commit and commit limit in bytes. locked: knobs the user fixed ("ub", "kv", "cache", "weights"; "loadmode": the launcher chose --load-mode none itself to avoid the mmap staging spike); they are never touched.
     Tries, cheapest in speed first: mmap instead of copies, smaller -ub, smaller prompt cache, q8_0 KV cache, then more weights in RAM (never shorter context).
     Returns {"ok", "layout", "steps": [text], "est", "need": bytes incl. the floor, "floor"}; ok False = refuse (the layout is the smallest tried)."""
     floor = soft_floor(limit)
@@ -170,7 +175,7 @@ def decide(f, L, free, limit, locked=(), allow_q8=True, windows=True):
         cur, est = new, estimate(f, new, windows)
         steps.append(text)
         return fits(est, free, limit)
-    if cur.get("copy_weights") and "weights" not in locked:
+    if cur.get("copy_weights") and "weights" not in locked and "loadmode" not in locked:
         if settle(dict(cur, copy_weights=False), "mmap instead of copied weights"):
             return done()
     if "ub" not in locked and cur.get("ub", UB_MIN) > UB_MIN:
@@ -190,7 +195,7 @@ def decide(f, L, free, limit, locked=(), allow_q8=True, windows=True):
             return done()
     if "kv" not in locked and allow_q8 and not cur.get("kv_q8") and not cur.get("cpu_only"):
         if estimate(f, dict(cur, kv_q8=True), windows)["total"] < est["total"] - 1:      # under --fit the capped GPU part would not change: no lossy step for nothing
-            if settle(dict(cur, kv_q8=True), "q8_0 KV cache (half the KV memory; approximate, KL 0.0079 at 4k)"):
+            if settle(dict(cur, kv_q8=True), "q8_0 KV cache (half the KV memory; approximate: KL 0.0079 in the 4k gate run, 0.009-0.015 on Flash-Next IQ3_XXS at 4k-60k)"):
                 return done()
     if "weights" not in locked:
         r = _more_weights_to_ram(f, cur, est, free, limit, windows)
@@ -232,6 +237,26 @@ def _val(cmd, *names):
     return None
 
 
+def table_on_gpu(cmd):
+    """LAUNCHER-1163: True when an -ot / --override-tensor rule sends the per-layer token-embedding table (per_layer_token_embd) to a GPU buffer. Rules are
+    PATTERN=BUFFER (split at the FIRST "="), several per option separated by commas, the option may repeat; the pattern is a regex searched in the tensor name; the FIRST rule
+    that matches wins (llama-model-loader.cpp stops at the first match)."""
+    on_gpu = False
+    for i, x in enumerate(cmd):
+        v = cmd[i + 1] if x in ("-ot", "--override-tensor") and i + 1 < len(cmd) else x.split("=", 1)[1] if x.startswith("--override-tensor=") else None
+        for rule in (v or "").split(","):
+            pat, eq, buf = rule.partition("=")
+            if not eq or not pat:
+                continue
+            try:
+                hit = re.search(pat, "per_layer_token_embd.weight") is not None
+            except re.error:
+                continue
+            if hit:
+                return not buf.strip().upper().startswith("CPU")
+    return False
+
+
 def layout_from_cmd(cmd, env, f, vram_free=None, mm_bytes=0):
     """The layout dict of a finished llama-server command line (and its environment list of (name, value) pairs)."""
     e = dict(env)
@@ -261,7 +286,7 @@ def layout_from_cmd(cmd, env, f, vram_free=None, mm_bytes=0):
     return {"ctx": ctx, "kv_q8": _val(cmd, "-ctk", "--cache-type-k") in ("q8_0", "q4_0"), "ub": int(_val(cmd, "-ub", "--ubatch-size") or UB_MIN) if (_val(cmd, "-ub", "--ubatch-size") or "").isdigit() else UB_MIN,
             "n_cpu_moe": (int(ncmoe) if ncmoe and ncmoe.isdigit() else 0) if ncmoe else 0, "ffn_off": ffn_off, "cpu_only": cpu_only,
             "copy_weights": (_val(cmd, "--load-mode") not in (None, "mmap")) or "--no-mmap" in cmd, "cache_ram_mib": cram, "plugin_private_gib": ram_gib,
-            "fit": bool(f["dense"] and not cpu_only and ngl is None and not ot), "vram_free": vram_free, "mm_bytes": float(mm_bytes or 0)}
+            "fit": bool(f["dense"] and not cpu_only and ngl is None and not ot), "vram_free": vram_free, "mm_bytes": float(mm_bytes or 0), "table_on_gpu": table_on_gpu(cmd)}
 
 
 def _set(cmd, names, value):

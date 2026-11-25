@@ -41,8 +41,10 @@ jobs:
           # release b12064 = ggml 0.28.0, the previous pin (kept as a row). The vendored headers (third_party/ggml-v3, from 0.26) differ from it by new
           # declarations only, plus three optional hooks appended to ggml_backend_buffer_i (set_tensor_n, get_tensor_n, cpy_tensor_n; the plugin passes its interface zero-padded, src/mc_buffer.inl)
           - { name: "ggml-0.28-b12064-api3", sha: "51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c", api: "3", tested: "yes" }
-          # release b12207 = ggml 0.29.0, the current pin since 2026-11-09 (the build the Windows kit and the Linux tarball bundle; upstream's own moe-cache cache, PRs 30966 / 31233 / 31888, is in it)
+          # release b12207 = ggml 0.29.0, the identity reference pin; the kits bundle b12651 since v0.3.9 (the build the Windows kit and the Linux tarball bundle; upstream's own moe-cache cache, PRs 30966 / 31233 / 31888, is in it)
           - { name: "ggml-0.29-b12207-api3", sha: "998200491327347eed85f007e4de7a1a7c871453", api: "3", tested: "yes" }
+          # DRAFT: master after #32807 (ggml 1.0.0, API 4), the Inkling 2 pin; tested only after the API-4 plugin passes this workflow
+          - { name: "ggml-1.0-b12651-api4", sha: "f5e6915c28f10330885fcb9243a93ae98d3115ab", api: "4", tested: "yes" }
           - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -65,12 +67,12 @@ jobs:
           git checkout --detach FETCH_HEAD
           git log -1 --format='%H %s'
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
-                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_USE_PREBUILT_WEBUI=OFF
           cmake --build build --target llama-server llama-perplexity llama-quantize -j "$(nproc)"
 
       - name: Plugin for this pin (warnings are errors)
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; else H=third_party/ggml; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; H=third_party/ggml-v4; else H=third_party/ggml; fi
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp
           # ggml_backend_buffer's layout changes without an API bump (master 418f905a4 moved buft/context: SIGSEGV in the fit pass): no direct field reads
           if grep -nE '\w*(buffer|buf)->(buft|context|size|usage|iface)\b|->buffer->' src/*.inl src/*.cpp; then echo "FAIL: read ggml buffer fields through the public API (ggml_backend_buffer_get_type, buf_ctx)"; exit 1; fi
@@ -131,7 +133,7 @@ jobs:
           python3 tests/diffusion_test.py    # moe_cache.py diffusion: command, environment, asserts (S3)
           python3 tests/warm_test.py         # warm-session saver (N27): waits by file size and change, restore, no save while busy; fake server
           python3 tests/bench_report_test.py   # bench-report (R2-1): sections, backend line, privacy, fit rule, identity; fakes
-          python3 tests/bench_record_test.py   # benchmark record (docs/BENCHMARK_TEMPLATE.md): probes, sampler, schema, card lines; fakes
+          python3 tests/bench_record_test.py   # benchmark record (docs/reference/benchmark-template.md): probes, sampler, schema, card lines; fakes
           # bench-report for real (stock / moe-cache / moe-cache / stock on Granite, which fits: plugin forced; no systemd-run needed)
           bin/moe-cache-bench-report granite.gguf --force-plugin --warm --tokens 16 --prompt-tokens 300 --ctx 2048 --out "bench out" | tail -30
           grep -q "Checks: tokens IDENTICAL; plugin active yes" "bench out"/*.md
@@ -194,7 +196,7 @@ jobs:
             tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_rb_off.txt
           if grep -q "idle rebalance:" ident_rb_off/plugin.log; then echo "FAIL: MOE_CACHE_IDLE_REBALANCE=0 still rebalanced"; exit 1; fi
 
-      - name: Expert pack (BO-1) - pack format test, then identity with experts read from MODEL.moepack (private memory, forced eviction, executor byte-checked)
+      - name: Expert pack - pack format test, then identity with experts read from MODEL.moepack (private memory, forced eviction, executor byte-checked)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
@@ -224,12 +226,51 @@ jobs:
           IDENT_KEEP=ident_pack_off IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=0" tests/identity.sh granite.gguf --tokens 12 --ctx 2048 --n-cpu-moe 999 | tee identity_pack_off.txt
           if grep -q "expert pack" ident_pack_off/plugin.log; then echo "FAIL: MOE_CACHE_PACK=0 still used the pack"; exit 1; fi
 
+      - name: Expert pack - payload hash (CACHE-695) - pack --hash with MOE_CACHE_PACK_VERIFY=1 passes; one flipped payload byte makes the plugin refuse the pack and the output still matches
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_EXTRA: "--no-repack"
+        run: |
+          python3 bin/moe_cache.py pack granite.gguf --out hashed.moepack --hash
+          python3 bin/moe_cache.py pack granite.gguf --out hashed.moepack --verify
+          # 1. a good hashed pack with the check on: the check passes and the pack is used
+          IDENT_KEEP=ident_pack_vfy IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=$PWD/hashed.moepack MOE_CACHE_PACK_VERIFY=1" \
+            tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_pack_vfy.txt
+          grep -qE "payload hash checked for [1-9][0-9]* layers: ok" ident_pack_vfy/plugin.log || { echo "FAIL: MOE_CACHE_PACK_VERIFY=1 did not report a passed payload check"; grep "moe-cache: .*pack" ident_pack_vfy/plugin.log; exit 1; }
+          grep -qE "moe-cache: pack: [1-9][0-9]* reads" ident_pack_vfy/plugin.log || { echo "FAIL: no read came from the verified pack"; exit 1; }
+          if grep -q "not used" ident_pack_vfy/plugin.log; then echo "FAIL: a good hashed pack was refused"; exit 1; fi
+          # 2. one payload byte flipped (the header and the model are untouched, so only the payload hash can notice): refused, tokens come from the model and match stock
+          cp hashed.moepack flipped.moepack
+          python3 - flipped.moepack <<'PY'
+          import struct, sys
+          p = sys.argv[1]
+          with open(p, "r+b") as f:
+              f.seek(20); hb = struct.unpack("<I", f.read(4))[0]
+              f.seek(hb + 12345); b = f.read(1)
+              f.seek(hb + 12345); f.write(bytes([b[0] ^ 0x01]))
+          print("flipped one byte at pack offset", hb + 12345)
+          PY
+          IDENT_KEEP=ident_pack_flip IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=$PWD/flipped.moepack MOE_CACHE_PACK_VERIFY=1" \
+            tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_pack_flip.txt
+          grep -q "payload bytes differ from the hash stored in the pack" ident_pack_flip/plugin.log || { echo "FAIL: a flipped payload byte was not found by the check"; grep "moe-cache: .*pack" ident_pack_flip/plugin.log; exit 1; }
+          grep -q "not used" ident_pack_flip/plugin.log || { echo "FAIL: a pack with a flipped byte was not refused"; exit 1; }
+          if grep -qE "moe-cache: pack: [1-9][0-9]* reads" ident_pack_flip/plugin.log; then echo "FAIL: a refused pack still served reads"; exit 1; fi
+          grep -q "^identical prompts: 4/4" identity_pack_flip.txt || { echo "FAIL: output differs after the plugin refused the damaged pack"; exit 1; }
+          # 3. a pack made without --hash and the check on: refused with the reason, output unchanged
+          python3 bin/moe_cache.py pack granite.gguf --out plain.moepack
+          IDENT_KEEP=ident_pack_nohash IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=$PWD/plain.moepack MOE_CACHE_PACK_VERIFY=1" \
+            tests/identity.sh granite.gguf --tokens 12 --ctx 2048 --n-cpu-moe 999 | tee identity_pack_nohash.txt
+          grep -q "has no payload hash" ident_pack_nohash/plugin.log || { echo "FAIL: a pack without a hash was not refused under MOE_CACHE_PACK_VERIFY=1"; exit 1; }
+          rm -f hashed.moepack flipped.moepack plain.moepack
+
       - name: Mutation check - a build that copies the pack's slices from a wrong offset must FAIL the pack identity step
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_STATS: "1"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_PACK_OFFSET BUILD_DIR=build-mut-pack ./build.sh --portable
           if MOE_CACHE_LIB=$PWD/build-mut-pack/libggml-moe-cache.so IDENT_EXTRA="--no-repack" IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=$PWD/granite.moepack" \
              tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_mut_pack.txt; then
@@ -247,7 +288,7 @@ jobs:
         if: matrix.name == 'ggml-0.26-api3'
         run: |
           cmake -S llama.cpp -B llama.cpp/build-dl -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF \
-                -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+                -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_USE_PREBUILT_WEBUI=OFF
           cmake --build llama.cpp/build-dl --target llama-server ggml-cpu-haswell -j "$(nproc)"   # AVX2: every GitHub runner has it; one variant is enough
           ls llama.cpp/build-dl/bin/ | grep -E "ggml-cpu|llama-server"
 
@@ -430,7 +471,7 @@ jobs:
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99 MOE_CACHE_LINUX_VIEW=0"   # private memory: with the file view a stepped-aside op reads the mapped file, so there is no race to wait for
           IDENT_EXTRA: "--no-repack"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_STEPASIDE_WAIT BUILD_DIR=build-mutant ./build.sh --portable
           if tests/identity.sh tiny-gptoss-q8.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_mutant.txt; then
             echo "FAIL: the mutant without the wait passed, so the step above does not cover it"; exit 1
@@ -444,7 +485,7 @@ jobs:
           LLAMA_PERPLEXITY: ${{ github.workspace }}/llama.cpp/build/bin/llama-perplexity
           MOE_CACHE_STATS: "1"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT BUILD_DIR=build-mut-exec ./build.sh --portable
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_TILED_WAIT BUILD_DIR=build-mut-tiled ./build.sh --portable
           # 1: executor graphs on the Q2_0 tiny gpt-oss with reads delayed 2 ms (same settings as the Q2_0 step above)
@@ -500,7 +541,7 @@ jobs:
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DUP_IDS BUILD_DIR=build-mut-dup ./build.sh --portable
           if MOE_CACHE_LIB=$PWD/build-mut-dup/libggml-moe-cache.so IDENT_KEEP=mut_dup timeout 900 tests/dup_ids.sh granite.gguf 2>&1 | tee dup_ids_mutant.txt; then
             echo "FAIL: the mutant passed, so the repeated-ids step does not cover the overflow"; exit 1; fi
@@ -516,7 +557,7 @@ jobs:
           IDENT_KEEP: mut_abi
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_ABI BUILD_DIR=build-mut-abi ./build.sh --portable
           MOE_CACHE_LIB=$PWD/build-mut-abi/libggml-moe-cache.so tests/identity.sh granite.gguf --tokens 8 --ctx 2048 --n-cpu-moe 999 | tee abi_mutant.txt || true   # the refused plugin makes identity.sh exit 2: the greps decide
           grep -q "does not match the ggml headers this plugin was built with (op .* expected MUL_MAT_ID)" mut_abi/plugin.log ||
@@ -552,7 +593,7 @@ jobs:
           MOE_CACHE_TEST_POISON_READS: "1"
           MOE_CACHE_TEST_READ_DELAY_US: "2000"
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; elif [ "${{ matrix.api }}" = 4 ]; then export GGML_API=4; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DIRECT_SHARED BUILD_DIR=build-mut-shared ./build.sh --portable
           if MOE_CACHE_LIB=$PWD/build-mut-shared/libggml-moe-cache.so IDENT_KEEP=mut_poison timeout 900 tests/dup_ids.sh granite.gguf 1 2>&1 | tee poison_mutant.txt; then
             echo "FAIL: the mutant passed, so the poisoned-reads step does not cover reads over shared pages"; exit 1; fi

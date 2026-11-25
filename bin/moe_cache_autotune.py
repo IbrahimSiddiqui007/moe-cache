@@ -11,16 +11,22 @@ environment) is never tuned; --exact and --stock skip the tuner."""
 import hashlib
 import json
 import os
+import tempfile
 import time
 
-VERSION = 2                 # bump when the meaning of a stored pick changes: old files are then ignored
+VERSION = 4                 # bump when the meaning of a stored pick changes: old files are then ignored (3: the edge walk, the chat score and the launcher / llama.cpp build in the key; 4: the confirm run, the 2-layer stride, answer classes, the 60 s load gate)
 BUDGET_S = 180.0            # the owner's limit for the whole first start tuning, loads included
 MARGIN = 0.05               # a candidate must beat the plan as it is by this much (run-to-run noise on one probe is about this big)
 PROMPT_TOKENS = 1500        # the probe prompt (a prompt speed at this length ranks plans; it is not a 64k number)
 DECODE_TOKENS = 512         # owner rule: decode probes are >= 512 tokens or say they are short
 SHORT_MIN = 64              # below this a decode figure says nothing
-SCORE_PROMPT = 4000         # score = seconds for this many prompt tokens + DECODE_TOKENS generated tokens ...
+SCORE_PROMPT = 1000         # score = seconds for this many prompt tokens + DECODE_TOKENS generated tokens: chat is weighted to decode (planner map fix 2: a chat turn
+                            # reads only its new text, the earlier turns come from the prompt cache; 4000 until v0.3.8) ...
 SCORE_PROMPT_AGENT = 16000  # ... (agents send long prompts)
+SLOW_LOAD_S = 60.0          # LAUNCHER-1225 step 2 (replaces the 40 %-of-RAM skip): when the plan as it is takes longer than this to load, nothing more is loaded (one load already
+                            # used a third of the budget); the next loads would come from the page cache, but a machine this slow is not tuned on its own (--retune tries again)
+WIDE_FROM = 6               # LAUNCHER-1225: the walk moves two expert layers per load while the known fit limit is more than this many layers away
+WALK_MAX = 12               # the edge walk tries at most this many steps of one more expert layer on the GPU (each step is a load; the 180 s budget usually ends it first)
 RAMLOCK_ENV = (("MOE_CACHE_RAM_LOCK", "1"), ("MOE_CACHE_DROP_READAHEAD", "1"))
 
 
@@ -57,6 +63,7 @@ def set_env(env, key, value):
 class Candidate:
     def __init__(self, cid, label, edits):
         self.id, self.label, self.edits = cid, label, edits       # edits: [{"dim", "flag"|"env", "value"|"delta"}]
+        self.load_cap = None        # seconds: the runner stops a load that takes longer ({"slow_load": True}); set on C0 only (SLOW_LOAD_S)
 
     @property
     def dims(self):
@@ -104,6 +111,10 @@ def locked_dims(a, argv, environ, windows=False, agent=False, project=False, eng
         out["ncmoe"] = "your --n-cpu-moe / -ngl / -ot"
     if has("-np", "--parallel") or agent or project:
         out["np"] = "your -np" if has("-np", "--parallel") else "agent / project mode keeps its slots"
+    if getattr(a, "exact", False) or getattr(a, "mtp", None) is not None or has("--spec-type", "--model-draft", "-md", "--mtp", "--no-mtp"):
+        out["mtp"] = "--exact" if getattr(a, "exact", False) else "your --mtp / --no-mtp / --spec-type"
+    if getattr(a, "leave_room", False) or has("-t", "--threads"):
+        out["threads"] = "your -t" if has("-t", "--threads") else "--leave-room keeps its cores free"
     if "MOE_CACHE_RAM_LOCK" in environ or "MOE_CACHE_DROP_READAHEAD" in environ:
         out["ramlock"] = "your MOE_CACHE_RAM_LOCK / DROP_READAHEAD"
     elif windows or engine != "plugin":
@@ -111,9 +122,22 @@ def locked_dims(a, argv, environ, windows=False, agent=False, project=False, eng
     return out
 
 
-def build_candidates(cmd, env, locked, ctx, n_layers=None):
+def walk_start(cmd, locked):
+    """The --n-cpu-moe the edge walk starts from (the plan's), or None when the walk does not apply (the user's own placement, no expert layers on the CPU, a GPU cache plan)."""
+    n = flag_value(cmd, "--n-cpu-moe", "-ncmoe")
+    if "ncmoe" in locked or n is None or not str(n).isdigit() or int(n) < 1 or int(n) >= 999:
+        return None
+    return int(n)
+
+
+def walk_candidate(k):
+    return Candidate(f"ncmoe-{k}", f"{k} more expert layer{'s' if k > 1 else ''} on the GPU (edge walk)", [{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": -k}])
+
+
+def build_candidates(cmd, env, locked, ctx, n_layers=None, walk=False, mtp=False, threads=None):
     """The plan as it is (C0) plus up to 3 candidates built from the unlocked dimensions, best guesses first. Every candidate differs from C0 in one dimension
-    (the first two also in a second one only when that is needed to make room: a bigger -ub with more experts on the GPU is not tried together)."""
+    (the first two also in a second one only when that is needed to make room: a bigger -ub with more experts on the GPU is not tried together).
+    walk: the caller walks --n-cpu-moe down itself (tune(walk=...)): no ncmoe-2 here, and at most 2 others."""
     c0 = Candidate("C0", "the plan as it is", [])
     cands = []
     ncmoe = flag_value(cmd, "--n-cpu-moe", "-ncmoe")
@@ -121,7 +145,7 @@ def build_candidates(cmd, env, locked, ctx, n_layers=None):
     byid = {}
     if "ncmoe" not in locked and ncmoe is not None and str(ncmoe).isdigit():
         n = int(ncmoe)
-        if n >= 2:
+        if n >= 2 and not walk:
             byid["ncmoe-2"] = Candidate("ncmoe-2", "2 more expert layers on the GPU", [{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": -2}])
         if n_layers is None or n + 2 <= n_layers:
             byid["ncmoe+2"] = Candidate("ncmoe+2", "2 more expert layers on the CPU (less GPU memory in use)", [{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": 2}])
@@ -137,15 +161,28 @@ def build_candidates(cmd, env, locked, ctx, n_layers=None):
         byid["ramlock"] = Candidate("ramlock", "RAM_LOCK + DROP_READAHEAD", [{"dim": "ramlock", "env": k, "value": v} for k, v in RAMLOCK_ENV])
     if "np" not in locked:
         byid["np1"] = Candidate("np1", "-np 1 (one slot)", [{"dim": "np", "flag": "-np", "value": "1", "also": ["--parallel"]}])
+    # LAUNCHER-1169 / LAUNCHER-1225 step 2 (opt-in test switches until a PC A B B A: MOE_CACHE_TUNE_MTP=1, MOE_CACHE_TUNE_THREADS=1, read by the launcher): the model's own MTP
+    # drafting measured on this machine instead of a fixed rule (laptop 27B 16k: decode +9 %, prompt -20 %; PC 27B 128k: a loss, on the never-list), and two threads fewer than the
+    # plan (decode is bound by memory bandwidth: past a point more threads only wait). Each is one more load, so they come in addition to the usual candidates.
+    extra = []
+    if mtp and "mtp" not in locked:
+        extra.append(Candidate("mtp", "MTP drafting on (--spec-type draft-mtp, 2 draft tokens)",
+                               [{"dim": "mtp", "flag": "--spec-type", "value": "draft-mtp"}, {"dim": "mtp", "flag": "--spec-draft-n-max", "value": "2"}]))
+    if threads and "threads" not in locked and int(threads) >= 4:
+        t = int(threads) - 2
+        extra.append(Candidate(f"t{t}", f"-t {t} (plan: {threads} threads)", [{"dim": "threads", "flag": "-t", "value": str(t), "also": ["--threads"]}]))
     # priority: more GPU layers, the batch size, the KV type, then the rest; ncmoe+2 only stands in when a slot is free
     order = ["ncmoe-2"] + [k for k in byid if k.startswith("ub")] + ["ncmoe+2", "ramlock", "np1"]
     out = [byid[k] for k in order if k in byid]
-    return [c0] + out[:3]
+    return [c0] + out[:2 if walk else 3] + extra
 
 
-def key_parts(model_id, ctx, machine_sig, locked, agent, engine, limits=None):
-    """limits: the memory the user capped (--ram, --vram, --max-ram, --gpu-margin, --leave-room): a pick measured with more memory is not replayed with less."""
-    return {"v": VERSION, "model": model_id, "ctx": int(ctx), "machine": machine_sig, "locked": sorted(locked), "agent": bool(agent), "engine": engine, "limits": limits or {}}
+def key_parts(model_id, ctx, machine_sig, locked, agent, engine, limits=None, launcher=None, build=None):
+    """limits: the memory the user capped (--ram, --vram, --max-ram, --gpu-margin, --leave-room): a pick measured with more memory is not replayed with less.
+    launcher: this launcher's version; build: the llama.cpp build (planner/load_record.build_id): a new launcher plans differently and a new llama.cpp has other buffer
+    sizes and speeds, so a pick of either is measured again (planner map fix 2)."""
+    return {"v": VERSION, "model": model_id, "ctx": int(ctx), "machine": machine_sig, "locked": sorted(locked), "agent": bool(agent), "engine": engine, "limits": limits or {},
+            "launcher": launcher or "", "build": build or ""}
 
 
 def key_of(parts):
@@ -190,7 +227,18 @@ LOCK_STALE_S = 600.0        # the budget is 180 s plus the loads around it; a lo
 
 def _pid_alive(pid):
     if os.name == "nt":
-        return True         # no cheap check without extra modules: only the age counts there
+        try:            # a crashed launcher no longer locks Windows autotune out for LOCK_STALE_S — OpenProcess + STILL_ACTIVE (the ui.py pattern)
+            import ctypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, int(pid))
+            if not h:
+                return False
+            code = ctypes.c_ulong()
+            ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+            k.CloseHandle(h)
+            return bool(ok) and code.value == 259          # STILL_ACTIVE
+        except Exception:
+            return True         # cannot ask Windows: only the age counts (as before)
     try:
         os.kill(int(pid), 0)
         return True
@@ -204,30 +252,69 @@ def lock_path(cache_dir):
     return os.path.join(cache_dir, "autotune", "tuning.lock")
 
 
-def acquire_lock(cache_dir, now=time.time, alive=_pid_alive):
+def _lock_state(p):
+    """((dev, ino), held-json) of the lock file at read time, or ((None, None), None) when it is gone."""
+    try:
+        st = os.stat(p)
+    except OSError:
+        return (None, None), None
+    try:
+        with open(p, encoding="utf-8") as f:
+            held = json.load(f)
+    except (OSError, ValueError):
+        held = {}
+    return (st.st_dev, st.st_ino), held
+
+
+def acquire_lock(cache_dir, now=time.time, alive=_pid_alive, sleep=time.sleep):
     """LAUNCHER-1041: one tuning at a time on this computer (two loads at once double the memory and spoil each other's numbers). -> (True, None) or (False, pid of the
-    launcher that holds it). A lock of a dead process or older than LOCK_STALE_S is taken over."""
+    launcher that holds it). The lock is created with mkstemp + os.link (link is atomic, so a rival either sees our file or we see theirs; O_CREAT|O_EXCL left a
+    window where two launchers each held a half-created lock). On a filesystem without hard links (os.link raises something other than FileExistsError) it falls
+    back to O_CREAT|O_EXCL. A lock of a dead process or older than LOCK_STALE_S is taken over, but only while it is still the very same file we judged stale: stat,
+    read, stat, then unlink; a rival's fresh lock is never unlinked, and each retry waits a beat so the loser of a race sees the winner's fresh lock. An empty or
+    unreadable file counts as held (a half-created lock) until its mtime is older than LOCK_STALE_S, then it is stale like any other."""
     p = lock_path(cache_dir)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    for _ in range(2):
+    for _ in range(3):
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".moe_autotune_lock_")
         try:
-            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "t": now()}, f)
             try:
-                with open(p, encoding="utf-8") as f:
-                    held = json.load(f)
-            except (OSError, ValueError):
-                held = {}
-            if held and now() - float(held.get("t", 0)) < LOCK_STALE_S and alive(held.get("pid", 0)):
-                return False, held.get("pid")
+                try:
+                    os.link(tmp, p)     # atomic: fails with FileExistsError when a rival won the race
+                except FileExistsError:
+                    raise
+                except OSError:         # no hard links on this filesystem (EPERM / ENOTSUP ...): exclusive create instead
+                    os.close(os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump({"pid": os.getpid(), "t": now()}, f)
+                os.unlink(tmp)
+                return True, None
+            except FileExistsError:
+                os.unlink(tmp)      # our candidate is redundant; judge the winner below
+        except BaseException:
             try:
-                os.unlink(p)            # stale: take it over (the loop tries once more)
+                os.unlink(tmp)
             except OSError:
-                return False, held.get("pid")
-            continue
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"pid": os.getpid(), "t": now()}, f)
-        return True, None
+                pass
+            raise
+        ident, held = _lock_state(p)
+        if held == {}:              # empty or unreadable: a half-created lock is held, but only until it is older than LOCK_STALE_S
+            try:
+                age = now() - os.stat(p).st_mtime
+            except OSError:
+                continue            # it vanished: look again
+            if age < LOCK_STALE_S:
+                return False, None  # nobody's pid to report
+        if held and now() - float(held.get("t", 0)) < LOCK_STALE_S and alive(held.get("pid", 0)):
+            return False, held.get("pid")
+        if ident != (None, None) and _lock_state(p)[0] == ident:
+            try:
+                os.unlink(p)            # the same stale file we judged: safe to take over (the loop tries once more)
+            except OSError:
+                return False, (held or {}).get("pid")
+        sleep(0.05)                     # the file changed under us, or a rival is creating its own: look again instead of unlinking
     return False, None
 
 
@@ -255,14 +342,112 @@ def aborted_result(rows, cid, why, total, budget_s, agent):
             "why": f"the memory guard stopped the probe of {cid} ({str(why)[:160]}): the tuning was aborted, nothing was stored, the plan as it is runs. It is tried again at the next start"}
 
 
-def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None, progress=lambda t: None):
+def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None, progress=lambda t: None, walk=None, check=None, floor=None, floor_edge=None):
     """Measure the candidates in order and pick. runner(cand, left_s, decode_tokens) -> {"ok", "load_s", "prompt_tps", "decode_tps", "decode_n", "error"}.
     C0 (the plan as it is) always runs first with whatever time there is; each later candidate starts only when the time left covers a load and probe like
-    C0's. When C0 cannot be measured the result is `too_slow` and nothing is picked. Returns the result dict that is stored."""
+    C0's. When C0 cannot be measured the result is `too_slow` and nothing is picked. Returns the result dict that is stored.
+    walk: the plan's --n-cpu-moe (walk_start): after C0 the edge walk (planner map fix 2) puts one more expert layer on the GPU per step until a load fails, decode
+    falls more than MARGIN below the best step so far, the plan has no layer left on the CPU, WALK_MAX steps were made or the budget runs out; then the other candidates.
+    check(cand) -> (ok, why): a step the commit check would not start is not loaded and ends the walk.
+    floor: the lowest --n-cpu-moe the planner says still fits the GPU with only the user's own margin kept (the walk's fit limit, critic H1): a step below it is not loaded.
+    Where a model that does not fit spills into shared memory instead of failing to load (Windows), this is the only stop before the spill.
+    floor_edge: the part of `floor` that comes from a recorded failed edge (follow-up 7): a load at floor - 2 ran out of GPU memory in an earlier tune and floor - 1 was
+    its edge (loaded, reserve eaten, never picked). Neither is loaded again, and the step at the floor is a normal one (it was picked before), not an edge."""
     t0 = clock()
     rows, base_cost = [], None
     aborted = lambda rows_, cid, why: aborted_result(rows_, cid, why, clock() - t0, budget_s, agent)
-    for c in cands:
+    walk_state = {"k": 0, "done": walk is None, "best_dec": None}
+
+    def walk_next():
+        """The next step of the edge walk, or None when the walk has ended."""
+        if walk_state["done"] or not rows or rows[0]["status"] != "measured":
+            walk_state["done"] = True
+            return None
+        last = rows[-1]
+        if walk_state.get("refining"):
+            # the one-layer step back after a failed two-layer step: if it loads, it is the step right before a failed load (the edge); if not, the step before it is
+            walk_state["refining"] = False
+            walk_state["done"] = True
+            if last["status"] == "measured":
+                last["edge"] = True
+                walk_state["end"] = f"ncmoe-{walk_state['k'] + 1} did not load; {last['id']} is at the edge and is not picked"
+            else:
+                walk_state["end"] = f"ncmoe-{walk_state['k'] + 1} and {last['id']} did not load or run"
+                prev = next((r for r in reversed(rows[:-1]) if r["id"].startswith("ncmoe-") and r["status"] == "measured"), None)
+                if prev is not None:
+                    prev["edge"] = True
+                    walk_state["end"] += f"; {prev['id']} is at the edge and is not picked"
+            return None
+        if walk_state["k"] > 0:
+            if last["status"] != "measured" and walk_state.get("stride") == 2:
+                # LAUNCHER-1225: a two-layer step failed: step back one layer once (the edge may be between the two)
+                c = walk_candidate(walk_state["k"] - 1)
+                if check is None or check(c)[0]:
+                    walk_state["k"] -= 1
+                    walk_state["n"] = walk_state.get("n", 0) + 1
+                    walk_state["refining"], walk_state["stride"] = True, 1
+                    return c
+            if last["status"] != "measured":
+                walk_state["done"], walk_state["end"] = True, f"{last['id']} did not load or run"
+                prev = next((r for r in reversed(rows[:-1]) if r["id"].startswith("ncmoe-") and r["status"] == "measured"), None)
+                if prev is not None:
+                    # the step right before a failed load is at the edge: it loaded, but with less free GPU memory than the reserve keeps (laptop 35B 64k: 425 MiB
+                    # free at the edge against a 477 MiB reserve); it is not picked, so the desktop's later growth cannot push the server out of memory or into a spill
+                    prev["edge"] = True
+                    walk_state["end"] += f"; {prev['id']} is at the edge and is not picked"
+                return None
+            if walk_state["best_dec"] and last["decode_tps"] < walk_state["best_dec"] * (1 - MARGIN):
+                walk_state["done"], walk_state["end"] = True, f"decode fell at {last['id']} ({last['decode_tps']:.1f} against {walk_state['best_dec']:.1f} tok/s)"
+                return None
+        if last["status"] == "measured":
+            walk_state["best_dec"] = max(walk_state["best_dec"] or 0, last["decode_tps"])
+        # LAUNCHER-1225 step 2: two layers per load while the planner's fit limit is known and more than WIDE_FROM layers away (the loads are the budget: a 35B load is
+        # 15-20 s), then one; a failed two-layer step steps back one layer (above). Without a known limit (Linux, where a load that does not fit fails) one layer per load.
+        stride = 2 if (floor is not None and (walk - walk_state["k"]) - floor > WIDE_FROM) else 1
+        k = walk_state["k"] + stride
+        if walk_state.get("n", 0) + 1 > WALK_MAX or k > walk:
+            walk_state["done"], walk_state["end"] = True, "no expert layer left on the CPU" if k > walk else f"{WALK_MAX} steps made"
+            return None
+        if floor is not None and walk - k < floor:
+            known = floor_edge is not None and floor == floor_edge             # the stricter limit is the recorded failed edge, not the planner's figure
+            if known:
+                walk_state["done"], walk_state["end"] = True, (f"a load at --n-cpu-moe {floor - 2} ran out of GPU memory before (recorded): the walk does not go below {floor}"
+                                                               + ("" if k > 1 else (" (the plan is at or below that: no walk here)" if walk <= floor else "")))
+            else:
+                walk_state["done"], walk_state["end"] = True, (f"--n-cpu-moe {walk - k} is past the planner's fit limit ({floor}) for this GPU" if k > 1 else
+                                                               f"the plan is already at the planner's fit limit ({floor}) for this GPU and reserve: no walk here")
+            if k > 1 and not known and last["id"] == f"ncmoe-{k - 1}" and last["status"] == "measured":
+                last["edge"] = True         # the step at the fit limit keeps no reserve: at the edge like the step before a failed load, not picked
+                walk_state["end"] += f"; {last['id']} is at the edge and is not picked"
+            return None
+        c = walk_candidate(k)
+        if check is not None:
+            ok, why = check(c)
+            if not ok:
+                walk_state["done"], walk_state["end"] = True, f"the commit check would not start {c.id} ({str(why)[:100]})"
+                return None
+        walk_state["k"] = k
+        walk_state["n"] = walk_state.get("n", 0) + 1
+        walk_state["stride"] = stride
+        return c
+
+    queue = list(cands[1:])
+    order = cands[:1]
+    slow_load = [None]
+
+    def next_cand():
+        if not rows:
+            return order[0]
+        w = walk_next()
+        if w is not None:
+            return w
+        return queue.pop(0) if queue else None
+
+    n_planned = len(cands) + (min(walk, WALK_MAX) if walk else 0)
+    while True:
+        c = next_cand()
+        if c is None:
+            break
         left = budget_s - (clock() - t0)
         row = {"id": c.id, "label": c.label, "status": "not measured", "edits": c.edits}
         n = DECODE_TOKENS
@@ -273,10 +458,14 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             if room < SHORT_MIN / b0["decode_tps"]:
                 row["error"] = f"no time left in the {budget_s:.0f} s budget ({left:.0f} s left, load and prompt alone take about {fixed:.0f} s)"
                 rows.append(row)
+                if c.id.startswith("ncmoe-") and walk is not None:
+                    walk_state["done"], walk_state["end"] = True, "the time budget ran out"
                 continue
             n = min(DECODE_TOKENS, int(b0["decode_tps"] * room))
-        progress(f"trying plan {len(rows) + 1} of {len(cands)}: {c.id} ({c.label})")      # LAUNCHER-1041: the control page lists this while the server is still "starting"
+        progress(f"trying plan {len(rows) + 1} of " + (f"{len(cands)}" if walk is None else f"at most {n_planned}") + f": {c.id} ({c.label})")      # LAUNCHER-1041: the control page lists this while the server is still "starting"
         s = clock()
+        if c.id == "C0":
+            c.load_cap = SLOW_LOAD_S          # critic of 59abd70: a cold load on a slow disk is stopped at 60 s instead of eating the whole budget
         try:
             r = runner(c, left, n) or {}
         except Exception as e:                      # a runner that raises is a failed candidate, never a failed start
@@ -294,15 +483,21 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             row["short_probe"] = bool((r.get("decode_n") or n) < DECODE_TOKENS)
             row["score_s"] = round(score(row, agent), 2)
             if c.id == "C0":
-                base_cost = took
+                base_cost = max(took, 1e-3)      # a coarse clock (Windows, ~16 ms) reads 0.0 for an instant fake probe: 0 is falsy and skipped the second baseline run and the confirm run
         else:
             row["status"] = "failed"
         rows.append(row)
         say(row_line(row))
+        if c.id == "C0" and r.get("slow_load"):
+            slow_load[0] = float(r.get("load_s") or SLOW_LOAD_S)
+            break
         if c.id == "C0" and row["status"] != "measured":
             break
+        if c.id == "C0" and (row.get("load_s") or 0) > SLOW_LOAD_S:
+            slow_load[0] = row["load_s"]
+            break
     # the plan as it is, a second time (RULES 4: a screen needs A and A2): C0 ran first, cold, so a later plan can look faster only because the files and clocks were warm
-    if rows and rows[0]["status"] == "measured" and base_cost:
+    if rows and rows[0]["status"] == "measured" and base_cost and slow_load[0] is None:
         left = budget_s - (clock() - t0)
         if left >= base_cost * 1.15:
             c0b = {"id": "C0b", "label": "the plan as it is, again (noise check)", "status": "not measured", "edits": []}
@@ -323,10 +518,45 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
                 c0b["status"] = "failed"
             rows.append(c0b)
             say(row_line(c0b))
+    # LAUNCHER-1225 step 2 (interleaved rounds): the leading candidate is loaded and measured a second time after the second run of the plan
+    # as it is, so the order is C0, candidates, C0b, best again (A B .. A B). A pick must win with BOTH of its runs against the better baseline run; a lead that came from a
+    # warm cache, a cooler GPU or one lucky probe does not survive that. Runs only when the time for one more load is left; a confirm that does not load or run means no pick.
+    lead = None
+    if rows and rows[0]["status"] == "measured" and base_cost:
+        ms = [r for r in rows if r["status"] == "measured" and r["id"] not in ("C0b", "confirm") and not r.get("edge")]
+        lead = min(ms, key=lambda r: r["score_s"]) if ms else None
+        if lead is not None and lead["id"] != "C0":
+            left = budget_s - (clock() - t0)
+            if left >= base_cost * 1.15:
+                conf = {"id": "confirm", "label": f"{lead['id']} again (confirm run)", "status": "not measured", "edits": lead.get("edits") or [], "of": lead["id"]}
+                progress(f"trying {lead['id']} a second time (confirm run)")
+                try:
+                    r = runner(Candidate(lead["id"], conf["label"], lead.get("edits") or []), left, DECODE_TOKENS) or {}
+                except Exception as e:
+                    r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                if r.get("guard_stop"):
+                    conf.update(status="stopped", error=str(r["guard_stop"])[:200])
+                    rows.append(conf)
+                    say(row_line(conf))
+                    return aborted(rows, "confirm", r["guard_stop"])
+                conf.update({k: r.get(k) for k in ("load_s", "prompt_tps", "decode_tps", "decode_n", "error")})
+                if r.get("ok") and r.get("prompt_tps") and r.get("decode_tps"):
+                    conf.update(status="measured", short_probe=bool((r.get("decode_n") or DECODE_TOKENS) < DECODE_TOKENS), score_s=round(score(conf, agent), 2))
+                else:
+                    conf["status"] = "failed"
+                rows.append(conf)
+                say(row_line(conf))
     total = clock() - t0
     base = rows[0] if rows else None
     res = {"rows": rows, "total_s": round(total, 1), "budget_s": budget_s, "agent": agent, "prompt_tokens": PROMPT_TOKENS, "decode_tokens": DECODE_TOKENS,
-           "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False}
+           "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False, "score_prompt": SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}
+    if walk is not None:
+        res["walk"] = {"from": walk, "steps": walk_state.get("n", 0), "layers": walk_state["k"], "end": walk_state.get("end") or "not started (the plan as it is could not be measured)"}
+    if slow_load[0] is not None:
+        # not stored (the launcher skips saving state "slow_load"): the start that follows reads the file into the page cache, so the next start measures again with a warm load
+        res.update(state="slow_load", slow_load=round(slow_load[0], 1), why=f"the plan as it is stays: its load took {slow_load[0]:.0f} s or more (the limit for tuning is {SLOW_LOAD_S:.0f} s), so "
+                                                                         "no other plan was loaded; nothing is stored, the next start tries again (the file is then in the page cache)")
+        return res
     if not base or base["status"] != "measured":
         err = (base or {}).get("error") or "no result"
         if "stopped while loading" in err:       # llama-server crashed: slow loading is not the reason (the Granite 1B abort showed this text for a 6 s crash)
@@ -344,15 +574,29 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         if spread > MARGIN:
             noise = f" (the plan as it is moved {spread * 100:.0f} % between its two runs: a cold first run or noise, the better run is the baseline)"
         res["baseline_spread"] = round(spread, 3)
-    best = min((r for r in rows if r["status"] == "measured" and r["id"] != "C0b"), key=lambda r: r["score_s"])
-    gain = 1 - best["score_s"] / base["score_s"] if best["id"] != "C0" else 0.0
+    best = min((r for r in rows if r["status"] == "measured" and r["id"] not in ("C0b", "confirm") and not r.get("edge")), key=lambda r: r["score_s"])
+    conf = next((r for r in rows if r["id"] == "confirm"), None)
+    confirm_note = ""
+    best_score = best["score_s"]
+    if best["id"] != "C0" and conf is not None and conf.get("of") == best["id"]:
+        if conf["status"] == "measured":
+            best_score = max(best["score_s"], conf["score_s"])          # the worse of its two runs must still win
+            res["confirm_spread"] = round(abs(conf["score_s"] - best["score_s"]) / max(conf["score_s"], best["score_s"]), 3)
+            confirm_note = f"; confirmed by a second run (its slower run counts: {best_score:.1f} s against {base['score_s']:.1f} s)"
+        else:
+            best_score = None                                              # it did not load or run a second time: not picked
+            confirm_note = f"; its confirm run {conf['status']} ({str(conf.get('error') or '')[:80]})"
+    elif best["id"] != "C0":
+        best_score = None             # critic of 59abd70: a one-run leader is not picked (one run can be a lucky one); the plan as it is stays and --retune measures again
+        confirm_note = "; not picked: no time was left for its confirm run (one run is not enough)"
+    gain = (1 - best_score / base["score_s"] if best_score else 0.0) if best["id"] != "C0" else 0.0
     need = max(MARGIN, 2 * res.get("baseline_spread", 0.0))      # LAUNCHER-1045 (margin part): a plan must beat the baseline by more than twice the baseline's own run-to-run spread
     if best["id"] != "C0" and gain >= need:
         res.update(picked=best["id"], changed=True, state="tuned",
                    why=f"{best['id']} ({best['label']}) was {gain * 100:.0f} % faster than the plan as it is for a {SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}-token prompt plus {DECODE_TOKENS} generated tokens "
-                       f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)" + noise)
+                       f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)" + confirm_note + noise)
     else:
-        near = f"; the best other was {best['id']} at {gain * 100:.0f} %" if best["id"] != "C0" else ""
+        near = f"; the best other was {best['id']} at {gain * 100:.0f} %{confirm_note}" if best["id"] != "C0" else ""
         res.update(state="tuned", partial=any(r["status"] == "not measured" for r in rows), why=f"the plan as it is stays: no candidate was {need * 100:.0f} % faster{near}" + noise
                                      + ("" if sum(r["status"] == "measured" and r["id"] != "C0b" for r in rows) > 1 else " (only the plan itself could be measured in the time; --retune tries again, e.g. with the model already in the page cache)"))
     return res
@@ -401,12 +645,12 @@ def adds_gpu_use(cmd, edits):
     return False
 
 
-def replay_edits(cmd, stored, free_now, slack_mib=512):
+def replay_edits(cmd, stored, free_now, slack_mib=512, floor=None):
     """(edits to apply at this start, note or None). A stored pick is applied at every later start. An edit that puts more on the GPU than the plan (--n-cpu-moe lower, a bigger
     -ub) was measured with the free GPU memory of that day: it is left out for this start unless the free memory now is at least that (minus slack_mib); the other edits of the pick
     still apply (partial replay: the idea is from the outside review of 7c3d024). A stored result without the figure, or no reading now, cannot be compared: held back too - except when there is no reading at either time (the GPU's memory cannot be read
     on this machine): then the pick is applied, as it was at the start that measured it."""
-    edits = pick_edits(stored)
+    edits = pick_edits(stored, cmd, floor)
     add = [e for e in edits if adds_gpu_use(cmd, [e])]
     if not add or edits_fit_free_vram(stored, free_now, slack_mib):
         return edits, None
@@ -421,12 +665,32 @@ def replay_edits(cmd, stored, free_now, slack_mib=512):
     return [e for e in edits if e not in add], f"the stored pick's part that puts more on the GPU ({what}) is not applied at this start: {why} (--retune measures again)"
 
 
-def pick_edits(result):
-    """The stored pick's edits ([] for the plan as it is)."""
+def pick_edits(result, cmd=None, floor=None):
+    """The stored pick's edits ([] for the plan as it is). cmd: the plan they are applied to now. A pick measured on a plan of --n-cpu-moe B ("base_ncmoe") means the
+    layer count B + delta; since the plan learns from loads (planner map fix 1), the plan at a later start can differ from B: the delta is then taken from the plan of
+    now so the same layer count runs, and dropped when the plan already puts that many or more layers on the GPU (the plan is then at least as far).
+    floor: the planner's fit limit at this start (tune's floor): the replayed count never goes below it (a pick near the edge on a day with less free memory, critic M1)."""
+    edits = []
     for r in result.get("rows", []):
         if r["id"] == result.get("picked"):
-            return r.get("edits") or []
-    return []
+            edits = r.get("edits") or []
+            break
+    base = result.get("base_ncmoe")
+    cur = flag_value(cmd or [], "--n-cpu-moe", "-ncmoe")
+    if base is None or cur is None or not str(cur).isdigit():
+        return edits
+    out = []
+    for e in edits:
+        if e.get("flag") == "--n-cpu-moe" and "delta" in e:
+            target = max(0, int(base) + int(e["delta"]))
+            if floor is not None and int(e["delta"]) < 0:
+                target = max(target, min(int(floor) + 1, int(cur)))      # the step at the fit limit keeps no reserve: never replayed (as in the walk)
+            d = target - int(cur)
+            if d < 0 or (int(e["delta"]) > 0 and d > 0):
+                out.append(dict(e, delta=d))
+            continue
+        out.append(e)
+    return out
 
 
 def summary_lines(result, cached=False, skipped=(), locked=None):
@@ -441,6 +705,9 @@ def summary_lines(result, cached=False, skipped=(), locked=None):
         out.append(probe)
     for r in result["rows"]:
         out.append("moe-cache: auto-tune:   " + row_line(r))
+    if result.get("walk") and not cached:
+        w = result["walk"]
+        out.append(f"moe-cache: auto-tune: edge walk from --n-cpu-moe {w['from']}: {w['steps']} load(s), {w.get('layers', w['steps'])} expert layer(s) moved to the GPU at most; ended: {w['end']}")
     out.append("moe-cache: auto-tune: " + ("picked " + result["picked"] + ": " if result.get("changed") else "") + result.get("why", ""))
     if locked:
         out.append("moe-cache: auto-tune: left alone (yours or not applicable): " + ", ".join(f"{d} ({w})" for d, w in sorted(locked.items())))

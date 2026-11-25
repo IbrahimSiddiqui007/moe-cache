@@ -1,4 +1,4 @@
-// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): background expert reads, lookahead prefetch, the stats snapshot, the reader pool.
+// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): background expert reads, the stats snapshot, the reader pool.
     // ---- executor: background expert reads ----
     void reader_main() {
         static thread_local char * bounce = nullptr;
@@ -61,258 +61,12 @@
         }
     }
 
-    // ---- lookahead prefetch ----
-    void pf_submit(std::function<void()> fn) {
-        {
-            std::lock_guard<std::mutex> lk(pf_mu);
-            pf_q.push_back(std::move(fn));
-        }
-        pf_cv.notify_one();
-    }
-
-    void pf_main() {
-#ifdef __linux__
-        if (la_ecores) {
-            std::ifstream f("/sys/devices/cpu_atom/cpus");
-            std::string txt;
-            if (f && std::getline(f, txt)) {
-                cpu_set_t set;
-                CPU_ZERO(&set);
-                size_t i = 0;
-                bool any = false;
-                while (i < txt.size()) {
-                    int a = atoi(txt.c_str() + i), b = a;
-                    while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
-                    if (i < txt.size() && txt[i] == '-') {
-                        i++;
-                        b = atoi(txt.c_str() + i);
-                        while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
-                    }
-                    for (int c = a; c <= b && c < CPU_SETSIZE; c++) { CPU_SET(c, &set); any = true; }
-                    while (i < txt.size() && !isdigit((unsigned char) txt[i])) { i++; }
-                }
-                if (any) {
-                    sched_setaffinity(0, sizeof(set), &set);
-                }
-            }
-        }
-#elif defined(_WIN32)
-        // no sysfs: the launcher passes the efficiency cores as a mask (GetLogicalProcessorInformationEx, lowest efficiency class; processor group 0)
-        if (la_ecores) {
-            if (const char * m = getenv("MOE_CACHE_ECORE_MASK")) {
-                DWORD_PTR set = 0;
-                for (int c : mask_cpus(m)) {
-                    if (c < 64) {
-                        set |= (DWORD_PTR) 1 << c;
-                    }
-                }
-                if (set) {
-                    SetThreadAffinityMask(GetCurrentThread(), set);
-                }
-            }
-        }
-#endif
-        for (;;) {
-            std::function<void()> fn;
-            {
-                std::unique_lock<std::mutex> lk(pf_mu);
-                pf_cv.wait(lk, [this] { return pf_stop || !pf_q.empty(); });
-                if (pf_stop && pf_q.empty()) {
-                    return;
-                }
-                fn = std::move(pf_q.front());
-                pf_q.pop_front();
-            }
-            fn();
-        }
-    }
-
     plat::file_t buffered_file(int shard) {
         std::lock_guard<std::mutex> lk(fds_buf_mu);
         if (!fds_buf[shard].ok()) {
             fds_buf[shard] = plat::file_open(shard_paths[shard].c_str(), false);
         }
         return fds_buf[shard];
-    }
-
-    bool read_floats(const std::string & name, size_t n, std::vector<float> & out) {
-        auto it = tmeta.find(name);
-        if (it == tmeta.end()) {
-            return false;
-        }
-        const tmeta_t & m = it->second;
-        const ggml_type ty = (ggml_type) m.type;
-        if (ty != GGML_TYPE_F32 && ty != GGML_TYPE_F16 && ty != GGML_TYPE_BF16) {
-            return false;
-        }
-        const size_t esz = ggml_type_size(ty);
-        if (m.size != n * esz) {
-            return false;
-        }
-        std::vector<char> raw(m.size);
-        const plat::file_t f = buffered_file(m.shard);
-        size_t done = 0;
-        while (done < m.size) {
-            const ptrdiff_t got = plat::file_pread(f, raw.data() + done, m.size - done, (uint64_t) (m.off + done));
-            if (got <= 0) {
-                return false;
-            }
-            done += (size_t) got;
-        }
-        out.resize(n);
-        for (size_t i = 0; i < n; i++) {
-            if (ty == GGML_TYPE_F32) {
-                memcpy(&out[i], raw.data() + i * 4, 4);
-            } else if (ty == GGML_TYPE_F16) {
-                ggml_fp16_t h;
-                memcpy(&h, raw.data() + i * 2, 2);
-                out[i] = ggml_fp16_to_fp32(h);
-            } else {
-                ggml_bf16_t h;
-                memcpy(&h, raw.data() + i * 2, 2);
-                out[i] = ggml_bf16_to_fp32(h);
-            }
-        }
-        return true;
-    }
-
-    router_t * get_router(int layer, size_t n_embd, size_t n_exp) {
-        std::lock_guard<std::mutex> lk(router_mu);
-        auto it = routers.find(layer);
-        if (it != routers.end()) {
-            return it->second.ok ? &it->second : nullptr;
-        }
-        router_t & r = routers[layer];
-        char nm[160];
-        snprintf(nm, sizeof(nm), "blk.%d.ffn_gate_inp.weight", layer);
-        r.ok = read_floats(nm, n_embd * n_exp, r.w);
-        snprintf(nm, sizeof(nm), "blk.%d.ffn_gate_inp.bias", layer);
-        read_floats(nm, n_exp, r.bias);
-        snprintf(nm, sizeof(nm), "blk.%d.ffn_norm.weight", layer);
-        if (!read_floats(nm, n_embd, r.normw)) {
-            snprintf(nm, sizeof(nm), "blk.%d.post_attention_norm.weight", layer);
-            read_floats(nm, n_embd, r.normw);
-        }
-        return r.ok ? &r : nullptr;
-    }
-
-    // reserve cache room for the given experts of a layer (without evicting anything the current group needs) and read them in the background
-    void reserve_and_read(int layer, const std::vector<int> & guess, int cap = -1) {
-        if (cap < 0) {
-            cap = la_cap;
-        }
-        std::vector<std::pair<io_job_t, int>> todo;
-        {
-            std::lock_guard<std::mutex> lk(mu);
-            auto lt = layer_tensors.find(layer);
-            if (lt == layer_tensors.end() || lt->second.empty()) {     // empty: the layer's model was unloaded (forget_range)
-                return;
-            }
-            int fresh = 0;
-            for (int e : guess) {
-                {
-                    const tinfo_t & t0 = *tensors[lt->second[0]];
-                    if (e < 0 || e >= t0.n_expert || nodes[t0.node0 + e].resident) {
-                        continue;                 // out of range, or already in RAM: nothing to read
-                    }
-                }
-                if (++fresh > cap) {
-                    break;
-                }
-                for (int ti_i : lt->second) {
-                    tinfo_t & ti = *tensors[ti_i];
-                    const int s = ti.node0 + e;
-                    if (nodes[s].resident) {
-                        continue;
-                    }
-                    while (resident_bytes + ti.nb2 > budget) {
-                        int v = pick_victim();
-                        if (v < 0) {
-                            break;
-                        }
-                        evict(v);
-                    }
-                    if (resident_bytes + ti.nb2 > budget || !commit_for(ti, e)) {
-                        pf_skipped++;
-                        continue;
-                    }
-                    node_t & n = nodes[s];
-                    n.resident = true;
-                    __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE);      // the executor reads this flag without the lock
-                    n.prefetched = true;
-                    n.epoch = epoch;
-                    resident_bytes += ti.nb2;
-                    if (ti.view) { view_bytes += ti.nb2; }
-                    push_mru(s);
-                    todo.push_back({ io_job_t{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }, s });
-                    pf_issued++;
-                }
-            }
-        }
-        for (auto & td : todo) {
-            pf_submit([this, j = td.first, s = td.second] {
-                static thread_local char * bounce = nullptr;
-                static thread_local size_t bounce_size = 0;
-                const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
-                if (bounce_size < need) {
-                    plat::aligned_free_page(bounce);
-                    bounce = (char *) plat::aligned_alloc_page(need);
-                    if (!bounce) {
-                        fprintf(stderr, "moe-cache: out of memory for a read buffer\n");
-                        abort();
-                    }
-                    bounce_size = need;
-                }
-                read_job(j, bounce);
-                {
-                    std::lock_guard<std::mutex> lk(mu);
-                    __atomic_store_n(&nodes[s].loading, false, __ATOMIC_RELEASE);   // publishes the expert's bytes to the executor (reads without mu)
-                }
-                load_cv.notify_all();
-            });
-        }
-    }
-
-    // x = the input of the experts of this layer; predict which experts the next layer will pick and start reading them
-    void predict_and_prefetch(int layer, const std::vector<float> & x, int n_used) {
-        const int nl = layer + 1;
-        size_t n_exp = 0;
-        {
-            std::lock_guard<std::mutex> lk(mu);
-            auto lt = layer_tensors.find(nl);
-            if (lt == layer_tensors.end() || lt->second.empty()) {
-                return;
-            }
-            n_exp = (size_t) tensors[lt->second[0]]->n_expert;
-        }
-        const size_t n_embd = x.size();
-        router_t * rn = get_router(nl, n_embd, n_exp);
-        if (!rn) {
-            return;
-        }
-        router_t * rc = get_router(layer, n_embd, n_exp);
-        std::vector<float> xs(n_embd);
-        const bool scale = rc && rn->normw.size() == n_embd && rc->normw.size() == n_embd;
-        for (size_t i = 0; i < n_embd; i++) {
-            xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
-        }
-        std::vector<float> logit(n_exp);
-        for (size_t e = 0; e < n_exp; e++) {
-            const float * w = rn->w.data() + e * n_embd;
-            logit[e] = (rn->bias.size() == n_exp ? rn->bias[e] : 0.0f) + dot_f32(w, xs.data(), n_embd);
-        }
-        const size_t G = std::min<size_t>(n_exp, la_guess > 0 ? (size_t) la_guess : (size_t) n_used);
-        std::vector<int> idx(n_exp);
-        for (size_t e = 0; e < n_exp; e++) { idx[e] = (int) e; }
-        std::partial_sort(idx.begin(), idx.begin() + G, idx.end(), [&](int a, int b) { return logit[a] > logit[b]; });
-        idx.resize(G);
-        {
-            std::lock_guard<std::mutex> lk(mu);
-            auto & fl = pred_flags[nl];
-            fl.assign(n_exp, 0);
-            for (int e : idx) { fl[(size_t) e] = 1; }
-        }
-        reserve_and_read(nl, idx);
     }
 
     // MOE_CACHE_EXEC_TIMES summary; called before the pool is destroyed
@@ -371,17 +125,17 @@
         std::string j;
         {
             std::lock_guard<std::mutex> lk(mu);
-            char b[2200];
-            snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,"
+            char b[2400];
+            snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,\"ns_evict\":%llu,\"ns_evict_dec\":%llu,\"evict_calls_dec\":%llu,"
                      "\"resident_bytes\":%llu,\"budget\":%llu,\"ns_prep\":%llu,\"ns_read\":%llu,\"ns_cpu\":%llu,\"ns_total\":%llu,\"graphs\":%llu,"
-                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu,\"policy\":\"%s\",\"cls_promotions\":%llu,\"cls_demotions\":%llu,\"rb_rounds\":%llu,\"rb_reads\":%llu,\"rb_bytes\":%llu,\"rb_swaps\":%llu,\"rb_cancelled\":%llu,\"rb_dec_hits\":%llu,\"rb_dec_miss\":%llu,\"rb_pre_hits\":%llu,\"rb_pre_miss\":%llu",
+                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu,\"policy\":\"%s\",\"cls_promotions\":%llu,\"cls_demotions\":%llu,\"rb_rounds\":%llu,\"rb_reads\":%llu,\"rb_bytes\":%llu,\"rb_swaps\":%llu,\"rb_cancelled\":%llu,\"rb_dec_hits\":%llu,\"rb_dec_miss\":%llu,\"rb_pre_hits\":%llu,\"rb_pre_miss\":%llu",
                      (unsigned long long) hits, (unsigned long long) misses, (unsigned long long) hits_dec, (unsigned long long) misses_dec, (unsigned long long) bytes,
-                     (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) resident_bytes, (unsigned long long) budget,
+                     (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) evict_t.ns.load(), (unsigned long long) evict_t.ns_dec.load(), (unsigned long long) evict_t.calls_dec.load(),
+                     (unsigned long long) resident_bytes, (unsigned long long) budget,
                      (unsigned long long) ns_prep, (unsigned long long) ns_read, (unsigned long long) ns_cpu, (unsigned long long) ns_total, (unsigned long long) graphs,
                      (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs, (unsigned long long) gpu_segments,
                      (unsigned long long) gpu_split_blocks, (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
-                     (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
-                     (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
+                     (unsigned long long) sibling_loads,
                      (unsigned long long) small_mapped, (unsigned long long) small_over, classlru ? "classlru" : "lru", (unsigned long long) cls_promotions, (unsigned long long) cls_demotions,
                      (unsigned long long) rb_rounds, (unsigned long long) rb_reads, (unsigned long long) rb_bytes_read, (unsigned long long) rb_swaps, (unsigned long long) rb_cancelled,
                      (unsigned long long) rb_dec_hits, (unsigned long long) rb_dec_miss, (unsigned long long) rb_pre_hits, (unsigned long long) rb_pre_miss);
@@ -438,7 +192,7 @@
             }
             if (route_mode || fewer > 0) {      // GUI-042: the approximate modes' counters, live (cumulative; the stop-time lines below report the same numbers)
                 j += ",\"approx\":{\"route\":" + std::to_string(route_mode) + ",\"considered\":" + std::to_string(route_considered) + ",\"skipped\":" + std::to_string(route_skipped) +
-                     ",\"substituted\":" + std::to_string(route_substituted) + ",\"fewer\":" + std::to_string(fewer) + ",\"fewer_considered\":" + std::to_string(fewer_considered) +
+                     ",\"fewer\":" + std::to_string(fewer) + ",\"fewer_considered\":" + std::to_string(fewer_considered) +
                      ",\"fewer_dropped\":" + std::to_string(fewer_dropped) + "}";
                 // GUI-043: the newest decode steps, [ms, picks changed, tokens in the graph] each, newest last; "total" counts all steps so far, "now_ms" is this clock's time now
                 step_close_if_idle(100);                // the answer's last token: nothing follows it to end it
@@ -557,14 +311,6 @@
         }
 #endif
         {
-            std::lock_guard<std::mutex> lk(pf_mu);
-            pf_stop = true;
-        }
-        pf_cv.notify_all();
-        for (auto & t : pf_threads) {
-            t.join();
-        }
-        {
             std::lock_guard<std::mutex> lk(wmu);
             stop = true;
         }
@@ -611,15 +357,26 @@
                 fprintf(stderr, "moe-cache: of those, %llu ran on the second card %s (MOE_CACHE_GPU_DEV2)\n", (unsigned long long) gpu_alt_blocks.load(), ggml_backend_dev_name(gpu_dev2));
             }
         }
+        if (test_skip_pct >= 0) {       // TEST-1170: always printed (not only with MOE_CACHE_STATS): a timing run must say what it skipped
+            const uint64_t sk = test_skipped, co = test_computed;
+            fprintf(stderr, "moe-cache: TEST_SKIP_PCT=%d (timing test, output not valid): executor expert picks skipped %llu, computed %llu (%.1f%% skipped); "
+                    "executor ran %llu ops; CPU path %.2fs of %.2fs backend time (%.1f%%; backend only, not the whole token: the CPU expert share f is 1 - decode time at 100 %% / decode time at 0 %% across the arms)%s\n", test_skip_pct, (unsigned long long) sk,
+                    (unsigned long long) co, sk + co ? 100.0 * sk / (double) (sk + co) : 0.0, (unsigned long long) exec_ops.load(), ns_cpu / 1e9, ns_total / 1e9,
+                    ns_total ? 100.0 * ns_cpu / (double) ns_total : 0.0, sk + co ? "" : " -- NOTHING reached the executor, nothing was skipped");
+        }
+        if (cache_on && plat::view_drop_stats().calls.load() > 0) {      // CACHE-972: the file-view drop (Linux: MOE_CACHE_LINUX_VIEW_DROP=pageout or the default cold hint)
+            const char * m = getenv("MOE_CACHE_LINUX_VIEW_DROP");
+            fprintf(stderr, "moe-cache: file-view drops: %llu calls, %.2f GiB of views asked to drop (mode %s, %llu madvise calls refused by the kernel)\n", (unsigned long long) plat::view_drop_stats().calls.load(),
+                    plat::view_drop_stats().bytes.load() / 1073741824.0, m && strcmp(m, "pageout") == 0 ? "pageout" : "cold", (unsigned long long) plat::view_drop_stats().failed.load());
+        }
+        if (cache_on && !stats && auto_mode) {      // LAUNCHER-1281: always printed (not only with MOE_CACHE_STATS), so a growth run on the file-view path (LAUNCHER-1279) can be read from the plain log
+            fprintf(stderr, "moe-cache: auto cache at exit: final budget %.2f GiB, shrinks %llu, grows %llu%s\n", budget / 1073741824.0, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
+                    live_keep ? (", live-follow shrinks " + std::to_string(live_shrinks) + ", grows " + std::to_string(live_grows)).c_str() : "");
+        }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
             if (read_fallbacks) {
                 fprintf(stderr, "moe-cache: reads that needed the buffered fallback: %llu\n", (unsigned long long) read_fallbacks);
-            }
-            if (lookahead) {
-                fprintf(stderr, "moe-cache: lookahead: prefetched %llu experts, used %llu, wasted %llu, late %llu; prediction recall %.1f%% (%llu of %llu), skipped %llu\n",
-                        (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
-                        pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
             }
             if (exec_on) {
                 // ", checked N, mismatches M" stays right after "itself": CI greps that exact sequence (identity.yml, executor byte-check)
@@ -643,8 +400,8 @@
                 }
             }
             if (route_mode) {
-                fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
-                        route_mode == 1 ? "skip" : "subst", (unsigned long long) route_considered, (unsigned long long) route_skipped, (unsigned long long) route_substituted);
+                fprintf(stderr, "moe-cache: approximate routing (skip): %llu low-ranked picks looked at, %llu given up\n",
+                        (unsigned long long) route_considered, (unsigned long long) route_skipped);
             }
             if (fewer > 0) {
                 fprintf(stderr, "moe-cache: approximate: fewer experts (MOE_CACHE_FEWER=%d): %llu of the lowest-ranked picks on executor layers dropped\n", fewer, (unsigned long long) fewer_dropped);
@@ -668,6 +425,8 @@
             if (async_in) {
                 fprintf(stderr, "moe-cache: inputs read from the GPU asynchronously: %llu\n", (unsigned long long) async_in);
             }
+            fprintf(stderr, "moe-cache: time evict=%.3fs (decode %.3fs, %llu decode calls) of prep %.2fs\n",
+                    evict_t.ns.load() / 1e9, evict_t.ns_dec.load() / 1e9, (unsigned long long) evict_t.calls_dec.load(), ns_prep / 1e9);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
             if (n_gap) {
                 static const char * bn[4] = { "<0.2 ms", "<1 ms", "<5 ms", ">=5 ms" };
@@ -700,7 +459,7 @@
                     classlru ? (" | policy classlru (" + std::to_string(nclass) + " classes, half-life " + std::to_string((int) classlru_hl) + " tokens): promotions " +
                                 std::to_string(cls_promotions) + ", demotions " + std::to_string(cls_demotions)).c_str() : "",
                     rb_on ? rb_summary().c_str() : "",
-                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows)).c_str() : "");
+                    auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows) + (live_keep ? ", live-follow shrinks " + std::to_string(live_shrinks) + ", grows " + std::to_string(live_grows) : std::string())).c_str() : "");
         }
     }
 

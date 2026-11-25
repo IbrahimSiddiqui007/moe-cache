@@ -5,7 +5,7 @@
 # DEAD  = ref refs/pull/N/merge of a PR that is not open, or refs/heads/B where B is gone from the remote.
 # UNKNOWN = gh / git could not answer (network, rate limit): never deleted, run again.
 # KEEP  = open PR, existing branch (also a merged one that still exists: delete the branch first, then run this), main, experimental.
-# Needs gh (logged in) and the repo's remote as origin. Run it after merging and deleting a work branch (docs/internal/PC_CI.md).
+# Needs gh (logged in) and the repo's remote as origin. Run it after merging and deleting a work branch (the maintainers' private note PC_CI).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 DEL=0; [ "${1:-}" = "--delete" ] && DEL=1

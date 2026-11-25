@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as picker  # noqa: E402
+import moe_cache_catalogue as catalogue  # noqa: E402
 import moe_cache_download as dl  # noqa: E402
 import moe_cache_lan as lan  # noqa: E402
 import moe_cache_concurrent as cc  # noqa: E402
@@ -27,7 +28,6 @@ HERE = mc.HERE
 WINDOWS = mc.WINDOWS
 PAGE = os.path.join(HERE, "ui", "index.html")
 MINI_PAGE = os.path.join(HERE, "ui", "mini.html")
-TOP_FILE = os.path.join(mc.CACHE_DIR, "ui-top.json")      # GUI-045: port + page token for `moe_cache.py top`, private to this user, removed when the page stops
 SETTINGS_FILE = os.path.join(mc.CACHE_DIR, "ui.json")
 LAUNCHER = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
 HEADROOM = mc.STOCK_HEADROOM   # shown in the reasons; the rule itself is mc.decide()
@@ -77,7 +77,7 @@ def mtp_info(path):
         st = os.stat(path)
         k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
         if k not in _MTP_INFO:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            mc.planner_path()
             from gguf_plan import mtp_layers
             head, declared = mtp_layers(path)
             d = os.path.dirname(path)
@@ -186,7 +186,7 @@ _GPU = {"done": False, "gpu": None, "watched": 0.0}
 def windows_gpu_once(ls):
     """Windows without nvidia-smi (AMD, Intel): the GPU the launcher picks (llama-server --list-devices, discrete before integrated) with its
     free memory, and its total dedicated VRAM from the registry. {name, free, total, integrated} or None."""
-    g = mc.pick_gpu(mc.list_devices(ls))
+    g = mc.pick_gpu(mc.list_devices(ls, ttl=0))      # ttl=0: the control page shows free memory, so it must not be answered from the launcher's 60 s memo
     if not g:
         return None
     ded = mc.dedicated_vram_of(g[1], mc.win_dedicated_vram())
@@ -247,7 +247,8 @@ def system_info():
         free_vram = total = None
     return {"os": "Windows" if WINDOWS else sys.platform, "ram_total": tot, "ram_avail": avail, "server_may_use": mc.mem_for_server(None),
             "gpu": (v or w or {}).get("name"), "vram_total": total, "vram_free": free_vram, "gpu_integrated": bool(w and w.get("integrated")),
-            "gpu_detecting": WINDOWS and not _GPU["done"]}
+            "gpu_detecting": WINDOWS and not _GPU["done"],
+            "version": mc.version_label()}          # same text as `moe-cache --version` (LAUNCHER-1281): shown in the header also when no server runs
 
 
 # ---- the Results view: the records this machine has (the reports' .record.json / .json, the repository's benchmarks/runs) ----
@@ -340,7 +341,7 @@ class PagePlanMachine(mc.Machine):
     def list_devices(self, ls):
         t, text = self._devices.get(ls, (0.0, ""))
         if time.time() - t > 30:
-            text = mc.list_devices(ls)
+            text = mc.list_devices(ls, ttl=0)      # this class keeps its own 30 s memo; the launcher's 60 s one on top would make the free-VRAM figure up to 90 s old
             self._devices[ls] = (time.time(), text)
         return text
 
@@ -379,7 +380,7 @@ def mtp_reason(path, want, agent, ls):
     """The launcher's MTP line for this model and setting (its own mtp_decide(); the head from gguf_plan.mtp_layers), without the prefix; None
     when the launcher would say nothing. want: None (auto), True (--mtp), False (--no-mtp)."""
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        mc.planner_path()
         from gguf_plan import mtp_layers
         head, declared = mtp_layers(path)
     except Exception:
@@ -448,14 +449,13 @@ def peek_servers(ports=None, own=None, extra=()):
     return [dict(res[p], started_here=p == own or p in extra) for p in ports if p in res and res[p].get("up")]
 
 
-# Measured decode speeds from README "Results" / docs/results-archive/RESULTS.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
+# Measured decode speeds from README "Results" / docs/results/archive/results-windows-desktop.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
 # row): (machine, RAM GB, setting, stock tok/s or None, moe-cache tok/s, where). Machines: laptop = i7-13620H, 31 GB RAM, RTX 4060 8 GB, Linux;
 # PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
 LAPTOP, PC = "laptop", "PC"
 # README "Where it does not help", first bullet (v0.3.8): the evidence for running the plugin on a model that fits in RAM with some expert layers on the CPU
-PARTIAL_FIT_EVIDENCE = ("Evidence: our test laptop (8 GB card, one model) was faster with the plugin in early paired runs, but a later re-run on the release code did not reproduce that "
-                        "(decode about 4 % lower, prompt about 19 % lower); our test PC (16 GB), Qwen3.6-35B in a 65k conversation, was about the same as stock: 1.06x prompt, 1.07x decode "
-                        "(one model, one PC, 2026-11-08). So on your machine it can be slower. --stock or MOE_CACHE_STOCK_WHEN_FITS=1 runs plain llama-server instead.")
+PARTIAL_FIT_EVIDENCE = ("Evidence: our test laptop (8 GB card, one model) was faster with the plugin in early paired runs, but a later re-run on the release code did not reproduce that; "
+                        "our test PC (16 GB), Qwen3.6-35B in a 65k conversation, was about the same as stock (one model, one PC). So on your machine it can be slower. --stock or MOE_CACHE_STOCK_WHEN_FITS=1 runs plain llama-server instead.")
 MEASURED = {
     ("qwen35moe-41x256", 21.7): [(LAPTOP, 24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44 (plugin forced); the launcher now runs the plugin when expert layers stay on the CPU"),
                                  (LAPTOP, 12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (LAPTOP, 12, "no GPU", 3.1, 9.9, "RESULTS 5"),
@@ -478,8 +478,10 @@ MEASURED = {
 
 def measured(path, size):
     """Lines like 'laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
+    if not catalogue.SHOW_MEASURED_SPEED:       # v0.3.9 ships no speed figures (the table above stays as a record for v0.3.9.1)
+        return []
     try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
+        mc.planner_path()
         from gguf_plan import model_key
         key = model_key(path)
     except Exception:
@@ -519,7 +521,7 @@ def summary(out, mode="default", engine="auto"):
         held = f" keeps {min(100, 100 * cache / cpu):.0f} % of the experts that run on the CPU in RAM and" if cpu and cache is not None else ""
         if avail and size + HEADROOM <= avail:
             return f"moe-cache, as you chose: the model ({gb(size)}) fits in {room}, so stock would likely be faster."
-        tail = {"fast": " --fast skips a few rarely used experts that are not in RAM (a little faster, some tokens differ).",
+        tail = {"fast": " --fast skips a few rarely used experts that are not in RAM (some tokens differ; faster only in a laptop test, no win on the PC).",
                 "hybrid": " --hybrid also runs the most used experts on the GPU (experimental, answers differ)."}.get(mode, " The answers are the same as stock's (Exact)." if mode == "exact" else " Default settings: answers are not byte-identical to plain llama.cpp's (Exact keeps them identical).")
         return (f"moe-cache: the model ({gb(size)}) is {x} {room}. Stock llama-server would keep re-reading it from the disk; "
                 f"the cache{held} reads the rest only when needed." + tail)
@@ -628,13 +630,13 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="default", agent=False,
         why = "you chose --always-plugin" if mode in ("default", "exact") else mode + " needs the plugin"
         out.update(kind="cache", verdict=f"runs with {name} (fits in RAM, but {why})" if stock_fits else f"runs with {name} (bigger than free RAM)")
         if mode == "fast":
-            R.append("--fast skips low-ranked experts that are not in RAM: about +10 %, about 1 token in 40-50 differs from stock")
+            R.append("--fast skips low-ranked experts that are not in RAM: about 1 token in 40-50 differs from stock; faster only in a laptop test with memory far below the model, no win on the PC")
         elif mode == "hybrid":
             R.append("--hybrid computes the most used experts on the GPU from a bank, the rest on the CPU (output differs from stock)")
         elif mode == "exact":
             R.append("exact (--exact): same output as plain llama.cpp, so no long-prompt mode, no q8_0 KV default and no MTP unless you set it; experts that are not in RAM are read from the SSD")
         else:
-            R.append("default: the launcher's own settings (long-prompt mode from 32k context when the card has room, q8_0 KV cache, MTP where the model has it); answers are not byte-identical to plain llama.cpp; experts that are not in RAM are read from the SSD")
+            R.append("default: the launcher's own settings (long-prompt mode from 32k context when the card has room, a q8_0 KV cache from 128k, for a dense model a q8_0 KV cache instead of f16 when the GPU is short (the 4-bit steps are off: --kv-4bit), MTP drafting in agent mode where the model has the head); answers are not byte-identical to plain llama.cpp; experts that are not in RAM are read from the SSD")
     if gpu_layers:
         R.append(f"{gpu_layers} of {layers} layers keep their experts on the GPU ({plan['free_vram_GiB']:.1f} GiB free VRAM)")
     elif out["kind"] != "stock" or plan["free_vram_GiB"] == 0:
@@ -646,7 +648,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="default", agent=False,
                  + ("" if pct >= 100 else "; the rest are read from the SSD when needed"))
         lim = float(ram) * 1e9 if ram else mc.mem_total()
         if mode in ("default", "exact") and lim and size > 2 * lim:
-            R.append(f"the model is {size / lim:.1f}x the memory: --fast would add about +10 % (changes some tokens; off by default)")
+            R.append(f"the model is {size / lim:.1f}x the memory: --fast skips rarely needed experts (changes some tokens; faster only in a laptop test with memory far below the model, no win on the PC; off by default)")
     R.extend(amd_reasons)
     for w in (tuned or {}).get("why", []):
         if not no_vram:
@@ -690,7 +692,7 @@ def server_args(s):
     if s.get("no_long_prompt"):
         a.append("--no-long-prompt")       # the long-prompt mode (-ub 4096 + the q8_0 KV cache when the memory plan allows) is the default since 2026-11-08; unticking it opts out
     if s.get("peers"):
-        a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (docs/internal/TWO_MODELS_DESIGN.md)
+        a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (the maintainers' private note TWO_MODELS_DESIGN)
     if s.get("share_ram"):
         a.append("--share-ram")            # a second server next to a running one: count the RAM the other llama-servers hold
     if s.get("llama_server"):
@@ -740,7 +742,7 @@ def dry_run(s):
 
 # ---- the running server ----
 
-# Owner's decision C (handover/DECISION_LLAMA_SERVER_KEY_20261026.md): agent servers get a stable per-user random key from the launcher.
+# Decision C (private notes, 2026-10-26): agent servers get a stable per-user random key from the launcher.
 # The page asks the launcher for it (stdout: the key alone, exit 0), keeps it in memory, sends it in headers and to `connect` through the
 # environment; never in a URL, a log line or the status JSON (the page fetches it from /api/key only for the Copy button).
 KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]
@@ -897,7 +899,7 @@ def token_mode_status(plan, mtp_on, s):
     known = bool(env)
     kv = (plan.get("kv_k") or "").startswith("q8")
     on = {"kv8": kv, "long-prompt": str(plan.get("ub")) == "4096", "mtp": mtp_on,
-          "fast1": env.get("MOE_CACHE_ROUTE") in ("skip", "subst") if known else None, "fast2": (env.get("MOE_CACHE_ROUTE_DROP") == "4") if known else None,
+          "fast1": env.get("MOE_CACHE_ROUTE") == "skip" if known else None, "fast2": (env.get("MOE_CACHE_ROUTE_DROP") == "4") if known else None,
           "fewer": (int(env.get("MOE_CACHE_FEWER") or 0) > 0) if known else None, "approx-tiers": bool(s.get("approx"))}
     return [{"id": m["id"], "what": m["what"], "switch": m["switch"], "status": m["status"], "active": on.get(m["id"])} for m in ap.TOKEN_MODES]
 
@@ -1978,13 +1980,34 @@ AUDIT_MAX_TOKENS = 16384        # R15-01: was 4096; the audit module has the sam
 AUDIT_MAX_TOKENS_LIMIT = 65536
 
 
+def audit_need(model_size, model_path=None, ctx=None):
+    """GUI-1156 (Fable audit item 7): bytes a second, exact-mode server needs next to the running one. Was model x 1.10 + 1.5 GiB for every model and context. Now, when the
+    model's header is readable: the file + the KV cache llama-server sizes for this context (gguf_plan.kv_bytes: attention layers only on hybrid models, f16 as exact mode
+    runs it) + the compute buffer the planner has measured for the context (compute_buffer_guess_mib at -ub 512) + 1 GiB for the process. The old rule stays as the floor (the audit server runs at max(setting, conversation) context, not known here). Unreadable header (or no path): the old rule."""
+    if not model_size:
+        return None
+    old = int(model_size * 1.10 + 1.5 * GIB)
+    try:
+        if os.path.join(HERE, "planner") not in sys.path:
+            mc.planner_path()
+        import gguf_plan as gp
+        c = max(512, int(ctx or 8192))
+        kv = gp.kv_bytes(model_path, c, kv_q8=False)
+        mib = gp.compute_buffer_guess_mib(c, 512)
+        if kv is None or not mib:
+            return old
+        return max(old, int(model_size + kv + mib * 1048576 + 1.0 * GIB))      # never below the old rule: the audit server may run at a longer context than the setting
+    except Exception:
+        return old
+
+
 def audit_plan(runner, model_size):
     """How an audit would run for the server this page runs: {ok, mode: beside | pause, why, free, need}. `beside`: a second, exact-mode server next to the running
     one when the RAM allows it; `pause`: the running server is stopped for the audit and started again with its own settings."""
     if runner.state != "ready":
         return {"ok": False, "why": "start the model first: the audit asks an exact-mode server about the answer, which needs the same model"}
     tot, avail = ram_now()
-    need = int(model_size * 1.10 + 1.5 * GIB) if model_size else None
+    need = audit_need(model_size, runner.settings.get("model"), runner.settings.get("ctx"))
     if need and avail and avail >= need:
         return {"ok": True, "mode": "beside", "free": avail, "need": need, "why": f"a second, exact-mode server starts next to the running one ({avail / GIB:.1f} GiB free, about {need / GIB:.1f} GiB needed)"}
     return {"ok": True, "mode": "pause", "free": avail, "need": need,
@@ -2151,10 +2174,16 @@ def list_chats():
 
 
 _CHAT_LOCKS, _CHAT_LOCKS_GUARD = {}, threading.Lock()
+_CHAT_LOCKS_MAX = 256      # a deleted chat used to leave its lock here forever: a long-lived page server leaked one lock per chat path
 
 
 def _chat_lock(path):
     with _CHAT_LOCKS_GUARD:
+        if path not in _CHAT_LOCKS and len(_CHAT_LOCKS) >= _CHAT_LOCKS_MAX:
+            # drop the oldest entries (insertion order), but only locks nobody holds right now; if every one is held the table grows past the cap until they are released
+            over = len(_CHAT_LOCKS) - _CHAT_LOCKS_MAX + 1
+            for old in [k for k, lk in _CHAT_LOCKS.items() if not lk.locked()][:over]:
+                _CHAT_LOCKS.pop(old, None)
         return _CHAT_LOCKS.setdefault(path, threading.Lock())
 
 
@@ -2312,14 +2341,14 @@ class Store:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
        "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
-# GUI-012 (--ui-lan, docs/LAN_ACCESS.md): what a request from another computer may do. An ALLOW-LIST, checked for GET and POST: a route not named here is
+# GUI-012 (--ui-lan, docs/guides/lan-access.md): what a request from another computer may do. An ALLOW-LIST, checked for GET and POST: a route not named here is
 # 403 for a non-loopback peer, so a new route is closed to the network until someone decides. Allowed: reading the page, status, log, lists and plans, and
 # the chat itself (talks only to a model server on this PC, with the key kept server-side). Everything that starts, stops, benchmarks or configures, anything
 # that reads a secret (/api/key) or reaches other ports (/api/peek), downloads, Trash moves and share reports stay on the PC itself.
 REMOTE_GET = ("/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/api/downloads", "/api/download", "/api/models", "/api/plan", "/api/status",
               "/api/bench", "/api/servers", "/api/chats", "/api/log")
 REMOTE_POST = ("/api/chat", "/api/chats/save")
-REMOTE_REFUSED = "this action is not offered to other computers (it starts or changes things on this PC, or reads a secret): do it on the PC itself (docs/LAN_ACCESS.md)"
+REMOTE_REFUSED = "this action is not offered to other computers (it starts or changes things on this PC, or reads a secret): do it on the PC itself (docs/guides/lan-access.md)"
 TOKEN_FAILS, TOKEN_WINDOW = 20, 60.0          # wrong tokens from one remote address before it is answered 429 for a minute
 GROUP_ERROR_SHOWN = 30      # seconds a failed group start is still reported after the page first got the reason
 MAX_EXTRA = 2              # servers the page may start besides the main one (GUI-013)
@@ -2374,7 +2403,7 @@ def open_page(url):
     t.start()
 
 
-# ---- MULTIMODEL-010: two models at once, one memory cap (docs/internal/TWO_MODELS_DESIGN.md) ----
+# ---- MULTIMODEL-010: two models at once, one memory cap (the maintainers' private note TWO_MODELS_DESIGN) ----
 _KIND = {}
 
 
@@ -2388,7 +2417,7 @@ def model_kind(path):
         st = os.stat(path)
         k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
         if k not in _KIND:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
+            mc.planner_path()
             from gguf_plan import read_tensors, shards
             _KIND[k] = "moe" if any("_exps" in n for n, _ in read_tensors(shards(path)[0])) else "dense"
         return _KIND[k]
@@ -3199,27 +3228,6 @@ def agents_state(url):
     return {"url": url, "agents": [opencode_state(url), hermes_state(url)]}
 
 
-def write_top_file(port, token):
-    """Where `moe_cache.py top` finds this page: {port, token, pid} in a file only this user can read (the same trust as ui.json and the chats)."""
-    try:
-        os.makedirs(os.path.dirname(TOP_FILE), exist_ok=True)
-        fd = os.open(TOP_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"port": port, "token": token, "pid": os.getpid(), "t": time.time()}, f)
-    except OSError:
-        pass
-
-
-def remove_top_file():
-    try:
-        with open(TOP_FILE, encoding="utf-8") as f:
-            if json.load(f).get("pid") != os.getpid():
-                return                                  # another page's file: not ours to remove
-        os.remove(TOP_FILE)
-    except (OSError, ValueError):
-        pass
-
-
 def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
     store = Store(ls or mc.default_llama_server())
     if not ls and (line := mc.ls_found_line(store.ls)):
@@ -3249,7 +3257,7 @@ def ui(argv):
     ap.add_argument("--ui-port", type=int, default=8070)
     ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--no-browser", action="store_true", help="do not open the page in the browser")
-    ap.add_argument("--ui-lan", action="store_true", help="also answer on this PC's home-network address (the page token is still required; some actions stay local). docs/LAN_ACCESS.md")
+    ap.add_argument("--ui-lan", action="store_true", help="also answer on this PC's home-network address (the page token is still required; some actions stay local). docs/guides/lan-access.md")
     ap.add_argument("--lan-address", default=None, help="with --ui-lan: which private address of this PC to tell you (default: the first found)")
     ap.add_argument("--allow-public", action="store_true", help="let --ui-lan listen although this PC has a public address (not recommended)")
     a = ap.parse_args(argv)
@@ -3271,7 +3279,6 @@ def ui(argv):
     if WINDOWS:
         threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
-    write_top_file(srv.server_address[1], srv.RequestHandlerClass.token)
     mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if a.ui_lan:
         mc.say(f"moe-cache: LAN: the control page also answers at http://{lan_addr}:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token} (open exactly this address on the other computer)")
@@ -3288,7 +3295,6 @@ def ui(argv):
         pass
     finally:
         remove_launch_files()
-        remove_top_file()
         for r in list(srv.RequestHandlerClass.extra.values()):
             r.stop()
         srv.RequestHandlerClass.runner.stop()

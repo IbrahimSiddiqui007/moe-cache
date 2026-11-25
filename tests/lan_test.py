@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SERVER-016 (--lan) and GUI-012 (--ui-lan), without a second computer: the address rules (bin/moe_cache_lan.py), the launcher's --lan on a dry run with fake
-addresses (MOE_CACHE_LAN_ADDRS), and the page server with a fake remote client. docs/LAN_ACCESS.md has the threat table these checks follow.
+addresses (MOE_CACHE_LAN_ADDRS), and the page server with a fake remote client. docs/guides/lan-access.md has the threat table these checks follow.
    python3 tests/lan_test.py"""
 import json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 
@@ -35,9 +35,12 @@ check(not any("KEYVALUE" in l for l in lan.risk_lines("http://192.168.1.20:8080"
 
 # ---- the launcher's --lan on a dry run ----
 model = os.path.join(TMP, "m.gguf"); open(model, "wb").write(b"GGUF" + b"\0" * 64)
-def launcher(addrs, *args):
+def launcher(addrs, *args, host_env=None):
     env = dict(os.environ, MOE_CACHE_LAN_ADDRS=addrs, LLAMA_API_KEY="")
     env.pop("LLAMA_API_KEY")
+    env.pop("LLAMA_ARG_HOST", None)
+    if host_env is not None:
+        env["LLAMA_ARG_HOST"] = host_env
     r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "server", model, "--dry-run", "--llama-server", sys.executable, *args],
                        capture_output=True, text=True, timeout=120, env=env, encoding="utf-8", errors="replace")
     return r.returncode, r.stdout + r.stderr
@@ -66,6 +69,13 @@ rc, out = launcher("192.168.1.20", "--", "--host", "192.168.1.20")
 check(rc == 0 and "LLAMA_API_KEY=(hidden)" in out and "other computers can reach it" in out and "WARNING" not in out, "launcher --host with a private address and no key: the stored key is forced (no warning needed)")
 rc, out = launcher("192.168.1.20", "--", "--host", "0.0.0.0")
 check(rc == 0 and "LLAMA_API_KEY=(hidden)" in out, "launcher --host 0.0.0.0 (no --lan): key forced too")
+# review finding 1 (REVIEW.md 2026-11-18): llama.cpp b12207 rejects `--host=VALUE` (common/arg.cpp:833, checked by main4), but the launcher must not read it as "no --host": same gates as the space form
+rc, out = launcher("192.168.1.20", "--", "--host=8.8.8.8")
+check(rc != 0 and "public" in out, "review 1: `--host=8.8.8.8` after -- is refused without --allow-public (the equals form no longer skips the bind gate)")
+rc, out = launcher("192.168.1.20", "--", "--host=0.0.0.0")
+check(rc == 0 and "LLAMA_API_KEY=(hidden)" in out and "--host=0.0.0.0" not in out and "--host 0.0.0.0" in out, "review 1: `--host=0.0.0.0` forces the key and reaches llama-server in the one working form")
+rc, out = launcher("192.168.1.20", "--", "--host=127.0.0.1")
+check(rc == 0 and "other computers can reach it" not in out, "review 1: `--host=127.0.0.1`: nothing forced")
 rc, out = launcher("192.168.1.20", "--", "--host", "127.0.0.1")
 check(rc == 0 and "other computers can reach it" not in out and "LLAMA_API_KEY" not in out, "launcher --host 127.0.0.1: nothing forced")
 rc, out = launcher("192.168.1.20", "--", "--host", "::")
@@ -156,6 +166,28 @@ check("public address" in (ui_lan("192.168.1.20,203.0.113.5") or ""), "--ui-lan 
 check("no private" in (ui_lan("203.0.113.5") or ""), "--ui-lan with no home-network address: refused")
 page = open(os.path.join(HERE, "bin", "moe_cache_ui.py"), encoding="utf-8").read()
 check('host = "0.0.0.0"' in page and 'host="127.0.0.1"' in page and "--ui-lan" in page, "page code: 127.0.0.1 is the default, 0.0.0.0 only inside the --ui-lan branch")
+
+# SECURITY-1231: LLAMA_ARG_HOST in the environment is a bind address llama-server honours: same bind and key gates as --host
+rc, out = launcher("192.168.1.20", host_env="8.8.8.8")
+check(rc != 0 and "public" in out, "SECURITY-1231: LLAMA_ARG_HOST=8.8.8.8 is refused without --allow-public")
+rc, out = launcher("192.168.1.20", host_env="0.0.0.0")
+check(rc == 0 and "LLAMA_API_KEY=(hidden)" in out and "other computers can reach it" in out, "SECURITY-1231: LLAMA_ARG_HOST=0.0.0.0 forces the API key")
+rc, out = launcher("192.168.1.20", host_env="127.0.0.1")
+check(rc == 0 and "other computers can reach it" not in out and "WARNING" not in out, "SECURITY-1231: LLAMA_ARG_HOST=127.0.0.1: nothing forced")
+rc, out = launcher("192.168.1.20", "--", "--host", "127.0.0.1", host_env="8.8.8.8")
+check(rc == 0, "SECURITY-1231: --host after -- wins over LLAMA_ARG_HOST (llama-server's own order)")
+rc, out = launcher("192.168.1.20", host_env="localhost")
+check(rc == 0 and "other computers can reach it" not in out and "WARNING" not in out, "SECURITY-1231: LLAMA_ARG_HOST=localhost: accepted, nothing forced")
+rc, out = launcher("192.168.1.20", host_env="8.8.8.8")
+check("LLAMA_ARG_HOST" in out, "SECURITY-1231: the refusal names LLAMA_ARG_HOST as the source")
+# empty value: llama.cpp (arg.cpp, same code in b12207 and the pin tree) throws "--host requires at least one address" for an empty or blank list, so it never binds: no key needed
+rc, out = launcher("192.168.1.20", host_env="")
+check(rc == 0 and "other computers can reach it" not in out, "SECURITY-1231: LLAMA_ARG_HOST='' : llama-server refuses to start on it, the launcher forces nothing")
+# a comma list is a bind list in llama.cpp: any non-loopback member must count
+rc, out = launcher("192.168.1.20", host_env="127.0.0.1,0.0.0.0")
+check(rc != 0 and "LLAMA_ARG_HOST" in out and "not an IP address" in out, "SECURITY-1231: LLAMA_ARG_HOST='127.0.0.1,0.0.0.0' (a list) is refused, never read as loopback (fails closed)")
+rc, out = launcher("192.168.1.20", "--lan", host_env="0.0.0.0")
+check(rc == 0 and "--host 0.0.0.0" in out, "SECURITY-1231: --lan with LLAMA_ARG_HOST set still works (the --host --lan adds wins)")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\nFAILED: " + "; ".join(fails) if fails else "\nLAN tests passed")

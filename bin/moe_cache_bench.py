@@ -3,7 +3,7 @@
 order stock, moe-cache, moe-cache, stock (per pair), with the launcher's own defaults, and writes one report to paste into a GitHub issue
 (moe-cache-report-YYYYMMDD-HHMM.md + .json). It only measures: nothing is downloaded, uploaded or changed, and the report holds no prompts, answers,
 user name, host name or folder names. Standard library only; the same code on both systems (no systemd-run: the cache size is the launcher's --ram).
-docs/SHARE_YOUR_NUMBERS.md is the recipe."""
+docs/guides/share-your-numbers.md is the recipe."""
 import argparse, contextlib, datetime, io, json, os, platform, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -134,16 +134,24 @@ def launcher_plan(model, ls, ram, ctx, extra, limit_gb=None):
     cmd += (["--ram", str(ram)] if ram else []) + list(extra)
     if limit_gb:
         cmd = limit_prefix(limit_gb) + cmd         # the plan is made inside the same limit the runs will have
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    try:      # a hung or crashed probe is this arm's reason, not a sweep abort
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return None, f"the launch probe failed: {type(e).__name__}: {e}"
     try:        # XA-2: the launcher's plan as data (engine and command line), not text parsed from a dry run
         plan = json.loads(r.stdout)
         return plan["engine"], plan["command_line"]
     except Exception:
         pass
     cmd[cmd.index("--plan-json")] = "--dry-run"       # a launcher from before --plan-json
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return None, f"the launch probe failed: {type(e).__name__}: {e}"
     out = r.stdout + r.stderr
     line = next((l for l in out.splitlines() if "llama-server" in l and " -m " in l), "")
+    if not line:                                      # an unusable probe answer is (None, why), not ("stock", "")
+        return None, "the launch probe produced no plan line"
     return ("plugin" if "MOE_CACHE_" in line else "stock"), line
 
 
@@ -214,6 +222,8 @@ def _wait_ready(p, lines, port, t0, timeout):
         if time.time() - t0 > timeout:
             return f"the server was not ready after {timeout} s"
         time.sleep(1)
+    if p.poll() is not None:      # /health answered just before the server died: report that, not a green light into a dead process
+        return "the server stopped right after /health answered: " + next((l for l in reversed(lines) if l.strip()), "no output")
     return None
 
 
@@ -277,7 +287,7 @@ def run_one(model, mode, a, port):
                         break
                     time.sleep(0.25)
         return res
-    except (ValueError, OSError) as e:
+    except Exception as e:       # an unexpected error in one arm is that arm's error — report it and keep the sweep going
         res["error"] = f"{type(e).__name__}: {e}"
         return res
     finally:
@@ -315,7 +325,7 @@ def run_chat_arm(model, mode, a, port, workdir, key, plan_line):
         if run["stop_reason"].startswith("error"):
             res["error"] = run["stop_reason"]
         return res
-    except (ValueError, OSError) as e:
+    except Exception as e:       # same isolation as run_one — one chat arm's error never stops the sweep
         res["error"] = f"{type(e).__name__}: {e}"
         return res
     finally:
@@ -641,7 +651,7 @@ def report_md(d, record_json=None):
              ]
     if d["notes"]:
         lines += ["", "Notes:"] + [f"- {n}" for n in d["notes"]]
-    if d.get("record"):         # the benchmark record (docs/BENCHMARK_TEMPLATE.md): the card's detail lines, then the whole record for the issue form
+    if d.get("record"):         # the benchmark record (docs/reference/benchmark-template.md): the card's detail lines, then the whole record for the issue form
         lines += ["", "Details (benchmark card format):", ""] + ["- " + l for l in rec.details_lines(d["record"])]
         gaps = rec.not_recorded_fields(d["record"])
         if gaps:
@@ -652,7 +662,7 @@ def report_md(d, record_json=None):
 
 
 def build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, conditions):
-    """The benchmark record for this bench-report (docs/BENCHMARK_TEMPLATE.md): machine, software, model, settings, conditions, protocol, per-run metrics."""
+    """The benchmark record for this bench-report (docs/reference/benchmark-template.md): machine, software, model, settings, conditions, protocol, per-run metrics."""
     env = rec.collect_environment(a.model, None, listing=devices, version_line=llama, backend=d["backend"], identity={"quant": None if d["model"].get("quant") in (None, "-") else d["model"]["quant"]}, model_url=a.model_url)
     env["software"]["moe_cache_version"] = mc.VERSION
     moe_run = next((r for r in runs if r["mode"] == "moe-cache" and r.get("log_facts")), None) or next((r for r in runs if r.get("log_facts")), {})
@@ -685,7 +695,7 @@ def build_chat_record(a, d, chat_runs, devices, llama, cond):
 
 def bench_report(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py bench-report", description="measure stock llama-server and moe-cache on this machine and write a report "
-                                 "to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md). Measures only; nothing is uploaded.")
+                                 "to paste into a GitHub issue (docs/guides/share-your-numbers.md). Measures only; nothing is uploaded.")
     ap.add_argument("model")
     ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--ram", help="GB the cache may use (as `server`); default: what is free")
@@ -738,7 +748,11 @@ def bench_report(argv):
         return 2
     chat_extra = ["--agent"] if a.chat else []
     plan_mode, plan_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, a.extra + chat_extra, a.limit_gb)
-    stock_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, ["--stock"] + chat_extra, a.limit_gb)[1]
+    if plan_mode is None:      # the probe could not produce a plan: report its reason and skip the model, do not abort the sweep
+        mc.say(f"bench-report: {plan_line}; skipping this model", err=True)
+        return 3
+    stock_plan = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, ["--stock"] + chat_extra, a.limit_gb)
+    stock_line = stock_plan[1] if stock_plan and stock_plan[0] else ""      # a failed stock probe gives no plan line — "" (the record shows the reason elsewhere), not the probe's error text
     fits = plan_mode == "stock"
     if fits and not a.force_plugin:
         mc.say("bench-report: this model fits in your RAM, so moe-cache would not be used (the launcher runs stock llama.cpp). "

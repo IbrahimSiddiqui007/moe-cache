@@ -6,7 +6,7 @@ identical to stock llama.cpp. If your model fits in RAM, stock llama.cpp is fast
 launcher then runs it stock by itself.
 
 1. What you need
-   - llama.cpp: INCLUDED in this kit (folder llama\: llama.cpp b12207 Vulkan build for AMD,
+   - llama.cpp: INCLUDED in this kit (folder llama\: llama.cpp b12651 Vulkan build for AMD,
      Intel and NVIDIA cards, built from the official source with moe-cache's small patch set;
      every patch is built in but OFF, see llama\PATCHES-moe-cache.txt; MIT licence in that
      folder). Nothing to download. For the official build instead, download it from the
@@ -49,7 +49,7 @@ launcher then runs it stock by itself.
    The control page has Connect buttons for both.
    Or let the agents start the model when they need it (stops after 15 idle minutes):
      python bin\moe_cache.py on-demand D:\models\model.gguf --llama-server C:\llama\llama-server.exe
-   Details: docs\AGENTS.md
+   Details: docs\guides\agents.md
 
 4. Good to know
    - Keep the Windows page file at "system managed" (or 14 GB or more): the cache itself
@@ -58,10 +58,10 @@ launcher then runs it stock by itself.
    - You do not need to choose a plugin DLL: moe-cache.bat picks the right one. Only if check says
      the plugin and your llama.cpp do not match (an old llama.cpp with ggml 0.25), run once in the kit
      folder:  setx MOE_CACHE_LIB "%CD%\ggml-moe-cache-api2.dll"
-   - Problems: docs\WINDOWS.md. Report issues at github.com/IbrahimSiddiqui007/moe-cache/issues
+   - Problems: docs\guides\windows.md. Report issues at github.com/IbrahimSiddiqui007/moe-cache/issues
      with the output of "python bin\moe_cache.py check MODEL.gguf --run".
    - Share your speed: python bin\moe_cache.py bench-report D:\models\model.gguf --flush-from D:\other-big-files
      (a model bigger than your RAM; 5-20 minutes) writes a report to paste into a "Benchmark report"
-     issue. Recipe: docs\SHARE_YOUR_NUMBERS.md. The report holds no prompts, answers or names.
+     issue. Recipe: docs\guides\share-your-numbers.md. The report holds no prompts, answers or names.
 
 License: see LICENSE.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/conversation_bench.py (TEST-699) against a fake llama-server (no model): the history grows turn by turn, the conversation stops before the context
 limit, the server's timings are read, the per-depth-band numbers add up, stock and plugin servers are run in A B B A order, the plugin's counters are
-read per turn, and the record validates against docs/bench_record.schema.json.
+read per turn, and the record validates against docs/reference/bench-record.schema.json.
    python3 tests/conversation_bench_test.py"""
 import hashlib, http.server, json, os, signal, socketserver, sys, tempfile, threading
 
@@ -51,6 +51,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
         total = sum(toks(m, div) for m in msgs)
         if getattr(s, "llama_rule", False):               # llama.cpp: refuses only a prompt over the context, with this message
             if total > s.n_ctx:
+                s.refused = getattr(s, "refused", 0) + 1
                 b = json.dumps({"error": {"code": 400, "message": f"the request ({total} tokens) exceeds the available context size ({s.n_ctx} tokens), try increasing it", "type": "exceed_context_size_error"}}).encode()
                 self.send_response(400); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b); return
         elif total + body["max_tokens"] > s.n_ctx:
@@ -63,6 +64,11 @@ class Fake(http.server.BaseHTTPRequestHandler):
         pn = total - common
         answer = f"Answer {len(msgs)}: " + "word " * 30
         pred = body["max_tokens"] // 2
+        short_from = getattr(s, "short_from", None)       # TEST-1184: from this depth the model answers in 4 tokens, unless ignore_eos forces the full length
+        if short_from is not None and body.get("ignore_eos"):
+            pred = body["max_tokens"]
+        elif short_from is not None and total >= short_from:
+            pred = 4
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         for piece in (answer[:20], answer[20:]):
             self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": piece}}]}).encode() + b"\n\n"); self.wfile.flush()
@@ -75,6 +81,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
 
 class Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    short_from = None                 # TEST-1184: from this depth the fake answers in 4 tokens, unless the request carries ignore_eos
 
 
 def start(name, n_ctx, p_tps, d_tps):
@@ -122,7 +129,7 @@ k = len(ORDER) // 4
 seq = [ORDER[i * k] for i in range(4)]
 check(rc == 0 and len(ORDER) == 4 * k and all(len(set(ORDER[i * k:(i + 1) * k])) == 1 for i in range(4)) and seq == ["stock", "plugin", "plugin", "stock"], f"the order is stock, plugin, plugin, stock ({seq})")
 rec = json.load(open(os.path.join(out, "record.json")))
-check(rr.validate(rec, rr.load_schema()) == [], "the record validates against docs/bench_record.schema.json")
+check(rr.validate(rec, rr.load_schema()) == [], "the record validates against docs/reference/bench-record.schema.json")
 check([r["arm"] for r in rec["runs"]] == ["stock", "moe-cache", "moe-cache", "stock"], "the record keeps the runs in the order they were played")
 check(len(rec["runs"]) == 4 and all("turns" in r and "bands" in r for r in rec["runs"]), "four runs, each with its per-turn and per-band numbers")
 check(set(rec["summary"]) == {"stock", "moe-cache"} and rec["protocol"]["order"] == "ABBA" and rec["protocol"]["prompt_tokens"] > 3000, "summary per arm, ABBA and the depth reached are in the record")
@@ -333,4 +340,31 @@ q2 = cb.run_conversation(ut2, "stock", 16384, 256, 42, "", "m", 30, None, None, 
 check(q2["stop_reason"] == "context full" and q2["final_depth"] is not None and not any(t["error"] for t in q2["turns"]),
       f"dense tokens, no /tokenize: the guess may be low, a 400 context refusal still ends as context full ({q2['stop_reason']}, final depth {q2['final_depth']})")
 check(T2.requests and True, "the no-/tokenize run did send requests")
+check(getattr(T2, "refused", 0) == 0, f"TEST-905: no /tokenize and 1 character per token: the sizes follow the server's own prompt counts, so no request was refused for the context (refused {getattr(T2, 'refused', 0)})")
+# ---- TEST-1184: in the deep depth bands the answers are under 16 tokens, so the band's decode tok/s is empty; --ignore-eos-from-depth forces full-length answers from a depth on
+def shorty(name, n_ctx, **kw):
+    s, u = start(name, n_ctx, 100.0, 10.0)
+    for k, v in dict(short_from=2048, **kw).items():   # short_from: from this depth the fake answers in 4 tokens unless the request carries ignore_eos
+        setattr(s, k, v)
+    return s, u
+S9, us9 = shorty("S9", 8192)
+r9 = cb.run_conversation(us9, "stock", 8192, 32, 42, "", "m", 30, None, None, None, False, False, quiet, None, None, True)
+last9 = [b for b in r9["bands"] if b["turns"]][-1]
+check(all(t["ignore_eos"] is False for t in r9["turns"]), "without --ignore-eos-from-depth no turn asks for ignore_eos")
+check(last9["decode_turns"] == 0 and any("--ignore-eos-from-depth" in w for w in r9["answer_stats"]["warnings"]),
+      f"TEST-1184: the deepest band's answers are 4 tokens, its decode tok/s is empty and a warning names --ignore-eos-from-depth (band {last9['band']}, {last9['turns']} turns)")
+S10, us10 = shorty("S10", 8192)
+r10 = cb.run_conversation(us10, "stock", 8192, 32, 42, "", "m", 30, None, None, None, False, False, quiet, None, None, True, 24, None, 0.0, "(no visible answer)", None, True, 2048)
+prev10 = [0] + [t["depth_after"] for t in r10["turns"]][:-1]      # the option compares the depth the conversation had BEFORE the new user message
+deep10 = [t for t, pv in zip(r10["turns"], prev10) if pv >= 2048]
+shallow10 = [t for t, pv in zip(r10["turns"], prev10) if pv < 2048]
+check(deep10 and all(t["ignore_eos"] for t in deep10) and shallow10 and all(not t["ignore_eos"] for t in shallow10),
+      f"ignore_eos_from_depth: every turn from the depth on asks ignore_eos, every turn below does not ({sum(t['ignore_eos'] for t in r10['turns'])} of {len(r10['turns'])} turns deep)")
+check(all(b["decode_turns"] > 0 for b in r10["bands"] if b["turns"]) and not any("none generated" in w for w in r10["answer_stats"]["warnings"]),
+      "ignore_eos_from_depth: every band with turns has decode turns and there is no 'none generated' warning")
+S11, us11 = shorty("S11", 8192)
+rc = cb.main(["run", "--url", us11, "--arm", "stock", "--ctx", "8192", "--max-turns", "4", "--ignore-eos-from-depth", "0",
+              "--out", os.path.join(tempfile.mkdtemp(), "r11.json")])
+check(rc == 0 and S11.requests and all(r.get("ignore_eos") for r in S11.requests), "--ignore-eos-from-depth parses and sets ignore_eos in every request body")
+check(r10["ignore_eos_from_depth"] == 2048 and r9["ignore_eos_from_depth"] is None, "the run records ignore_eos_from_depth (protocol label, R17)")
 sys.exit(1 if fails else 0)

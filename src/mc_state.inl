@@ -29,6 +29,12 @@ void install_crash_report(state_t * s);
 void remove_crash_report();
 #endif
 
+#ifndef MC_BUILD_COMMIT
+#define MC_BUILD_COMMIT unknown     // build.sh passes -DMC_BUILD_COMMIT=<git commit> (LAUNCHER-1281); a build by hand says "unknown"
+#endif
+#define MC_BC_STR2(x) #x
+#define MC_BC_STR(x) MC_BC_STR2(x)
+#define MC_BUILD_COMMIT_STR MC_BC_STR(MC_BUILD_COMMIT)
 #include "mc_state_route.h"
 #include "mc_state_testfault.h"
 #include "mc_state_gpu.h"
@@ -37,7 +43,7 @@ void remove_crash_report();
 #include "mc_state_rebalance_members.h"
 #include "mc_state_exec.h"
 #include "mc_state_times.h"
-#include "mc_state_prefetch.h"
+#include "mc_state_io_members.h"
 #include "mc_state_budget.h"
 #include "mc_state_profile_members.h"
 #include "mc_state_counters.h"
@@ -49,13 +55,12 @@ void remove_crash_report();
 #include "mc_state_scan.h"
 #include "mc_state_tables.h"
 #include "mc_state_rbstats.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_rbstats_t {
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_io_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_rbstats_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
     // "all" for the default range (hi = 2^30 means no upper bound; the log printed "layers 0-1073741824", T7)
     std::string layer_range() const { return lo == 0 && hi >= (1 << 30) ? std::string("all") : std::to_string(lo) + "-" + std::to_string(hi); }
-    // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
 #ifdef _WIN32
@@ -118,7 +123,7 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
 
     state_t() {
         stats = mcenv::env_on("MOE_CACHE_STATS");
-        fprintf(stderr, "moe-cache: plugin v0.3.7.1 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
+        fprintf(stderr, "moe-cache: plugin v0.3.9.1 (ggml backend API %d) build %s, running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, MC_BUILD_COMMIT_STR, ggml_version(), ggml_commit());
         if (!moe_cache_tested_ggml(ggml_version())) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only (this is %s); if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML, ggml_version());
         }
@@ -166,13 +171,13 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             const int api = moe_cache_api_of_ggml(ggml_version());
             if (api > 0 && api != GGML_BACKEND_API_VERSION) {
                 fail("this plugin was built for ggml backend API " + std::to_string(GGML_BACKEND_API_VERSION) + " but the server uses ggml " + ggml_version() +
-                     " (API " + std::to_string(api) + "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
+                     " (API " + std::to_string(api) + "): use the plugin build that matches your llama.cpp (see docs/guides/quickstart.md)");
                 return;
             }
             const std::string abi = ggml_abi_mismatch();
             if (!abi.empty()) {
                 fail(std::string("the running ggml ") + ggml_version() + " does not match the ggml headers this plugin was built with (" + abi +
-                     "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
+                     "): use the plugin build that matches your llama.cpp (see docs/guides/quickstart.md)");
                 return;
             }
         }
@@ -227,10 +232,35 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             for (int64_t i = 0; i < n; i++) {
                 const char * nm = gguf_get_tensor_name(g, i);
                 file_tensors[nm] = { data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i) };
-                if (strstr(nm, "ffn_gate_inp") || strstr(nm, "ffn_norm") || strstr(nm, "post_attention_norm")) {
-                    tmeta[nm] = { (int) gguf_get_tensor_type(g, i), data_off + gguf_get_tensor_offset(g, i), gguf_get_tensor_size(g, i), (int) si };
-                }
                 file_shard[nm] = (int) si;
+            }
+            // INKLING-1250 fix 2: the loop layout (<arch>.loop.start / .end / .count) for prepare_group's decode-token counting: without it every loop pass looked like a new token
+            // and the recency decay ran loop.count (3 for Inkling 2 Mini) times too fast for every expert (one global clock), when loop layers are cache-managed. Only which experts stay resident is affected, never the output.
+            {
+                const int64_t ka = gguf_find_key(g, "general.architecture");
+                if (ka >= 0 && gguf_get_kv_type(g, ka) == GGUF_TYPE_STRING) {
+                    const std::string arch = gguf_get_val_str(g, ka);
+                    auto ival = [&](const char * k) -> int {
+                        const int64_t id = gguf_find_key(g, k);
+                        if (id < 0) { return -1; }
+                        switch (gguf_get_kv_type(g, id)) {
+                            case GGUF_TYPE_INT32:  return (int) gguf_get_val_i32(g, id);
+                            case GGUF_TYPE_UINT32: return (int) gguf_get_val_u32(g, id);
+                            case GGUF_TYPE_INT64:  return (int) gguf_get_val_i64(g, id);
+                            case GGUF_TYPE_UINT64: return (int) gguf_get_val_u64(g, id);
+                            default:               return -1;
+                        }
+                    };
+                    const int ls = ival((arch + ".loop.start").c_str()), le = ival((arch + ".loop.end").c_str()), lc = ival((arch + ".loop.count").c_str());
+                    if (ls >= 0 && le > ls && lc > 1) {
+                        loop_start = ls;
+                        loop_end = le;
+                        loop_count = lc;
+                        if (si == 0) {
+                            fprintf(stderr, "moe-cache: layers %d-%d run %d times per token (loop model): decode-token counting skips the re-entries\n", ls, le - 1, lc);
+                        }
+                    }
+                }
             }
             gguf_free(g);
             plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
@@ -372,12 +402,12 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         const char * direct_env = getenv("MOE_CACHE_DIRECT");   // 1 / 0 forces it; unset = on when the model does not fit (decided below)
         direct_ok = direct_env && strcmp(direct_env, "0") != 0;
         if (const char * v = getenv("MOE_CACHE_GPU_MIN_TOKENS")) {
-            gpu_min_tokens = atoi(v);
-            if (gpu_min_tokens == 1) {
+            bool clamped = false;
+            gpu_min_tokens = mcenv::gpu_min_tokens_value(v, gpu_min_tokens, &clamped);      // DECODE-104: 1 is not allowed (see mc_env.h)
+            if (clamped) {
                 // 1-token batches on the GPU produce one repeated token (Granite 3.1, T25; 2+ tokens are fine) and would upload whole layers for every
                 // decoded token anyway: the executor handles single tokens
                 fprintf(stderr, "moe-cache: MOE_CACHE_GPU_MIN_TOKENS=1 is not supported (wrong output for single-token batches): using 2\n");
-                gpu_min_tokens = 2;
             }
         }
         // the GPU llama.cpp offloads to: --device none means none; --device A,B the first GPU of that list; else its default choice below
@@ -491,6 +521,20 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             if (const char * v = getenv("MOE_CACHE_MARGIN_GIB")) {
                 parse_gib("MOE_CACHE_MARGIN_GIB", v, margin);
             }
+            if (const char * v = getenv("MOE_CACHE_AVAIL_KEEP_GIB")) {      // RAM-LIVE: set by the launcher; 0 or unset = the cache does not follow the system's free RAM
+                size_t k = 0;
+                if (parse_gib("MOE_CACHE_AVAIL_KEEP_GIB", v, k) && k > 0) {
+                    if (!mclive::follows(win_view, plat::is_windows)) {
+                        // live_keep stays 0 here: with it set and tune()'s probe skipped, live_avail stays 0 and grow_step(0, keep) = 0 would stop the cache from ever growing (critic 2026-11-23)
+                        fprintf(stderr, "moe-cache: live RAM follow is OFF on this path: the cached experts are read-only file mappings (page cache), which the kernel manages itself "
+                                        "(evicting them only moves pages to the page cache; not measured here), so the cache does not follow available RAM; MOE_CACHE_LINUX_VIEW=0 uses private memory, where it follows (%.2f GiB)\n", k / 1073741824.0);
+                    } else {
+                        live_keep = k;
+                        fprintf(stderr, "moe-cache: live RAM follow on: the cache gives experts back when the system's available RAM falls under %.2f GiB and takes them back slowly "
+                                        "above it (MOE_CACHE_AVAIL_KEEP_GIB); it is checked while graphs run, not while the server is idle\n", k / 1073741824.0);
+                    }
+                }
+            }
             // llama-server keeps saved prompt states in host RAM (--cache-ram, MiB): that memory is outside this cache's control and arrives in bursts
             // when a new request starts, so it is added to the margin (a 24 GB limit was OOM-killed at 128k context with the 8 GiB default)
             if (!getenv("MOE_CACHE_MARGIN_GIB")) {
@@ -594,6 +638,16 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
         }
+        if (const char * v = getenv("MOE_CACHE_TEST_SKIP_PCT")) {     // TEST-1170: timing only
+            test_skip_pct = mctestskip::parse_pct(v);
+            if (test_skip_pct >= 0) {
+                exec_force = true;       // the executor must run every step (no step-aside), or nothing would be skipped when the experts are resident
+                fprintf(stderr, "moe-cache: WARNING: MOE_CACHE_TEST_SKIP_PCT=%d is ON: %d %% of the CPU expert picks are NOT computed, output is not valid, timing test only "
+                        "(executor forced)%s\n", test_skip_pct, test_skip_pct, exec_on ? "" : "; MOE_CACHE_EXEC=0: the executor is off, so NOTHING is skipped");
+            } else if (*v) {
+                fprintf(stderr, "moe-cache: MOE_CACHE_TEST_SKIP_PCT='%s' is not a number from 0 to 100: ignored, switch is OFF\n", v);
+            }
+        }
         if (const char * v = getenv("MOE_CACHE_EXEC_FUSE")) {
             exec_fuse = mcenv::flag_value(v, true);
         }
@@ -631,7 +685,10 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             }
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE")) {
-            route_mode = strcmp(v, "skip") == 0 ? 1 : (strcmp(v, "subst") == 0 ? 2 : 0);
+            route_mode = strcmp(v, "skip") == 0 ? 1 : 0;
+            if (strcmp(v, "subst") == 0) {      // removed (owner 2026-11-20): it put a different expert's weights in place of the picked one, with no quality gate
+                fprintf(stderr, "moe-cache: MOE_CACHE_ROUTE=subst was removed (it replaced a picked expert by a different one); routing stays exact. MOE_CACHE_ROUTE=skip is the remaining approximate mode\n");
+            }
         }
         if (const char * v = getenv("MOE_CACHE_FEWER")) {
             fewer = std::max(0, std::min(64, atoi(v)));
@@ -678,29 +735,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         }
         if (const char * v = getenv("MOE_CACHE_COALESCE_MIB")) {
             coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;
-        }
-        if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
-            lookahead = mcenv::flag_value(v, false);
-            la_exec = strcmp(v, "2") == 0;
-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_GUESS")) {
-                la_guess = atoi(g);
-            }
-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_CAP")) {
-                la_cap = std::max(1, atoi(g));
-            }
-            if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_ECORES")) {
-                la_ecores = strcmp(g, "0") != 0;
-            }
-            if (lookahead) {
-                int nt = 4;
-                if (const char * t = getenv("MOE_CACHE_LOOKAHEAD_THREADS")) {
-                    nt = std::max(1, std::min(32, atoi(t)));
-                }
-                for (int i = 0; i < nt; i++) {
-                    pf_threads.emplace_back([this] { pf_main(); });
-                }
-                fprintf(stderr, "moe-cache: lookahead prefetch on (%d helper threads)\n", nt);
-            }
         }
 #ifdef __linux__
         if (getenv("MOE_CACHE_STATS_SIGNAL")) {

@@ -21,3 +21,26 @@ archive/quant-docs	archived	docs branch with Windows quant numbers; the numbers 
 archive/wt-quant-docs-995b10	archived	same (tag)
 archive/win-defaults	archived	Windows-only buffered reads and one more GPU layer: superseded by the file-view cache; kept only as a tag
 archive/wt-win-defaults	archived	same (tag)
+# 2026-11-14 (owner box, v0.3.8 tag): branches with open work that merges AFTER v0.3.8; each is reviewed then merged or dropped
+*claude/bench-suite-1142	open	bench suite (TEST-1142): merges after v0.3.8, h/i/j open
+*claude/bugbatch-1112	open	bug batch: merges after v0.3.8, needs two owner OKs
+*claude/docsbatch-1112	open	docs batch: merges after v0.3.8
+*claude/real-room-1131	open	real GPU room planner (LAUNCHER-1131): merges after a PC check
+*claude/room-all-paths	open	GPU room for every planning path (LAUNCHER-1152): merges after critic + PC check
+*claude/dense-resident-trim	open	dense resident trim: merges after v0.3.8
+*claude/hard-tasks-1141	open	hard task set (MODELS-1141): merges after v0.3.8
+archive/multimodel-010	dropped	desktop app dropped by the owner 2026-11-14 (folder removed before v0.3.8)	d8528dd58,a3210d949,0506add43
+archive/next-v0.3.7	dropped	desktop app dropped by the owner 2026-11-14 (folder removed before v0.3.8)	d8528dd58,a3210d949,0506add43
+origin/claude/cache694-unload-state	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	a5e6f22bd,f5643b243
+origin/claude/docs-defaults-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	b3caa5ae1,e4fdf9612
+origin/claude/launcher-1067	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	2af98f1b4,b73387dc8,d6d1e2bd6
+origin/claude/patch067-b12207	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	264149bf4,5eeaaf2a0,94f8d56e3,e9343a3d8,f1897cb90
+origin/claude/planner-fixes-3	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	be2cd971c
+origin/claude/public-text-tools-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	90b30796d
+origin/claude/tests-gaps-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	a7b30cc08,fb92de6b3
+origin/claude/tooling-fixes-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	21cb8e612,5b7ccecc9,e2caf644a
+origin/claude/vk-oom-fixes	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	2d135c183,3e264a32b
+origin/claude/agent-starter-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	1795aeb6c
+origin/claude/docs-1003	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	366eac95f,f65976c21,f6aa5caa6,395cc023e
+origin/claude/packaging-832	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	f0221e7e8,fe10af916,79088c45a
+origin/claude/hermes-builds-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)

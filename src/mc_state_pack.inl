@@ -1,4 +1,4 @@
-// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): the expert pack file (BO-1).
+// moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): the expert pack file.
 // bin/moe_cache_pack.py writes MODEL.moepack: for every (layer, expert) one 4 KiB-aligned block with that expert's slices of all its tensors (gate, up, down).
 // A missing expert is then ONE large unbuffered read (the PC's SSD reads 2688 KiB at 3.47 GB/s but 896 KiB at 1.90 GB/s, RESULTS 73) followed by a copy of each
 // slice to the place the per-tensor read would have written: the same bytes, so the output cannot change. Format: see the docstring of bin/moe_cache_pack.py.
@@ -148,6 +148,41 @@
         if (crc != crc_want) {
             refuse("sampled bytes of the model differ from the ones the pack was made from");
             return;
+        }
+        // opt-in payload check (CACHE-695): MOE_CACHE_PACK_VERIFY=1 re-reads the whole pack once and compares each layer's CRC-32 with the one `pack --hash` stored;
+        // a pack that fails or has no hash is not used, the experts come from the model file as before (never a crash, never other bytes than the model's)
+        const char * vfy = getenv("MOE_CACHE_PACK_VERIFY");
+        if (vfy && *vfy && strcmp(vfy, "0") != 0) {
+            if (!(rd32(28) & mcpack::HASH_FLAG)) {
+                refuse("MOE_CACHE_PACK_VERIFY=1 but the pack has no payload hash (make it again with moe_cache.py pack --hash --force)");
+                return;
+            }
+            FILE * vf = plat::fopen_utf8(path.c_str(), "rb");
+            if (!vf) {
+                refuse("cannot open it to check the payload");
+                return;
+            }
+            std::vector<char> vbuf((size_t) 4 << 20);
+            const auto vread = [&](uint64_t off, void * b, size_t n) -> size_t {
+                if (plat::fseek64(vf, (long long) off, SEEK_SET) != 0) { return 0; }
+                return fread(b, 1, n, vf);
+            };
+            const std::function<size_t(uint64_t, void *, size_t)> vfn = vread;
+            for (uint32_t r = 0; r < n_rec; r++) {
+                uint32_t want;
+                memcpy(&want, rec.data() + (size_t) r * 512 + 12, 4);
+                const pack_layer_t & L = layers[r];
+                std::string why;
+                if (!mcpack::payload_crc_ok(vfn, L.base, L.stride * (uint64_t) L.n_expert, want, vbuf.data(), vbuf.size(), why)) {
+                    fclose(vf);
+                    uint32_t layer_no;
+                    memcpy(&layer_no, rec.data() + (size_t) r * 512, 4);
+                    refuse("layer " + std::to_string(layer_no) + ": " + why + " (the pack file is damaged; make it again with moe_cache.py pack --hash --force)");
+                    return;
+                }
+            }
+            fclose(vf);
+            fprintf(stderr, "moe-cache: pack %s: payload hash checked for %u layers: ok\n", path.c_str(), n_rec);
         }
         plat::file_t pf = plat::file_open(path.c_str(), !win_buffered, win_random);
 #ifndef _WIN32
