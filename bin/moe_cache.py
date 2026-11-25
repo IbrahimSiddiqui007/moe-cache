@@ -3588,7 +3588,9 @@ def walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=True, use_room
     fkw = dict(kw, reserve_gb=reserve, ub=tuned["ub"])
     fkw.pop("long_prompt", None)
     fkw.pop("loop_ubs", None)
-    if not any(r.get("setting") == "loop_plan_ub" for r in tuned.get("inputs", [])):
+    # explicit heads without loop_ubs (Vulkan with your own -ub): tune counted the bias at that -ub, so the floor counts it too (coordinator follow-up of LAUNCHER-1303 c)
+    counted = bool(kw.get("loop_n_head")) and not kw.get("loop_ubs")
+    if not counted and not any(r.get("setting") == "loop_plan_ub" for r in tuned.get("inputs", [])):
         fkw["loop_n_head"] = 0             # LAUNCHER-1303 critic: a looped model's bias only where loop_plan planned at the rule's -ub (the usual plan does not count it)
     ftuned = tune(model, ctx, free=free, want_cache=False, kv_q8=kv_q8, **fkw)
     floor = min(int(ftuned["n_cpu_moe"]), int(tuned["n_cpu_moe"]))
@@ -4954,7 +4956,8 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
          MOE_CACHE_LOOP_FIT=1 (opt-in until the PC run): ON when llama-server contains PR 32807 (build >= 12642; the bundled b12651 does), OFF for an older or unknown build, where it gives NaN. Without it the CPU computes the prompt for every CPU-held expert layer: laptop 64k
          prefill 77.7 tok/s off (-ub 128) vs 328 on (-ub 256, 1 loop layer on the CPU; Q2_K_XL, n=1, forecast, a build with the compact bias). NOT YET MEASURED ON THE PC
          (item P1, loop-speed-1). MOE_CACHE_INKLING_OP_OFFLOAD=1 / =0 forces it on / off. Not decided when nothing is on the CPU (--n-cpu-moe 0).
-      3. micro-batch, at ANY placement (all on the GPU too): the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor (loop_compute_mib; 2 x 65536 x 2048 x
+      3. micro-batch, at ANY placement (all on the GPU too): the relative-position bias is dense on Vulkan (PC buffer lines); on CUDA it was not seen dense in one laptop run
+         (n=1, 4k, -ub 2048, -fa on, pinprep b12642), not checked on the bundled build. Dense it is an n_kv x n_tokens x n_head F32 tensor (loop_compute_mib; 2 x 65536 x 2048 x
          24 x 4 B = 24 GiB at 64k -ub 2048). The largest of -ub 512 / 256 / 128 whose estimate, with what op-offload stages, fits in the compute buffer the planner reserved
          for its own micro-batch (tuned["compute_mib"]); 128 when nothing fits or there is no plan. If even -ub 128 does not fit with op-offload's staging, op-offload stays off.
     Not touched: --exact, --cpu-only, the 999 cache placeholder (except a forced MOE_CACHE_INKLING_OP_OFFLOAD=0), a placement or batch you chose yourself (--n-cpu-moe, -ot, --ub, -ub,
@@ -6248,10 +6251,10 @@ def _launch_plan(a, extra, argv, machine):
                 except Exception:
                     pass
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
+    block_cap_lib_stage(a, lib, stock, machine)
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
     except Exception:
-    block_cap_lib_stage(a, lib, stock, machine)
         ag = None
     if ag:
         extra += ["--device", ag[0]]

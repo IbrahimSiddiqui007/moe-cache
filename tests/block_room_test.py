@@ -219,6 +219,16 @@ for lib, want, tag in ((_new, True, "new plugin"), (_old, False, "old plugin"), 
 _a = types.SimpleNamespace(exact=False)
 mc.block_cap_lib_stage(_a, _old, True, _M())
 check(mc.block_cut_on(_a), "stock path: the lib is not used, nothing is switched off")
+# walk_floor: Vulkan with your own -ub (heads, no loop_ubs): the floor counts the looped bias like the plan did
+_seen = []
+def _spy(model, ctx, **k):
+    _seen.append(k.get("loop_n_head")); return {"n_cpu_moe": 5, "inputs": []}
+_fa = types.SimpleNamespace(gpu_margin=None, leave_room=False)
+_t = lambda: {"n_cpu_moe": 10, "ub": 2048, "inputs": []}
+mc.walk_floor(_spy, "m", 4096, 1e9, False, {"loop_n_head": 24}, _t(), _fa)
+mc.walk_floor(_spy, "m", 4096, 1e9, False, {"loop_n_head": 24, "loop_ubs": (128,)}, _t(), _fa)
+mc.walk_floor(_spy, "m", 4096, 1e9, False, {"loop_n_head": 0}, _t(), _fa)
+check(_seen == [24, 0, 0], f"walk_floor: explicit heads (user -ub) kept, the usual looped plan zeroed ({_seen})")
 doc = open(os.path.join(HERE, "docs", "reference", "configuration.md"), encoding="utf-8").read()
 check("`MOE_CACHE_GPU_BLOCK_CAP_MIB`" in doc, "configuration.md documents MOE_CACHE_GPU_BLOCK_CAP_MIB")
 
