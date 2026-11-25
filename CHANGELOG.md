@@ -11,6 +11,7 @@
 | Docs | **What the launcher runs for a model that fits in RAM is stated as the code does it:** stock llama.cpp for a dense model, when every expert fits the card and when the model only nearly fits the GPU; the plugin for a MoE model that fits in RAM with part of its experts on the CPU (`--stock` opts out), also with no GPU. The old line that a machine without a GPU stays on stock was wrong and is removed (README, FAQ, QUICKSTART, GUI, TROUBLESHOOTING, RESULTS_CURRENT). |
 | Packs | **Opt-in payload hash for packs:** `moe_cache.py pack --hash` records a hash of the pack's payload and `MOE_CACHE_PACK_VERIFY=1` checks it when the pack is loaded. Default off. Model-free tests only; the cost on a large pack is not measured. |
 | Plugin / diagnostics | **An always-on timer around the cache's evict step**: the stats JSON gains `ns_evict`, `ns_evict_dec` and `evict_calls_dec`, the exit log gets one more line, and the bench records carry `evict_s` / `evict_dec_s`; the snapshot buffer grows from 2200 to 2400 bytes. Diagnostic only, no speed claim (about 36 ns per call on one laptop; effect on a real run not measured). |
+| Docs | **Stale promise removed:** text that said speed figures "follow in v0.3.9.1" (README, docs, launcher help, model catalogue, `models.json`) now says "follow in a later release"; this release ships none. |
 | Tools | `benchmarks/reference.csv` has four more reference rows from the 2026-11-25 PC runs (b12651 kit 2e823d2, 64k and 128k, one run each, forecasts). |
 
 ## 0.3.9 (2026-11-24)

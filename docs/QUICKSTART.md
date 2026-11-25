@@ -99,9 +99,9 @@ The `--fast` levels (all optional; each one changes the output a little on purpo
 |---|---|---|
 | (none) | the default: long-prompt mode from 32k context when the card has room, q8_0 KV cache from 128k, MTP in agent mode where the (MoE) model has it (dense models: only with `--mtp`); not byte-identical to plain llama.cpp | the default (the control page's **Default** mode passes no flag); `--exact` gives plain llama.cpp's tokens (f16 KV, no long-prompt mode, no MTP) |
 | `--fast=kv` | only the q8_0 KV cache (half the KV memory), every expert is computed | KL 0.005-0.012 against stock |
-| `--fast` | also skips a low-ranked expert that is not in RAM instead of reading it from the SSD | meant for models much bigger than RAM; speed figures follow in v0.3.9.1; about 1 top token in 40-50 differs from stock |
+| `--fast` | also skips a low-ranked expert that is not in RAM instead of reading it from the SSD | meant for models much bigger than RAM; speed figures follow in a later release; about 1 top token in 40-50 differs from stock |
 | `--fast=fewer` | `--fast`, and the 2 lowest-ranked experts of every token are never computed on the CPU-held layers | opt-in, new |
-| `--fast=2` | up to 4 low-ranked picks may be skipped (at least half are kept), for memory much smaller than the model | for Flash-Next at 12 GB; KL 0.022; speed figures follow in v0.3.9.1 |
+| `--fast=2` | up to 4 low-ranked picks may be skipped (at least half are kept), for memory much smaller than the model | for Flash-Next at 12 GB; KL 0.022; speed figures follow in a later release |
 
 ## 4. Tuning for your machine (optional)
 
@@ -119,7 +119,7 @@ Run `python3 bin/moe_cache.py bench-report MODEL.gguf` (or press **Share my numb
 ## What speed to expect
 
 Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (llama.cpp's own GPU expert cache, `--moe-cache-mib`, is optional there; it was slower on our Vulkan PC, RESULTS 59): moe-cache adds nothing there on the 16 GB PC. When a model fits in RAM, stock llama.cpp is usually the better choice, and the launcher runs it for a dense model, when every expert fits on the graphics card, and since v0.3.9 when the model only nearly fits the GPU (the plugin plan would keep more than 1.29 times stock's expert layers on the CPU; `--always-plugin` keeps the plugin). A MoE model that fits in RAM but keeps some expert layers on the CPU still runs through the plugin by default (since v0.3.8; `--stock` or `MOE_CACHE_STOCK_WHEN_FITS=1` opts out), also with no GPU (the planner then puts every expert layer on the CPU). Evidence, labelled laptop, no figures quoted: on one laptop with an 8 GB card the plugin was not faster than stock for a model that fits in RAM (release code, paired 40k-token chat; an earlier figure was not reproduced); no stock comparison on the 16 GB PC.
-If it does not fit, moe-cache is the tool meant for it; speed numbers follow in v0.3.9.1 ([RESULTS.md](results-archive/RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) for Linux).
+If it does not fit, moe-cache is the tool meant for it; speed numbers follow in a later release ([RESULTS.md](results-archive/RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) for Linux).
 
 ## Which llama-server do I use?
 

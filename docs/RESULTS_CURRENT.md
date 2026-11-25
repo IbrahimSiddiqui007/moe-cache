@@ -1,6 +1,6 @@
 # Current results (v0.3.9)
 
-> **No speed figures in v0.3.9.** The bundled llama.cpp build moved to b12651 (ggml 1.0) and the speed measurements are redone on it. Speed numbers for this release follow in v0.3.9.1. The v0.3.8 page (earlier llama.cpp build, not v0.3.9 numbers) is kept in [results-archive/RESULTS_CURRENT_v0.3.8.md](results-archive/RESULTS_CURRENT_v0.3.8.md).
+> **No speed figures in v0.3.9.** The bundled llama.cpp build moved to b12651 (ggml 1.0) and the speed measurements are redone on it. Speed numbers for this release follow in a later release. The v0.3.8 page (earlier llama.cpp build, not v0.3.9 numbers) is kept in [results-archive/RESULTS_CURRENT_v0.3.8.md](results-archive/RESULTS_CURRENT_v0.3.8.md).
 
 The block between the `card` markers is generated from [benchmark_card.html](benchmark_card.html) (`python3 tools/card_markdown.py --write`; the quick tests check it). Older results: [results-archive/RESULTS.md](results-archive/RESULTS.md).
 
@@ -18,7 +18,7 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 | OS | Windows 11 |
 | llama.cpp builds | bundled llama.cpp b12651 (ggml 1.0) |
 
-**No speed figures in v0.3.9.** The speed measurements are redone on the bundled llama.cpp b12651 build; the figures of the earlier release were taken on an earlier build and are not repeated here. Speed numbers for this release follow in v0.3.9.1. The earlier card is kept in [results-archive/benchmark_card_v0.3.8.html](results-archive/benchmark_card_v0.3.8.html) (v0.3.8, earlier build, not v0.3.9 numbers).
+**No speed figures in v0.3.9.** The speed measurements are redone on the bundled llama.cpp b12651 build; the figures of the earlier release were taken on an earlier build and are not repeated here. Speed numbers for this release follow in a later release. The earlier card is kept in [results-archive/benchmark_card_v0.3.8.html](results-archive/benchmark_card_v0.3.8.html) (v0.3.8, earlier build, not v0.3.9 numbers).
 
 ### Where it does not help
 

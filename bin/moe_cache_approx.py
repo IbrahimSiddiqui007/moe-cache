@@ -31,15 +31,15 @@ MODES = {
             "verified": ["flash-next", "qwen3.6", "qwen3.8", "granite"]},
     "spec-exact": {"class": "S", "gate": "kv", "switch": "--mtp  (the model's own draft head, checked by the model)", "changes_answers": True,
                    "plain": "the model guesses 2 tokens ahead with its own draft head and checks them; only when the model has that head. The text can differ slightly (batch rounding)",
-                   "measured": "Qwen3.6 on the PC; GLM-5.3 code text differed slightly (speed figures follow in v0.3.9.1)",
+                   "measured": "Qwen3.6 on the PC; GLM-5.3 code text differed slightly (speed figures follow in a later release)",
                    "verified": ["*"]},
     "fast1": {"class": "E", "gate": "fast", "switch": "--fast  (+ q8_0 KV cache)", "changes_answers": True,
               "plain": "experts that are rarely picked and not in RAM are skipped, and the KV cache is stored in 8 bit; about 1 token in 40-50 comes out different",
-              "measured": "KL 0.0053 (RESULTS 31) to 0.025 with top-1 93.6 % (25.3); speed figures follow in v0.3.9.1",
+              "measured": "KL 0.0053 (RESULTS 31) to 0.025 with top-1 93.6 % (25.3); speed figures follow in a later release",
               "verified": ["flash-next", "qwen3.6", "granite"]},
     "fast2": {"class": "E", "gate": "fewer", "switch": "--fast=2  (+ q8_0 KV cache)", "changes_answers": True,
               "plain": "up to 4 low-ranked experts per token that are not in RAM are skipped; about 1 token in 28 comes out different. For memory much smaller than the model",
-              "measured": "Flash-Next at 12 GB (speed figure follows in v0.3.9.1); KL 0.022; gate level 'fewer' (0.060) is the contract limit for this mode",
+              "measured": "Flash-Next at 12 GB (speed figure follows in a later release); KL 0.022; gate level 'fewer' (0.060) is the contract limit for this mode",
               "verified": ["flash-next", "granite"]},
 }
 
@@ -60,11 +60,11 @@ TIERS = {
 # default and nothing else; tests/token_modes_test.py proves the default enables exactly the "won" rows and that --exact enables none.
 TOKEN_MODES = [
     {"id": "kv8", "what": "q8_0 KV cache from 128k context on a GPU machine", "switch": "--fast=kv (default from 128k)", "status": "won",
-     "reason": "16 GB card at 256k (speed figure follows in v0.3.9.1); gate level kv passed (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
+     "reason": "16 GB card at 256k (speed figure follows in a later release); gate level kv passed (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
     {"id": "long-prompt", "what": "long-prompt mode from 32k context: -ub 4096 with the q8_0 KV cache, where the memory plan has room", "switch": "--long-prompt (default from 32k)", "status": "won",
-     "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: speed figures follow in v0.3.9.1 (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
+     "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: speed figures follow in a later release (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
     {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",
-     "reason": "Qwen3.6 on the PC (speed figures follow in v0.3.9.1); GLM-5.3 code text differed slightly"},
+     "reason": "Qwen3.6 on the PC (speed figures follow in a later release); GLM-5.3 code text differed slightly"},
     # LAUNCHER-1063 (owner 2026-11-10) / QUALITY-014 (2026-11-20): the dense KV ladder's smaller steps have their own rows and gate entries (they used to ride on the kv8 row).
     # status "kept" = the quality gate failed (or is not met) but the owner decided to keep the step on: on by default, said as approximate, never "won". No row is "kept" today: kv-k8v4 / kv-q4 were until 2026-11-20.
     {"id": "kv-k8v4", "what": "K q8_0 / V q4_0 KV cache for a dense model whose q8_0 / q8_0 KV cache would not fit the GPU (instead of a shorter context)", "gate": "kv",
@@ -76,11 +76,11 @@ TOKEN_MODES = [
      "switch": "--kv-4bit (off by default since 2026-11-20; your own -ctk/-ctv win)", "status": "lost",
      "reason": "failed the absolute gate level kv (KL <= 0.015, same top token >= 95 %) in the older runs, which had no floor arm: 8 windows of 8192 tokens of real long chats (laptop, Qwen3.8-27B UD-Q3_K_XL, 2026-11-10, one run, forecast): KL 0.173, top-1 92.9 % (part of it the model's own noise). "
                "Floor-corrected (floor = f16 KV with only -ub halved; laptop RTX 4060, Qwen3-30B-A3B Q4_K_M, llama.cpp 7fe450e, 2026-11-20, one run each, forecast): q4_0 / q4_0 costs +0.022 to +0.040 KL over the floor and 3.1-5.8 points of top-1 under it, over the limit in all four cells (real-chat and README + docs, 8k and 32k), so this step has a real cost. Not measured with a floor on the dense 27B, nor at 64k. "
-               "PC, 27B 64k with the desktop on the card: q4_0 fit where q8_0 spilled (one run; speed figures follow in v0.3.9.1). Owner 2026-11-20: off, quality loss (floor-corrected 30B-A3B q4/q4 KL 0.027-0.047, top-1 90-95 %); was kept on by his 2026-11-10 decision; reachable with --kv-4bit; approximate (LAUNCHER-1063)"},
+               "PC, 27B 64k with the desktop on the card: q4_0 fit where q8_0 spilled (one run; speed figures follow in a later release). Owner 2026-11-20: off, quality loss (floor-corrected 30B-A3B q4/q4 KL 0.027-0.047, top-1 90-95 %); was kept on by his 2026-11-10 decision; reachable with --kv-4bit; approximate (LAUNCHER-1063)"},
     {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "lost",
-     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win (speed figures follow in v0.3.9.1); quality gate passed (KL 0.0196)"},
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win (speed figures follow in a later release); quality gate passed (KL 0.0196)"},
     {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "lost",
-     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win at 64k (speed figures follow in v0.3.9.1); quality gate passed (KL 0.0233). The laptop at 12 GB RAM is a different scope: memory far below the model"},
+     "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win at 64k (speed figures follow in a later release); quality gate passed (KL 0.0233). The laptop at 12 GB RAM is a different scope: memory far below the model"},
     {"id": "fewer", "what": "drop the 2 lowest-ranked experts of every token on the CPU-held layers", "switch": "--fast=fewer", "status": "lost",
      "reason": "PC, 64k, kit kapprox d3b32ea (before LAUNCHER-985), 2026-11-09 screen: no speed win; quality gate failed (KL 0.0637 > 0.060)"},
     {"id": "approx-tiers", "what": "the named groups of the modes above", "switch": "--approx safe|careful|aggressive", "status": "lost", "group": True,

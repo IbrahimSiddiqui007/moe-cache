@@ -94,11 +94,11 @@ Not covered yet: Oh My Pi (its `~/.omp/agent/models.yml` is YAML, only third-par
 | Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin) |
 |---|---|---|
 | general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default (0.3.2 to 0.3.6, and again since v0.3.8) | 193/202 tasks (the most), reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
-| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (decided 2026-11-05; IQ3_XXS is the default again since v0.3.8) | 191/202 tasks; speed figures follow in v0.3.9.1 |
-| coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | 189/202 tasks; session times follow in v0.3.9.1; general knowledge not checked beyond the task set |
+| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (decided 2026-11-05; IQ3_XXS is the default again since v0.3.8) | 191/202 tasks; speed figures follow in a later release |
+| coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | 189/202 tasks; session times follow in a later release; general knowledge not checked beyond the task set |
 
 No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
-IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) runs with MTP in agent mode on the same PC; speed figures follow in v0.3.9.1.
+IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) runs with MTP in agent mode on the same PC; speed figures follow in a later release.
 
 ## Without starting a server by hand (on-demand)
 
@@ -254,15 +254,15 @@ with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
 
 | Request | New prompt tokens | Prompt time |
 |---|---|---|
-| session 1, turn 1 (OpenCode's tools and instructions) | 7,438 | speed figures follow in v0.3.9.1 |
-| session 1, turns 2-3 | 79 / 20 | speed figures follow in v0.3.9.1 |
-| session 2 (same server), turn 1 | 29 | speed figures follow in v0.3.9.1 |
-| after a server restart, warm session restored (0.2 s), turn 1 | 1,028 | speed figures follow in v0.3.9.1 |
-| Hermes Agent (file tools only), turn 1 / turn 2 | 3,687 / 76 | speed figures follow in v0.3.9.1 |
-| whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | speed figures follow in v0.3.9.1 |
+| session 1, turn 1 (OpenCode's tools and instructions) | 7,438 | speed figures follow in a later release |
+| session 1, turns 2-3 | 79 / 20 | speed figures follow in a later release |
+| session 2 (same server), turn 1 | 29 | speed figures follow in a later release |
+| after a server restart, warm session restored (0.2 s), turn 1 | 1,028 | speed figures follow in a later release |
+| Hermes Agent (file tools only), turn 1 / turn 2 | 3,687 / 76 | speed figures follow in a later release |
+| whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | speed figures follow in a later release |
 
 With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens; after a restart with the warm session the whole OpenCode
-session is shorter (times follow in v0.3.9.1). Details: [RESULTS_OLD_LAPTOP.md, results 51-52](results-archive/RESULTS_OLD_LAPTOP.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+session is shorter (times follow in a later release). Details: [RESULTS_OLD_LAPTOP.md, results 51-52](results-archive/RESULTS_OLD_LAPTOP.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
 model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.

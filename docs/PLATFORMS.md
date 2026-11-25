@@ -7,14 +7,14 @@
 | Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
 | Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested** on llama.cpp `7fe450e19` only, loaded the official way (`GGML_BACKEND_PATH`; see the feature table below) |
 | Linux, no usable GPU (CPU only) | **Tested**, identical to stock, close to its speed when the model fits |
-| Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB (speed figures follow in v0.3.9.1; no expert layer fits on a 3 GiB iGPU); RESULTS 50 |
-| Linux + AMD discrete GPU | **Tested by a user** (GitHub issue #1: RX 9070 XT + Ryzen 7 7700, Linux, Vulkan): identity PASS, Flash-Next (speed figures follow in v0.3.9.1). Not yet run by the developer on Linux |
-| Windows | **Experimental.** Identical to stock in CI on a Windows runner and on a Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). Since 2026-10-27 the cache keeps experts in read-only views of the model file (Windows charged its private memory, and Vulkan's GPU memory, to commit, which held the cache at 8-11 GiB). Cold, stock vs moe-cache, launcher defaults (RESULTS 59-60): tested on Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Qwen3.5-122B and GLM-5.3 (also with `--mtp`); speed figures follow in v0.3.9.1; text byte-identical. Context checkpoints stay on with AMD driver 32.0.32015.7029 or newer (older ones crash with Flash-Next). See docs/COMPATIBILITY.md |
+| Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB (speed figures follow in a later release; no expert layer fits on a 3 GiB iGPU); RESULTS 50 |
+| Linux + AMD discrete GPU | **Tested by a user** (GitHub issue #1: RX 9070 XT + Ryzen 7 7700, Linux, Vulkan): identity PASS, Flash-Next (speed figures follow in a later release). Not yet run by the developer on Linux |
+| Windows | **Experimental.** Identical to stock in CI on a Windows runner and on a Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). Since 2026-10-27 the cache keeps experts in read-only views of the model file (Windows charged its private memory, and Vulkan's GPU memory, to commit, which held the cache at 8-11 GiB). Cold, stock vs moe-cache, launcher defaults (RESULTS 59-60): tested on Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Qwen3.5-122B and GLM-5.3 (also with `--mtp`); speed figures follow in a later release; text byte-identical. Context checkpoints stay on with AMD driver 32.0.32015.7029 or newer (older ones crash with Flash-Next). See docs/COMPATIBILITY.md |
 | macOS | No |
 
 ## Known limitations
 
-- Long prompts (32+ tokens per batch) run their expert blocks on the GPU, as stock llama.cpp does, so prompt processing uses the GPU as stock does; speed figures follow in v0.3.9.1.
+- Long prompts (32+ tokens per batch) run their expert blocks on the GPU, as stock llama.cpp does, so prompt processing uses the GPU as stock does; speed figures follow in a later release.
 - It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier was evaluated and is not built, see [docs/internal/ENGINE_DECISION.md](internal/ENGINE_DECISION.md).
 - **Not every feature works with every llama.cpp build.** How the plugin is loaded depends on how llama.cpp was built (`moe-cache-server` picks it):
 

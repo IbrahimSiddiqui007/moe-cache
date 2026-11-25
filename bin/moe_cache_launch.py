@@ -278,7 +278,7 @@ SHOW_MEASURED_SPEED = cat.SHOW_MEASURED_SPEED     # v0.3.9 ships no speed figure
 def speed_text(r):
     """Expected speed only when it was measured on a PC like this one; otherwise say so."""
     if not SHOW_MEASURED_SPEED:
-        return "speed: figures follow in v0.3.9.1"
+        return "speed: figures follow in a later release"
     if r.get("untested") or not r.get("key"):
         return "speed: not measured on a PC like this one"
     nums = ", ".join(f"{label} {v}" for label, v in r["key"] if label in ("decode", "prompt"))

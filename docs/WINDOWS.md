@@ -1,7 +1,7 @@
 # Windows quick start (experimental): run big MoE models on an AMD (Vulkan) or NVIDIA PC
 
 Tested on one Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM; other cards are untested, reports welcome): identity 4/4 on four models, launcher
-and chat working; speed figures follow in v0.3.9.1. Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM and its experts all fit on the card, stock llama.cpp is all you need (the launcher picks it; with expert layers on the CPU it runs the plugin by default, `--stock` opts out); the plugin
+and chat working; speed figures follow in a later release. Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM and its experts all fit on the card, stock llama.cpp is all you need (the launcher picks it; with expert layers on the CPU it runs the plugin by default, `--stock` opts out); the plugin
 helps with models bigger than RAM.
 
 ## 1. What you need
@@ -101,7 +101,7 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   model file, which cost no commit. Before it, Windows charged the cache (and Vulkan's GPU memory) to commit, the cache was held at 8-11 GiB and decode
   was held back.
 
-  Speed figures for these models (Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Qwen3.5-122B, GLM-5.3-Flash with and without `--mtp`) follow in v0.3.9.1.
+  Speed figures for these models (Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Qwen3.5-122B, GLM-5.3-Flash with and without `--mtp`) follow in a later release.
 
   Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
   IQ2_XS): the plugin finished the sessions sooner than stock and the first token came sooner; two agents at once also finished sooner. The
@@ -112,18 +112,18 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 
   | File | Size | Tasks /202 | Use it |
   |---|---|---|---|
-  | **IQ3_XXS** | 75.8 GB | **193** | **the default** (0.3.2 to 0.3.6, and again since v0.3.8): 3-bit, most tasks right, reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); speed figures follow in v0.3.9.1 |
-  | Q2_0 | 66.4 GB | 191 | **the smaller option**, 9 GB less than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8); speed figures follow in v0.3.9.1 |
-  | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 189 | coding agents: half the experts (256 of 512); speed figures follow in v0.3.9.1. General knowledge not checked beyond the task set |
+  | **IQ3_XXS** | 75.8 GB | **193** | **the default** (0.3.2 to 0.3.6, and again since v0.3.8): 3-bit, most tasks right, reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); speed figures follow in a later release |
+  | Q2_0 | 66.4 GB | 191 | **the smaller option**, 9 GB less than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8); speed figures follow in a later release |
+  | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 189 | coding agents: half the experts (256 of 512); speed figures follow in a later release. General knowledge not checked beyond the task set |
   | IQ2_XS | 68.0 GB | 187 | superseded by Q2_0. The other IQ2_XS numbers on this page were measured on IQ2_XS |
   | IQ3_S | 83.6 GB | 192 | not worth it: bigger than IQ3_XXS for no gain in tasks |
 
-  Stock vs plugin on Q2_0: speed figures follow in v0.3.9.1.
+  Stock vs plugin on Q2_0: speed figures follow in a later release.
   The Q2_0 numbers above were measured before the plugin's exact Q2_0 executor kernel came to Windows; with it the PC's Q2_0 decode is unchanged
   (RESULTS 63 addendum).
 - **Long context (Windows PC).** Per-depth prompt and decode tables of the v0.3.4 / v0.3.5 kits are kept in [results-archive/RESULTS_CURRENT_v0.3.8.md](results-archive/RESULTS_CURRENT_v0.3.8.md); they are not v0.3.9 numbers. Since v0.3.5 the launcher uses `-ub 2048` above 32k context (gpt-oss keeps 1024) and the planner keeps 39 CPU layers at 40960-65536, 41 at 131072.
 - **Other models (Windows PC, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
-  so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): 190/202 tasks (Flash-Next Q2_0 191, not proven); speed figures follow in v0.3.9.1. The plugin is for models bigger than memory, so the launcher does not use it here. DeepSeek V4-Flash: not tested.
+  so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): 190/202 tasks (Flash-Next Q2_0 191, not proven); speed figures follow in a later release. The plugin is for models bigger than memory, so the launcher does not use it here. DeepSeek V4-Flash: not tested.
 - The plugin's Q2_0 and IQ3_XXS executor kernels run on Windows x86-64 too since 2026-10-28 (bit-identical; the Q2_0 one matches llama.cpp's own
   AVX2 Q2_0 function; no decode change on the PC because decode streams its weights from RAM, RESULTS 63 addendum). Replacing llama.cpp's own
   functions outside the executor needs `LD_PRELOAD`, which Windows does not have. The IQ3_XXS gather and AVX-512 kernels stay off on AMD
@@ -151,7 +151,7 @@ elsewhere: with 8 and 14 GB taken by another program the server kept its speed a
 **Page file.** On Windows every private allocation needs commit (RAM plus page file), even if it never leaves RAM, and Vulkan's GPU allocations are charged
 to commit too (about 24 GB with GLM). The file-view cache needs none, but llama.cpp's own memory does: GLM with `--mtp` left 3.47 GiB of commit free on a
 14 GB page file. Before the file view (or with `MOE_CACHE_WIN_VIEW=0`) the cache itself was cut by commit: a 6.9 GB page file cut GLM's cache
-from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (speed figures follow in v0.3.9.1). Let Windows manage the page file, or make it 14 GB or more.
+from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (speed figures follow in a later release). Let Windows manage the page file, or make it 14 GB or more.
 
 | Suggestion often made | What it does here |
 |---|---|

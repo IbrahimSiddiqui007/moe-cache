@@ -113,7 +113,7 @@
     }
    ],
    "notes": [
-    "Fits in RAM + VRAM on a 32 GB PC, so the launcher runs stock llama-server (the plugin is for models bigger than memory; speed figures follow in v0.3.9.1).",
+    "Fits in RAM + VRAM on a 32 GB PC, so the launcher runs stock llama-server (the plugin is for models bigger than memory; speed figures follow in a later release).",
     "General knowledge beyond our 202 tasks is not checked."
    ],
    "warnings": [
@@ -222,7 +222,7 @@
      "date": "2026-10-28",
      "source": "RESULTS 63",
      "ctx": 40960,
-     "note": "34k-token prompt; the v0.3.5 defaults were measured on this prompt (RESULTS 78, 2026-11-02; speed figures follow in v0.3.9.1)"
+     "note": "34k-token prompt; the v0.3.5 defaults were measured on this prompt (RESULTS 78, 2026-11-02; speed figures follow in a later release)"
     },
     {
      "metric": "tasks_correct",
@@ -244,7 +244,7 @@
     }
    ],
    "notes": [
-    "The smaller Flash-Next file, 9 GB less than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8, decided 2026-11-07); speed figures follow in v0.3.9.1. No quality difference between any two Flash-Next files is proven (all p > 0.05).",
+    "The smaller Flash-Next file, 9 GB less than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8, decided 2026-11-07); speed figures follow in a later release. No quality difference between any two Flash-Next files is proven (all p > 0.05).",
     "Decode is CPU-bound on the measured PC; the model card's decode gain does not reproduce."
    ],
    "warnings": [
@@ -316,7 +316,7 @@
     }
    ],
    "notes": [
-    "The default Flash-Next file (the default from 0.3.2 to 0.3.6 and again since v0.3.8, decided 2026-11-07): 3-bit, the most tasks right (193/202), reads best for coding, top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); speed figures follow in v0.3.9.1."
+    "The default Flash-Next file (the default from 0.3.2 to 0.3.6 and again since v0.3.8, decided 2026-11-07): 3-bit, the most tasks right (193/202), reads best for coding, top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); speed figures follow in a later release."
    ],
    "warnings": [
     "Bigger than the RAM the server may use: moe-cache keeps the hot experts in RAM and reads the rest from the drive (SSD needed)."
@@ -417,7 +417,7 @@
    ],
    "notes": [
     "The smallest candidate: the one that still runs agents at 64k on a small machine.",
-    "MTP (separate head file) is available for agent mode; speed figures follow in v0.3.9.1.",
+    "MTP (separate head file) is available for agent mode; speed figures follow in a later release.",
     "The Hugging Face file is now 22.13 GB; the picker and the measurements used a 21.72 GB file (RESULTS 44), so the file changed since (revision above): check the sha256 before comparing numbers."
    ],
    "warnings": [],
@@ -571,7 +571,7 @@
    ],
    "notes": [
     "The biggest candidate; suggested for chat only where it fits in RAM (128 GB+).",
-    "MTP is available with --mtp; speed figures follow in v0.3.9.1."
+    "MTP is available with --mtp; speed figures follow in a later release."
    ],
    "warnings": [
     "On a 32 GB PC it is a 102 GB model read from the drive: very slow, 64k contexts did not finish."

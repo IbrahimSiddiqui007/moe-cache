@@ -25,7 +25,7 @@ def headline(k, spec):
         return None
     r, m = dec[0]
     if not SHOW_MEASURED_SPEED:
-        return {"text": "speed figures follow in v0.3.9.1", "value": None, "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": None, "note": None}
+        return {"text": "speed figures follow in a later release", "value": None, "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": None, "note": None}
     text = f"{r['value']:g} tok/s decode" + (f" at context {r['ctx']}" if r.get("ctx") else "") + f" ({m['name'].split(':')[0]}, {r['source']}, {r['date']})" + (f"; {r['note']}" if r.get("covers_fit") is False and r.get("note") else "")
     return {"text": text, "value": r["value"], "ctx": r.get("ctx"), "machine": r["machine"], "date": r["date"], "source": r["source"], "note": r.get("note")}
 

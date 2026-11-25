@@ -1729,7 +1729,7 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
 
 
 MTP_ARGS = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
-MTP_GAIN = "faster decode on Qwen3.6, slower prompt processing; speed figures follow in v0.3.9.1"
+MTP_GAIN = "faster decode on Qwen3.6, slower prompt processing; speed figures follow in a later release"
 
 
 MTP_DENSE_WHY = ("a dense model runs every layer for every token, and MTP measured slower on the Qwen3.8-27B (64k, and at 128k with part of the KV cache "
@@ -2634,15 +2634,15 @@ SERVER_HELP = """\
 --plan-file PATH  write the launch plan as JSON there: every setting the launcher decided, its value, where it came from (probe / measured / constant / user / llama) and a plain reason. A real start writes it to <cache>/plans/port-PORT.json and prints a short summary; --plan-json shows the same under "settings"
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). It reads long prompts faster than -ub 2048 with
-           the f16 KV cache (speed figures follow in v0.3.9.1). The q8_0 KV cache means answers are NOT byte-identical to plain
+           the f16 KV cache (speed figures follow in a later release). The q8_0 KV cache means answers are NOT byte-identical to plain
            llama.cpp's (against f16; quality figures: docs/EXACTNESS.md). Not with --exact, --stock or your own --ub
 --kv-4bit        dense models: when the q8_0 KV cache would still spill the GPU, also try K q8_0 / V q4_0 and then q4_0 / q4_0 before moving layers to system RAM. Off by default (a quality cost, README); your own -ctk/-ctv win
 --no-long-prompt  turn the long-prompt mode off: -ub 2048 and the f16 KV cache, as before v0.3.8
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
-           Tested on a laptop only (not yet measured on the PC); no gain at 24 GB. Speed figures follow in v0.3.9.1.
+           Tested on a laptop only (not yet measured on the PC); no gain at 24 GB. Speed figures follow in a later release.
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
-           while the CPU computes the rest at the same time (laptop test on 8 GB; speed figures follow in v0.3.9.1). Not identical to stock (GPU float order, like
+           while the CPU computes the rest at the same time (laptop test on 8 GB; speed figures follow in a later release). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
 --approx safe|careful|aggressive  DEPRECATED alias (still works; forces the modes of the tier on; the default launch enables the modes measured as a win by itself). Speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
            head (every expert is computed). careful: --fast (rarely picked experts not in RAM are skipped, about 1 token in 40-50 differs) + the same. aggressive: --fast=2 (up to 4 low-ranked experts skipped, about 1 token
@@ -2683,12 +2683,12 @@ SERVER_HELP = """\
            one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (a session that finds the preamble cached starts with only the new tokens). --no-warm to turn it off
 --cpu-only    run on the CPU only: llama-server gets --device none and -ngl 0 (also chosen by itself when --list-devices shows no GPU)
 --no-ffn-ram  dense model bigger than the GPU: by default attention, the KV cache and most weights stay on the GPU and the FFN weights of the last layers stay in RAM (-ot), which keeps long chats usable (Qwen3-14B on an 8 GB card at 32k tokens: a plain layer split is slower there); this brings llama.cpp's --fit layer split back
---cpu-gpu-split [auto|FRACTION]  dense model with FFN weights in RAM (see --no-ffn-ram), CUDA, patched llama.cpp with patch 0091: the GPU computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM); auto follows the measured wait, a number (0.05-0.6) fixes the GPU's share. Opt-in until the PC run decides. Loads the model without mmap and without repacking (needed to page-lock it); laptop RTX 4060 + Qwen3-14B: no clear gain when the machine is quiet, a gain only with a busy CPU core (speed figures follow in v0.3.9.1)
+--cpu-gpu-split [auto|FRACTION]  dense model with FFN weights in RAM (see --no-ffn-ram), CUDA, patched llama.cpp with patch 0091: the GPU computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM); auto follows the measured wait, a number (0.05-0.6) fixes the GPU's share. Opt-in until the PC run decides. Loads the model without mmap and without repacking (needed to page-lock it); laptop RTX 4060 + Qwen3-14B: no clear gain when the machine is quiet, a gain only with a busy CPU core (speed figures follow in a later release)
 --no-commit-check  Windows: do not refuse a start whose estimated commit (GPU memory counts as commit on some drivers) leaves under max(6 GB, 12.5 % of the commit limit) free, and do not shrink the layout for it. The run-time guard stays (MOE_CACHE_COMMIT_GUARD=warn|off changes that)
 --no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
-           Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: faster decode, slower prompt processing (speed figures follow in v0.3.9.1). On by default with --agent when the model has the head
+           Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: faster decode, slower prompt processing (speed figures follow in a later release). On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
 --no-sampling-defaults  do not pass the model card's sampling settings. By default, for Qwen3 / 3.5 / 3.6 / 3.8 / Qwen3-Next and GLM models,
            temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:

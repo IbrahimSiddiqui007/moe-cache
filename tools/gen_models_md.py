@@ -17,7 +17,7 @@ USE_WORDS = {"agents": "agents", "chat": "chat", "docs": "documents"}
 def speed(m, machines):
     """The best-known decode number: the strongest machine first, its shortest context."""
     if not SHOW_MEASURED_SPEED:
-        return "speed figures follow in v0.3.9.1"
+        return "speed figures follow in a later release"
     dec = sorted((r for r in m["measured"] if r["metric"] == "decode_tps" and r.get("covers_fit", True)),
                  key=lambda r: (-machines[r["machine"]]["cap_gb"], r.get("ctx") or 0))
     if not dec:
