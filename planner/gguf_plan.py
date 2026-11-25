@@ -1228,7 +1228,7 @@ def room_bytes(free, compute_mib, reserve_gb, block=0):
 
 
 def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False, plugin=True, measured=None,
-         free_source=None, mtp=False, keep_ub=False, loop_n_head=None, loop_ubs=None):
+         free_source=None, mtp=False, keep_ub=False, loop_n_head=None, loop_ubs=None, cut_block=True):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left. The only placement
     function of the launcher (planner map fix 1; planner/plan.py's formula no longer decides).
 
@@ -1247,11 +1247,14 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     <arch>.loop.count > 1), so the bias is always counted for a looped model; 0 = not counted. loop_ubs: the micro-batches the launcher's looped-model rule runs when expert
     layers stay on the CPU (inkling_loop_stage: (128,) by default, LOOP_UBS with MOE_CACHE_LOOP_FIT=1); None = no such rule (callers that keep the planner's -ub). With it
     the plan is made at the -ub that will really run (loop_plan), not at a -ub the rule then replaces.
+    cut_block: below BLOCK_FULL_CTX the long-prompt block's room may be cut (LAUNCHER-1303/1236); False (--exact, MOE_CACHE_GPU_CHUNKS=0) keeps the full room at every
+    context, as before. Even when True the cut is kept only when it frees an expert layer: else the full-room plan is returned (no block_cap_mib).
     """
+    args = dict(locals())
     if loop_n_head is None:
         loop_n_head = loop_heads(path)
     if loop_n_head and loop_ubs and not ub:
-        return loop_plan(dict(locals()))
+        return loop_plan(dict(args, loop_n_head=loop_n_head))
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
     why = []
@@ -1345,6 +1348,8 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             return 0              # stock llama-server: no plugin, no long-prompt GPU block (LAUNCHER-1177: 839 MiB were kept free for nothing on the laptop 35B)
         if want_cache:
             return block_full_for(u)          # a GPU expert cache plan keeps the full room (the cut is passed to the plugin only for static layers, block_cap_stage)
+        if not cut_block:
+            return block_full_for(u)          # --exact / MOE_CACHE_GPU_CHUNKS=0: the full room at every context, as before
         unc = 0 if has_bias(u) else loop_bias_bytes(ctx, u, heads_uncounted)       # a measured buffer already holds the bias
         if rule:
             return rule_block_mib(path, lay, u, ctx, unc) * 1048576
@@ -1415,6 +1420,11 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     # LAUNCHER-1303/1236: a block room cut below the full layer is only safe when the plugin keeps the block inside it: the launcher passes it as
     # MOE_CACHE_GPU_BLOCK_CAP_MIB (the plugin's free figure overstates the real room on Windows AMD / Intel, LAUNCHER-1133). 0 = no cap (full room, as before).
     block_cap = int(block // MiB) if plugin and block and share < 1 and block < block_full_for(ub) else 0
+    if block_cap:
+        # the cut is kept only when it frees an expert layer against the full-room plan (same ncm, all layers on the CPU: the full room and no cap, as before)
+        full = tune(**dict(args, cut_block=False, loop_n_head=loop_n_head))
+        if int(full.get("n_cpu_moe", 999)) <= n_cpu_moe or full.get("gpu_cache_mib"):
+            return full
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576), "block_cap_mib": block_cap,
             "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not has_bias(ub)) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 

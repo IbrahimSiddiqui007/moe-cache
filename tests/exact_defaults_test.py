@@ -57,5 +57,17 @@ with tempfile.TemporaryDirectory() as tmp:
     out, cmd = plan([], ["--chat-template-file", "MINE.jinja"])
     check("MINE.jinja" in cmd and "FIXED.jinja" not in cmd, "your own --chat-template-file still wins without --exact")
 
+    # LAUNCHER-1303/1236 (critic 2026-11-25): below 32k the default cuts the long-prompt block room and caps the plugin's block; --exact keeps the full room, no cap
+    import re
+
+    def ncm_cap(opts):
+        r = lp.run_case("linux", opts, [], twin, tmp)
+        out = r["stdout"] + r["stderr"]
+        n = re.findall(r"--n-cpu-moe (\d+)", out)
+        return (n[-1] if n else None), re.findall(r"MOE_CACHE_GPU_BLOCK_CAP_MIB=(\d+)", out)
+    (dn, dcap), (en, ecap) = ncm_cap(["--ctx", "8192"]), ncm_cap(["--exact", "--ctx", "8192"])
+    check(dn is not None and dcap and int(dn) < int(en or 0), f"default at 8k: the cut frees a layer and caps the block (--n-cpu-moe {dn}, cap {dcap})")
+    check(en is not None and not ecap, f"--exact at 8k: the full block room as before, no MOE_CACHE_GPU_BLOCK_CAP_MIB (--n-cpu-moe {en})")
+
 print("exact-defaults checks: " + (f"{len(fails)} failed" if fails else "all passed"))
 sys.exit(1 if fails else 0)

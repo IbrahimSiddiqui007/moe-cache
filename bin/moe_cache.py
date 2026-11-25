@@ -3539,6 +3539,7 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
                 kw["loop_n_head"] = lm_[5]
                 if a.ub == "auto" and not (ub_asked or "").isdigit():
                     kw["loop_ubs"] = LOOP_UBS if loop_fit_on() else (LOOP_RULE_UB,)
+            kw["cut_block"] = block_cut_on(a)          # --exact / MOE_CACHE_GPU_CHUNKS=0: the full long-prompt block room at every context (LAUNCHER-1303/1236)
             kw["measured"] = measured_loads(a, ls, model, ctx, kv_q8, machine, kw["plugin"], kw["mtp"], ub_asked, kw["free_source"])
             a.plan_free_mib = (free / 2**20) if free else None
             a.plan_free_source = kw["free_source"]
@@ -5053,13 +5054,31 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     return ub, ncmoe
 
 
-def block_cap_stage(env, tuned, stock, ncmoe_user):
+def gpu_chunks_off(env=()):
+    """MOE_CACHE_GPU_CHUNKS=0 (yours, in the environment or the launch env): the plugin never splits its long-prompt block, so a block room cut below one layer never fits."""
+    v = os.environ.get("MOE_CACHE_GPU_CHUNKS")
+    for k, x in env or ():
+        if k == "MOE_CACHE_GPU_CHUNKS":
+            v = x
+    return v is not None and str(v).strip() == "0"
+
+
+def block_cut_on(a, env=()):
+    """LAUNCHER-1303/1236: whether the planner may cut the long-prompt block's room below 32k (gguf_plan.tune cut_block). Off with --exact (R19: no new default)
+    and with MOE_CACHE_GPU_CHUNKS=0 (no split, so a cut block never fits)."""
+    return not getattr(a, "exact", False) and not gpu_chunks_off(env)
+
+
+def block_cap_stage(env, tuned, stock, ncmoe_user, ncmoe=None, exact=False):
     """LAUNCHER-1303/1236: at a context under 32k the planner keeps less than one expert layer of room for the plugin's long-prompt GPU block (planner/gguf_plan.py
     block_weight_share) and gives the rest to static expert layers. The plugin is told that room (MOE_CACHE_GPU_BLOCK_CAP_MIB) so a block never grows into it: it splits instead
     (the driver's free figure can overstate the real room, Windows AMD / Intel). Only for the planner's own placement (not stock, no --n-cpu-moe of yours, no GPU cache) and
-    never over a value you set. Same on Linux and Windows. Returns env."""
+    never over a value you set. Same on Linux and Windows. Not with --exact or MOE_CACHE_GPU_CHUNKS=0 (the planner keeps the full room then), and only when the --n-cpu-moe
+    that runs (ncmoe, after the GPU-cache, hybrid and looped-model stages) is the plan's own: the planner sets block_cap_mib only when the cut frees a layer. Returns env."""
     cap = int((tuned or {}).get("block_cap_mib") or 0)
-    if stock or not cap or ncmoe_user is not None or (tuned or {}).get("gpu_cache_mib") or os.environ.get("MOE_CACHE_GPU_BLOCK_CAP_MIB") or env_has(env, "MOE_CACHE_GPU_BLOCK_CAP_MIB"):
+    if stock or exact or not cap or ncmoe_user is not None or (tuned or {}).get("gpu_cache_mib") or os.environ.get("MOE_CACHE_GPU_BLOCK_CAP_MIB") or env_has(env, "MOE_CACHE_GPU_BLOCK_CAP_MIB"):
+        return env
+    if gpu_chunks_off(env) or (ncmoe is not None and str(ncmoe) != str(tuned.get("n_cpu_moe"))):
         return env
     return env + [("MOE_CACHE_GPU_BLOCK_CAP_MIB", str(cap))]
 
@@ -6249,7 +6268,7 @@ def _launch_plan(a, extra, argv, machine):
     if (a.hybrid or a.fast) and not os.environ.get("MOE_CACHE_GPU_MIN_TOKENS"):
         env.append(("MOE_CACHE_GPU_MIN_TOKENS", "64"))
     env = plugin_no_op_offload_stage(a, env, user_extra, stock)
-    env = block_cap_stage(env, tuned, stock, ncmoe_user)
+    env = block_cap_stage(env, tuned, stock, ncmoe_user, ncmoe, a.exact)
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
     cram = prompt_cache_stage(a, extra, env, ls, machine, win, dry)
@@ -6465,7 +6484,7 @@ def run_launch_plan(plan):
             reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
             # the tables, not the load records, after an out-of-memory load (a record may be what was too tight); the same engine, free-figure and MTP terms as the plan
             t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
-                     free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
+                     free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None), cut_block=block_cut_on(a))
             lay = model_layout(model)
             old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])
             new_n = min(lay["n_layers"] or 999, max(int(t["n_cpu_moe"]), old_n + 1)) if lay["n_layers"] else old_n + 1

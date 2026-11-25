@@ -121,6 +121,22 @@ for name, path in (("35B-like", TWIN), ("Inkling-like", INK)):
         diff = [f for f in FREES if (lambda o, n: (o["n_cpu_moe"], o["ub"], block_mib(o)) != (n["n_cpu_moe"], n["ub"], block_mib(n)) or n["block_cap_mib"])(plan(path, ctx, f, old=True), plan(path, ctx, f))]
         check(not diff, f"{name} ctx {ctx}: the same plan as before, no cap ({diff or 'identical'})")
 
+# the cut is kept only when it frees an expert layer (critic 2026-11-25): a cap exactly where the plan has fewer CPU layers than the full-room plan; elsewhere the
+# full-room plan itself (same --n-cpu-moe, same block, no cap). cut_block=False (--exact, MOE_CACHE_GPU_CHUNKS=0) is the full-room plan at every room figure.
+for name, path in (("35B-like", TWIN), ("Inkling-like", INK), ("looped Inkling-like", INKL)):
+    for ctx in (4096, 8192, 31744):
+        bad, offbad = [], []
+        for f in FREES + [2.0, 6.0]:
+            o, n, x = plan(path, ctx, f, old=True), plan(path, ctx, f), plan(path, ctx, f, cut_block=False)
+            if bool(n["block_cap_mib"]) != (n["n_cpu_moe"] < o["n_cpu_moe"]) or (not n["block_cap_mib"] and (n["n_cpu_moe"], n["ub"], block_mib(n)) != (o["n_cpu_moe"], o["ub"], block_mib(o))):
+                bad.append(f)
+            if (x["n_cpu_moe"], x["ub"], block_mib(x), x["block_cap_mib"]) != (o["n_cpu_moe"], o["ub"], block_mib(o), 0):
+                offbad.append(f)
+        check(not bad, f"{name} ctx {ctx}: a cap only where the cut frees a layer, else the full-room plan ({bad or 'all'})")
+        check(not offbad, f"{name} ctx {ctx}: cut_block=False (--exact / MOE_CACHE_GPU_CHUNKS=0) = the full-room plan, no cap ({offbad or 'all'})")
+allcpu = plan(TWIN, 4096, 2.0)
+check(allcpu["n_cpu_moe"] == gguf_plan.model_layout(TWIN)["n_layers"] and not allcpu["block_cap_mib"], f"all expert layers on the CPU (2 GiB room): no cap ({allcpu['n_cpu_moe']})")
+
 # a looped model whose bias buffer is not counted (loop_n_head=0, as --exact plans it): the room the plan cannot see is never given to expert layers
 for ctx in (4096, 8192):
     same = all(plan(INKL, ctx, f, loop_n_head=0)["n_cpu_moe"] == plan(INKL, ctx, f, old=True, loop_n_head=0)["n_cpu_moe"] for f in FREES)
@@ -128,13 +144,13 @@ for ctx in (4096, 8192):
     check(same and block_mib(n) == block_mib(plan(INKL, ctx, 14.0, old=True, loop_n_head=0)) and n["block_cap_mib"] == 0,
           f"looped Inkling-like ctx {ctx} -ub {n['ub']}: bias {gguf_plan.loop_bias_bytes(ctx, n['ub'], 24) // MiB} MiB uncounted >= the cut: full block, same pick, no cap")
 # LAUNCHER-1284/1303: by default (loop_n_head None) tune() reads the head count from the header and counts the bias
-dflt = plan(INKL, 4096, 14.0)
+dflt = plan(INKL, 4096, 14.2)          # 14.2 GiB: the cut frees a layer here (9 -> 8 CPU layers); at 14.0 it does not (9 = 9: no cut, no cap)
 check(dflt["loop_bias_mib"] == round(2 * 4096 * dflt["ub"] * 24 * 4 / MiB) and dflt["block_cap_mib"] > 0, f"looped, default: bias counted from the header ({dflt['loop_bias_mib']} MiB at -ub {dflt['ub']}), the cut applies")
 # ... and when the bias is counted (loop_n_head given), the cut applies again
-nc = plan(INKL, 4096, 14.0, loop_n_head=24)
-check(block_mib(nc) < block_mib(plan(INKL, 4096, 14.0, old=True, loop_n_head=24)) and nc["block_cap_mib"] > 0, f"looped, bias counted: the block room is cut ({block_mib(nc)} MiB, cap {nc['block_cap_mib']})")
+nc = plan(INKL, 4096, 14.2, loop_n_head=24)
+check(block_mib(nc) < block_mib(plan(INKL, 4096, 14.2, old=True, loop_n_head=24)) and nc["block_cap_mib"] > 0, f"looped, bias counted: the block room is cut ({block_mib(nc)} MiB, cap {nc['block_cap_mib']})")
 # a measured compute buffer already holds the bias: the cut applies
-nm = plan(INKL, 4096, 14.0, measured={"buffers": {2048: {"compute_mib": 2600}}})
+nm = plan(INKL, 4096, 14.2, measured={"buffers": {2048: {"compute_mib": 2600}}})
 check(nm["block_cap_mib"] > 0, "looped, compute buffer measured at the last load: the cut applies")
 
 # stock and GPU-cache plans are untouched
@@ -164,7 +180,7 @@ for ctx in (4096, 65536):
 
 # launcher: block_cap_stage
 import moe_cache as mc   # noqa: E402
-t = plan(TWIN, 4096, 14.0)
+t = plan(TWIN, 4096, 14.2)
 env = mc.block_cap_stage([("A", "1")], t, False, None)
 check(("MOE_CACHE_GPU_BLOCK_CAP_MIB", str(t["block_cap_mib"])) in env, f"launcher passes the cut room to the plugin ({env[-1]})")
 check(mc.block_cap_stage([("A", "1")], t, True, None) == [("A", "1")], "stock: no cap")
@@ -172,6 +188,16 @@ check(mc.block_cap_stage([("A", "1")], t, False, "3") == [("A", "1")], "your --n
 check(mc.block_cap_stage([("A", "1")], plan(TWIN, 65536, 14.0), False, None) == [("A", "1")], "64k: no cap (full room, as before)")
 check(mc.block_cap_stage([("MOE_CACHE_GPU_BLOCK_CAP_MIB", "9")], t, False, None) == [("MOE_CACHE_GPU_BLOCK_CAP_MIB", "9")], "a value already set wins")
 check(mc.block_cap_stage([], None, False, None) == [], "no plan: nothing")
+check(mc.block_cap_stage([("A", "1")], t, False, None, str(t["n_cpu_moe"])) == [("A", "1"), ("MOE_CACHE_GPU_BLOCK_CAP_MIB", str(t["block_cap_mib"]))], "the plan's own --n-cpu-moe runs: cap")
+check(mc.block_cap_stage([("A", "1")], t, False, None, "999") == [("A", "1")], "--hybrid / a GPU cache (n-cpu-moe 999 runs, not the plan's): no cap")
+check(mc.block_cap_stage([("A", "1")], t, False, None, str(t["n_cpu_moe"]), exact=True) == [("A", "1")], "--exact: no cap")
+check(mc.block_cap_stage([("MOE_CACHE_GPU_CHUNKS", "0")], t, False, None) == [("MOE_CACHE_GPU_CHUNKS", "0")], "MOE_CACHE_GPU_CHUNKS=0 in the launch env: no cap (a capped block never fits)")
+os.environ["MOE_CACHE_GPU_CHUNKS"] = "0"
+try:
+    check(mc.block_cap_stage([], t, False, None) == [] and not mc.block_cut_on(types.SimpleNamespace(exact=False)), "MOE_CACHE_GPU_CHUNKS=0 in your environment: no cut, no cap")
+finally:
+    del os.environ["MOE_CACHE_GPU_CHUNKS"]
+check(mc.block_cut_on(types.SimpleNamespace(exact=False)) and not mc.block_cut_on(types.SimpleNamespace(exact=True)), "the launcher asks for the cut by default, not with --exact")
 
 # plugin source: the cap goes through the tested free_for_block helper, on the first card only
 src = open(os.path.join(HERE, "src", "mc_backend.inl"), encoding="utf-8").read()
