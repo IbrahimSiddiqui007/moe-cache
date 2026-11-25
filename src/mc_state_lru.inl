@@ -99,6 +99,7 @@
 
     // give the physical pages of one expert back to the system (pages shared with a neighbour expert stay)
     void evict(int s) {
+        mcevict::scope_t evict_scope{evict_t, cur_decode};      // DECODE-123: time this eviction (always on)
         // find the tensor that owns node s
         tinfo_t & ti = *tensors[node_owner[(size_t) s]];
         const size_t e = (size_t) (s - ti.node0);
