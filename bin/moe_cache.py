@@ -7066,6 +7066,172 @@ def connect_extra(a, name, ctx, base, names):
     return 0
 
 
+def _prune(data, path):
+    """Delete the nested key data[path[0]]...[path[-1]] and drop parent dicts left empty on the way. True when something was deleted."""
+    chain, cur = [], data
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return False
+        chain.append((cur, k))
+        cur = cur[k]
+    del chain[-1][0][chain[-1][1]]
+    for parent, k in reversed(chain[:-1]):
+        child = parent[k]
+        if isinstance(child, dict) and not child:
+            del parent[k]
+        else:
+            break
+    return True
+
+
+def connect_remove(a):
+    """connect AGENT --remove: disconnect the agent by taking out ONLY what connect wrote (everything else the user has in the file stays; unlike
+    --undo the whole .bak is not copied back). No server needed. Every file that changed is kept first as <file>.removed."""
+    if a.agent == "hermes":
+        raise SystemExit("moe-cache: Hermes: copy config.yaml.bak (kept beside Hermes' config.yaml by connect) back over config.yaml; `hermes config path` shows where it is")
+    paths = agent_config_paths(a.agent, a.config)
+    n = 0
+
+    def keep_copy(real):
+        """Copy the file as it is to <file>.removed; Claude Code's project file holds the key, so its copy goes to the cache folder (like its .bak)."""
+        dst = claude_backup_path(real)[:-4] + ".removed" if a.agent == "claude" else real + ".removed"
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(real, dst)
+        return dst
+
+    def saved(real, data, extra=""):
+        dst = keep_copy(real)
+        write_private(real, json_text(data), file_eol(real))
+        say(f"moe-cache: {a.agent}: removed moe-cache from {real}; the file as it was is kept as {dst}" + extra)
+        return 1
+
+    for cfg in paths:
+        real = os.path.realpath(cfg)
+        if not os.path.isfile(real):
+            continue
+        changed = False
+        if a.agent == "codex":
+            raw = open(real, "rb").read().decode("utf-8")
+            out, skipping = [], False
+            for ln in raw.replace("\r\n", "\n").splitlines():
+                if ln.startswith("# >>> moe-cache"):
+                    skipping = True
+                elif skipping and ln.startswith("# <<< moe-cache"):
+                    skipping = False
+                elif not skipping:
+                    if ln.startswith("#moe-cache-off# "):
+                        ln = ln[len("#moe-cache-off# "):]
+                    out.append(ln)
+            if skipping:
+                raise SystemExit(f"{real} has a moe-cache block without its end line: nothing removed; fix or remove it")
+            if out != raw.replace("\r\n", "\n").splitlines():
+                shutil.copy2(real, real + ".removed")
+                body = "\n".join(out).strip("\n")      # the blank lines connect put around its blocks go with them
+                write_private(real, body + "\n" if body else "", file_eol(real))
+                say(f"moe-cache: codex: removed moe-cache from {real}; the file as it was is kept as {real}.removed")
+                n += 1
+        elif a.agent == "aider":
+            if cfg == paths[0]:
+                if open(real, encoding="utf-8", errors="replace").readline().rstrip("\r\n") == AIDER_MARK:
+                    os.replace(real, real + ".removed")
+                    say(f"moe-cache: aider: removed moe-cache from {real}; the file as it was is kept as {real}.removed")
+                    n += 1
+                continue
+            data = load_json_object(real, "aider", "Aider model metadata")
+            dead = [k for k, v in data.items() if k.startswith("openai/") and isinstance(v, dict)
+                    and v.get("litellm_provider") == "openai" and v.get("input_cost_per_token") == 0 and v.get("output_cost_per_token") == 0]
+            for k in dead:
+                del data[k]
+            if dead:
+                if data:
+                    n += saved(real, data)
+                else:
+                    os.replace(real, real + ".removed")
+                    say(f"moe-cache: aider: removed moe-cache from {real}; the file as it was is kept as {real}.removed")
+                    n += 1
+            continue
+        else:
+            data = load_json_object(real, a.agent, "config")
+            if a.agent == "opencode":
+                if _prune(data, ["provider", "moe-cache"]):
+                    changed = True
+                if isinstance(data.get("model"), str) and data["model"].startswith("moe-cache/"):
+                    bak, restored = bak_path(real), False
+                    if os.path.isfile(bak):
+                        try:
+                            b = json.load(open(bak, encoding="utf-8"))
+                        except ValueError:
+                            b = None
+                        if isinstance(b, dict) and isinstance(b.get("model"), str) and not b["model"].startswith("moe-cache/"):
+                            data["model"] = b["model"]
+                            restored = True
+                    if not restored:
+                        data.pop("model", None)
+                    changed = True
+            elif a.agent == "claude":
+                env = data.get("env")
+                if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
+                    for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ATTRIBUTION_HEADER", "ANTHROPIC_SMALL_FAST_MODEL"):
+                        env.pop(k, None)
+                    if not env:
+                        _prune(data, ["env"])
+                    changed = True
+            elif a.agent == "pi" and cfg == paths[0]:
+                changed = _prune(data, ["providers", "moe-cache"])
+            elif a.agent == "pi":
+                if data.get("defaultProvider") == "moe-cache":
+                    data.pop("defaultProvider")
+                    data.pop("defaultModel", None)
+                    changed = True
+            elif a.agent == "openclaw":
+                if _prune(data, ["models", "providers", "moe-cache"]):
+                    changed = True
+                ag = data.get("agents")
+                dfl = ag.get("defaults") if isinstance(ag, dict) else None
+                m = dfl.get("model") if isinstance(dfl, dict) else None
+                if isinstance(m, dict) and isinstance(m.get("primary"), str) and m["primary"].startswith("moe-cache/"):
+                    _prune(data, ["agents", "defaults", "model", "primary"])
+                    changed = True
+                elif isinstance(m, str) and m.startswith("moe-cache/"):
+                    _prune(data, ["agents", "defaults", "model"])
+                    changed = True
+            elif a.agent == "qwen":
+                mp = data.get("modelProviders") if isinstance(data.get("modelProviders"), dict) else {}
+                cur = mp.get("openai") if isinstance(mp.get("openai"), list) else []
+                keep = [e for e in cur if not (isinstance(e, dict) and e.get("envKey") == QWEN_KEY_VAR)]
+                ids = [e.get("id") for e in cur if isinstance(e, dict) and e.get("envKey") == QWEN_KEY_VAR]
+                if len(keep) != len(cur):
+                    if keep:
+                        mp["openai"] = keep
+                    else:
+                        _prune(data, ["modelProviders", "openai"])
+                    changed = True
+                if isinstance(data.get("env"), dict) and QWEN_KEY_VAR in data["env"]:
+                    del data["env"][QWEN_KEY_VAR]
+                    changed = True
+                if isinstance(data.get("model"), dict) and data["model"].get("name") in ids:
+                    _prune(data, ["model", "name"])
+                    changed = True
+                left = mp.get("openai")
+                if not (isinstance(left, list) and left):
+                    sec = data.get("security")
+                    auth = sec.get("auth") if isinstance(sec, dict) else None
+                    if isinstance(auth, dict) and auth.get("selectedType") == "openai":
+                        _prune(data, ["security", "auth", "selectedType"])
+                        changed = True
+            if changed and data == {} and a.agent == "claude":
+                dst = keep_copy(real)
+                os.unlink(real)
+                say(f"moe-cache: claude: removed moe-cache from {real}; the file as it was is kept as {dst} (now empty: the file is deleted)")
+                n += 1
+            elif changed:
+                n += saved(real, data)
+    if not n:
+        say(f"moe-cache: {a.agent}: nothing to remove: no moe-cache entry in {', '.join(paths)}", err=True)
+        return 1
+    return 0
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
                                  "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode, Codex CLI, Pi, OpenClaw and Qwen Code by merging their config file, old file kept as .bak; "
@@ -7076,6 +7242,8 @@ def connect(argv):
     ap.add_argument("--api-key", default=None, help="the server's API key (default: LLAMA_API_KEY for a server on this machine, else the stored key when the server asks for one)")
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--undo", action="store_true", help="put the agent's config back as it was before the first connect (the .bak copy; the file as it is now is kept as .undone); no server needed")
+    ap.add_argument("--remove", action="store_true", help="disconnect the agent: take out only the moe-cache entries connect wrote (and put the user's own default model back where it was recorded); "
+                    "everything else in the config stays, the file as it was is kept as .removed; no server needed")
     ap.add_argument("--config", help="file to merge into (opencode: ~/.config/opencode/opencode.json; claude: ./.claude/settings.local.json of this folder; codex: ~/.codex/config.toml; pi: ~/.pi/agent/models.json; openclaw: ~/.openclaw/openclaw.json; qwen: ~/.qwen/settings.json; aider: ~/.aider.moe-cache.conf.yml)")
     ap.add_argument("--check", action="store_true", help="prove the agent's setup works end to end (config, /v1/models, a streamed chat, a tool-call round trip, the window); "
                     "with --write, after writing; exit 0/1")
@@ -7089,6 +7257,10 @@ def connect(argv):
         if a.write or a.check:
             ap.error("--undo does not go with --write or --check")
         return connect_undo(a)
+    if a.remove:
+        if a.write or a.check or a.undo:
+            ap.error("--remove does not go with --write, --check or --undo")
+        return connect_remove(a)
     if a.check and not a.write:
         return connect_check(a)
     try:

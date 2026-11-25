@@ -1,5 +1,5 @@
 #!/bin/bash
-# Release gate (RELEASE-687): identity, windows and quick must each have a successful run that TESTED the commit being released.
+# Release gate (RELEASE-687): identity, windows and quick must each have a successful run that TESTED the commit being released, and the lost-work check must pass.
 #   tools/release_gate.sh COMMIT [REPO]        (needs gh and a token that can read Actions runs and artifacts)
 # A run's own head SHA is not enough: a run started on one branch can test another ref (the `ref` input of windows.yml / identity.yml). Every one
 # of those workflows therefore ends with a `record` job (only after all its jobs passed, on the same commit) that uploads the artifact `tested-sha`
@@ -25,4 +25,13 @@ for w in identity.yml windows.yml quick.yml; do
   if [ -n "$found" ]; then echo "$w: run $found tested $SHA"
   else echo "$w: no successful run tested $SHA (looked at ${N} newest successful runs; tested commits found:${seen:- none}). Run it on this tag: gh workflow run ${w} --ref <tag>, then re-run this workflow."; bad=1; fi
 done
+# Lost-work check (TOOLS-1300; the same call as the lost-work-gate job in .github/workflows/release.yml): no unrecorded work left on a claude/* branch.
+# GATE_SKIP_LOST_WORK=1 is for tests/release_gate_test.sh only; release.yml never sets it.
+if [ "${GATE_SKIP_LOST_WORK:-0}" = "1" ]; then
+  echo "lost-work check: SKIPPED (test use only)"
+elif out="$(cd "$(dirname "$0")/.." && python3 tools/lost_work_check.py --repo . --base origin/experimental --public --records archive/README.md --accept tools/lost_work_accepted.tsv 2>&1)"; then
+  echo "lost-work check: ok"
+else
+  echo "lost-work check: FAILED (a claude/* branch has work that is not in origin/experimental and not accepted in tools/lost_work_accepted.tsv):"; echo "$out" | tail -40; bad=1
+fi
 exit $bad

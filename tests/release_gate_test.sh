@@ -21,7 +21,7 @@ esac
 exit 1
 GH
 chmod +x "$T/bin/gh"
-run() { FAKE_DATA="$T/data" PATH="$T/bin:$PATH" tools/release_gate.sh "$@" 2>&1; }
+run() { GATE_SKIP_LOST_WORK=1 FAKE_DATA="$T/data" PATH="$T/bin:$PATH" tools/release_gate.sh "$@" 2>&1; }
 setup() { rm -rf "$T/data"; mkdir -p "$T/data"; }
 
 setup; for w in identity windows quick; do echo "1 2" > "$T/data/$w.yml.runs"; done; echo $A > "$T/data/1.sha"; echo $A > "$T/data/2.sha"
@@ -46,6 +46,22 @@ chk "runs without the artifact never count" "[ $rc != 0 ] && echo '$out' | grep 
 
 out="$(run abc123 owner/repo)"; rc=$?
 chk "a short or odd commit is refused" "[ $rc != 0 ] && echo '$out' | grep -q 'not a full commit sha'"
+
+# TOOLS-1300: the gate also runs tools/lost_work_check.py (as release.yml does), so an unaccepted in-flight branch fails BEFORE the tag.
+# Real script and real check in a throw-away git repo: origin/experimental plus one claude/* branch with a commit that is not in it.
+setup; for w in identity windows quick; do echo "1" > "$T/data/$w.yml.runs"; done; echo $A > "$T/data/1.sha"
+L="$T/lw"; mkdir -p "$L/tools" "$L/archive"; cp tools/release_gate.sh tools/lost_work_check.py "$L/tools/"; : > "$L/tools/lost_work_accepted.tsv"; : > "$L/archive/README.md"
+( cd "$L" && git init -q -b experimental . && git config user.email t@t && git config user.name t && git add -A && git commit -qm base \
+  && git update-ref refs/remotes/origin/experimental HEAD && git checkout -q -b claude/inflight && echo "work that is not in the release line yet" > newwork.txt && git add newwork.txt && git commit -qm "in-flight work" ) >/dev/null 2>&1
+lw() { ( cd "$L" && FAKE_DATA="$T/data" PATH="$T/bin:$PATH" tools/release_gate.sh "$@" 2>&1 ); }
+out="$(lw $A owner/repo)"; rc=$?
+chk "an unaccepted in-flight claude/* branch fails the gate (runs are fine) and the output names it" "[ $rc != 0 ] && echo '$out' | grep -q 'lost-work check: FAILED' && echo '$out' | grep -q 'claude/inflight' && echo '$out' | grep -q 'identity.yml: run 1 tested'"
+printf 'claude/inflight\tparked\tin-flight until the next release\n' > "$L/tools/lost_work_accepted.tsv"
+out="$(lw $A owner/repo)"; rc=$?
+chk "the same branch listed in the accept file passes the gate" "[ $rc = 0 ] && echo '$out' | grep -q 'lost-work check: ok'"
+out="$(run $A owner/repo)"
+chk "GATE_SKIP_LOST_WORK=1 (tests only) says it skipped, never 'ok'" "echo '$out' | grep -q 'lost-work check: SKIPPED' && ! echo '$out' | grep -q 'lost-work check: ok'"
+chk "release.yml and the gate run the same lost_work_check command line" "[ \"\$(grep -o 'lost_work_check.py --repo .*accepted.tsv' .github/workflows/release.yml | head -1)\" = \"\$(grep -o 'lost_work_check.py --repo .*accepted.tsv' tools/release_gate.sh | head -1)\" ]"
 
 # the workflows really write what the gate reads
 chk "quick, windows and identity each end with a record job that uploads tested-sha" "[ \$(grep -c 'name: tested-sha' .github/workflows/quick.yml .github/workflows/windows.yml .github/workflows/identity.yml | grep -c ':1\$') = 3 ]"

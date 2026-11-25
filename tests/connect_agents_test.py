@@ -366,5 +366,103 @@ if os.name != "nt":
     del os.environ["FAKE_HERMES_FAIL"]
     check(isinstance(rc, str) and "partly set up" in rc and "model.provider" in rc and "model.default" in rc, f"hermes: a failure half-way says what is done and what is not ({str(rc)[:120]})")
 
+# ---- PACKAGING-832 #24: connect AGENT --remove takes out only what connect wrote ----
+def rj(p):
+    return json.load(open(p))
+
+
+# opencode: the user's own provider and default model stay / come back
+oc = mc.agent_config_paths("opencode")[0]
+put(oc, json.dumps({"model": "mine/own", "provider": {"mine": {"name": "mine"}}, "theme": "dark"}))
+for f in (oc + ".bak", oc + ".removed"):
+    if os.path.exists(f):
+        os.remove(f)
+run("opencode", "--write")
+check(rj(oc)["model"].startswith("moe-cache/") and "moe-cache" in rj(oc)["provider"], "remove: opencode connected")
+put(oc, json.dumps(dict(rj(oc), edited_later="keep me")))
+rc, out, err = run("opencode", "--remove")
+d = rj(oc)
+check(rc == 0 and d["model"] == "mine/own" and list(d["provider"]) == ["mine"] and d["theme"] == "dark" and d["edited_later"] == "keep me" and os.path.isfile(oc + ".removed"),
+      f"remove: opencode drops our provider, gives the old default model back, keeps later edits ({rc} {err})")
+rc, out, err = run("opencode", "--remove")
+check(rc == 1 and "nothing to remove" in err, "remove: a second --remove says nothing to remove")
+put(oc, json.dumps({"provider": {"moe-cache": {}}, "model": "moe-cache/x"})); os.remove(oc + ".bak")
+run("opencode", "--remove")
+check(rj(oc) == {}, "remove: opencode with no recorded old model drops the model line")
+rc, _, _ = run("opencode", "--remove", "--write")
+check(rc != 0, "remove: --remove with --write is refused")
+
+# claude: only the ANTHROPIC lines go; a file left empty is deleted, the copy goes to the cache folder (the key)
+cl = os.path.join(TMP, "proj", ".claude", "settings.local.json")
+put(cl, json.dumps({"permissions": {"allow": ["Bash"]}, "env": {"MY_VAR": "1"}}))
+run("claude", "--config", cl, "--write")
+check(rj(cl)["env"].get("ANTHROPIC_BASE_URL"), "remove: claude connected")
+rc, out, err = run("claude", "--config", cl, "--remove")
+d = rj(cl)
+check(rc == 0 and d == {"permissions": {"allow": ["Bash"]}, "env": {"MY_VAR": "1"}} and not os.path.exists(cl + ".removed") and "removed" in out,
+      f"remove: claude drops the ANTHROPIC lines only, no key copy next to the project file ({rc} {err})")
+os.remove(cl)
+run("claude", "--config", cl, "--write")
+rc, out, err = run("claude", "--config", cl, "--remove")
+check(rc == 0 and not os.path.exists(cl), "remove: claude file that only held our lines is deleted")
+
+# qwen
+qw = mc.agent_config_paths("qwen")[0]
+for f in os.listdir(os.path.dirname(qw)) if os.path.isdir(os.path.dirname(qw)) else []:
+    os.remove(os.path.join(os.path.dirname(qw), f))
+put(qw, json.dumps({"env": {"X": "1"}, "modelProviders": {"openai": [{"id": "own", "envKey": "OWN_KEY"}]}, "ui": 1}))
+run("qwen", "--write")
+rc, out, err = run("qwen", "--remove")
+d = rj(qw)
+check(rc == 0 and d["modelProviders"]["openai"] == [{"id": "own", "envKey": "OWN_KEY"}] and d["env"] == {"X": "1"} and d["ui"] == 1 and "model" not in d,
+      f"remove: qwen drops our entries and key, keeps the user's own provider ({rc} {err})")
+
+# pi: both files
+pm, ps = mc.agent_config_paths("pi")
+for f in (pm, ps):
+    for g in (f, f + ".bak", f + ".removed"):
+        if os.path.exists(g):
+            os.remove(g)
+put(pm, json.dumps({"providers": {"mine": {"baseUrl": "x"}}})); put(ps, json.dumps({"defaultProvider": "other", "theme": "t"}))
+run("pi", "--write")
+check(rj(ps)["defaultProvider"] == "moe-cache", "remove: pi connected")
+rc, out, err = run("pi", "--remove")
+check(rc == 0 and list(rj(pm)["providers"]) == ["mine"] and "defaultProvider" not in rj(ps) and rj(ps)["theme"] == "t", f"remove: pi drops provider and default model in both files ({rc} {err})")
+
+# openclaw
+oclaw = mc.agent_config_paths("openclaw")[0]
+for g in (oclaw, oclaw + ".bak", oclaw + ".removed"):
+    if os.path.exists(g):
+        os.remove(g)
+put(oclaw, json.dumps({"models": {"providers": {"mine": {}}}, "gateway": {"port": 1}}))
+run("openclaw", "--write")
+rc, out, err = run("openclaw", "--remove")
+d = rj(oclaw)
+check(rc == 0 and d == {"models": {"providers": {"mine": {}}}, "gateway": {"port": 1}}, f"remove: openclaw back to the user's content ({rc} {err} {d})")
+
+# aider: its own files go; the user's metadata entries stay
+ac, am = mc.agent_config_paths("aider")
+for g in (ac, am, ac + ".removed", am + ".removed", ac + ".bak", am + ".bak"):
+    if os.path.exists(g):
+        os.remove(g)
+put(am, json.dumps({"openai/mine": {"max_tokens": 5, "litellm_provider": "openai", "input_cost_per_token": 0.001}}))
+run("aider", "--write")
+rc, out, err = run("aider", "--remove")
+check(rc == 0 and not os.path.exists(ac) and list(rj(am)) == ["openai/mine"], f"remove: aider drops its conf file and its model entries, keeps the user's ({rc} {err})")
+
+# codex: our blocks go, the user's keys commented out by connect are live again, CRLF kept
+if tomllib:
+    cx = os.path.join(HOME, ".codex", "config.toml")
+    for g in (cx, cx + ".bak", cx + ".removed"):
+        if os.path.exists(g):
+            os.remove(g)
+    put(cx, 'model = "mine"\n[tui]\nx = 1\n')
+    run("codex", "--write")
+    rc, out, err = run("codex", "--remove")
+    check(rc == 0 and open(cx).read() == 'model = "mine"\n[tui]\nx = 1\n' and os.path.isfile(cx + ".removed"), f"remove: codex drops our blocks and restores the commented-out keys ({rc} {err})")
+
+rc, _, err = run("hermes", "--remove")
+check(isinstance(rc, str) and "config.yaml.bak" in rc, "remove: hermes points at its backup")
+
 print("\n%d failed" % len(fails) if fails else "\nall ok")
 sys.exit(1 if fails else 0)
