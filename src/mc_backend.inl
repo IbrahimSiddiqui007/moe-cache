@@ -577,6 +577,13 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     if (shp.shared) {
         gpu_free = mcshared::free_for_block(gpu_free, held, shp.cap);
     }
+    // LAUNCHER-1303/1236: MOE_CACHE_GPU_BLOCK_CAP_MIB=N (set by the launcher when its plan kept less than a full expert layer of room for this block at a short context):
+    // the block never grows past N MiB (headroom included) on the first card; a bigger one splits (chunks below). The driver's free figure can overstate the room the plan left
+    // (Windows AMD / Intel, LAUNCHER-1133), so without the cap a block could take the room the plan gave to static expert layers. 0 / unset: no cap (as before).
+    static const long block_cap_mib = getenv("MOE_CACHE_GPU_BLOCK_CAP_MIB") ? atol(getenv("MOE_CACHE_GPU_BLOCK_CAP_MIB")) : 0;
+    if (block_cap_mib > 0 && gdev == s.gpu_dev) {
+        gpu_free = mcshared::free_for_block(gpu_free, held, (size_t) block_cap_mib * 1048576);
+    }
     // a block that needs no more than the held buffer allocates nothing, so it needs no headroom (with chunks off: the old rule, headroom always)
     auto fits = [&](size_t need) {
         const size_t extra = need > held ? need - held : 0;

@@ -595,7 +595,7 @@ check(i_g < i_p, "launch order: the GPU facts (room) come before the engine choi
 import multigpu   # noqa: E402
 calls = []
 orig_blk, orig_room = gguf_plan.long_prompt_block_bytes, gguf_plan.room_bytes
-gguf_plan.long_prompt_block_bytes = lambda lay_, ub_: (calls.append("block"), orig_blk(lay_, ub_) + 2 * 2**30)[1]
+gguf_plan.long_prompt_block_bytes = lambda lay_, ub_, *a_, **k_: (calls.append("block"), orig_blk(lay_, ub_, *a_, **k_) + 2 * 2**30)[1]
 gguf_plan.room_bytes = lambda *a_, **k_: (calls.append("room"), orig_room(*a_, **k_))[1]
 t_sh = gguf_plan.tune(TWIN, 32768, free=8000 * MIB, want_cache=False, plugin=True)
 mg_sh = multigpu.plan(TWIN, 32768, [8000 * MIB, 8000 * MIB])

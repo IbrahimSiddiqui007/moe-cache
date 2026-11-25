@@ -53,7 +53,7 @@ def plan(path, ctx, frees, kv_q8=False, ub=None, reserve_gb=0.5, layout=None, kv
     probe = gguf_plan.tune(path, ctx, free=max(frees), kv_q8=kv_q8, want_cache=False, reserve_gb=reserve_gb, ub=ub) if layout is None else {"ub": ub or 1024, "compute_mib": compute_mib or 400}
     buf = (compute_mib if compute_mib is not None else probe["compute_mib"]) * MIB      # bytes
     u = probe["ub"]
-    block = gguf_plan.long_prompt_block_bytes(lay, u)                    # the plugin's long-prompt block: tune()'s own function; on the first card only
+    block = gguf_plan.long_prompt_block_bytes(lay, u, ctx, gguf_plan.loop_bias_bytes(ctx, u, gguf_plan.loop_heads(path)) if layout is None else 0)                    # the plugin's long-prompt block: tune()'s own function; on the first card only
     caps = [gguf_plan.room_bytes(f, buf / MIB, reserve_gb, block if k == 0 else 0) for k, f in enumerate(frees)]       # tune()'s own subtraction, per card
     light = (gguf_plan.gpu_fixed_weights_bytes(lay) + kv) / (L + 1)      # the same fixed part tune() counts (token_embd stays on the CPU), spread over the slots
     by = lay.get("expert_bytes_by_layer") or {}

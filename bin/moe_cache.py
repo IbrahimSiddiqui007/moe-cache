@@ -4842,6 +4842,17 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     return ub, ncmoe
 
 
+def block_cap_stage(env, tuned, stock, ncmoe_user):
+    """LAUNCHER-1303/1236: at a context under 32k the planner keeps less than one expert layer of room for the plugin's long-prompt GPU block (planner/gguf_plan.py
+    block_weight_share) and gives the rest to static expert layers. The plugin is told that room (MOE_CACHE_GPU_BLOCK_CAP_MIB) so a block never grows into it: it splits instead
+    (the driver's free figure can overstate the real room, Windows AMD / Intel). Only for the planner's own placement (not stock, no --n-cpu-moe of yours, no GPU cache) and
+    never over a value you set. Same on Linux and Windows. Returns env."""
+    cap = int((tuned or {}).get("block_cap_mib") or 0)
+    if stock or not cap or ncmoe_user is not None or (tuned or {}).get("gpu_cache_mib") or os.environ.get("MOE_CACHE_GPU_BLOCK_CAP_MIB") or env_has(env, "MOE_CACHE_GPU_BLOCK_CAP_MIB"):
+        return env
+    return env + [("MOE_CACHE_GPU_BLOCK_CAP_MIB", str(cap))]
+
+
 def plugin_no_op_offload_stage(a, env, user_extra, stock):
     """Plugin long-prompt block ignored llama.cpp's --no-op-offload (docs/reference/techniques.md, LOOP-SPEED-2): the plugin runs the expert block of every batch of MOE_CACHE_GPU_MIN_TOKENS+ tokens
     on the GPU itself. A --no-op-offload (or -nopo) YOU gave after `--` now also switches that block off (MOE_CACHE_GPU_MIN_TOKENS=0 = never, src/mc_state_gpu.h), so the flag means
@@ -6023,6 +6034,7 @@ def _launch_plan(a, extra, argv, machine):
     if (a.hybrid or a.fast) and not os.environ.get("MOE_CACHE_GPU_MIN_TOKENS"):
         env.append(("MOE_CACHE_GPU_MIN_TOKENS", "64"))
     env = plugin_no_op_offload_stage(a, env, user_extra, stock)
+    env = block_cap_stage(env, tuned, stock, ncmoe_user)
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
     cram = prompt_cache_stage(a, extra, env, ls, machine, win, dry)

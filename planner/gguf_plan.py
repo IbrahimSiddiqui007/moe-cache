@@ -1017,9 +1017,15 @@ def rule_buffer_mib(path, lay, ctx, ub, kv_q8=False, fit_params=None, ubs=PLAN_U
     return best, src
 
 
-def rule_block_mib(path, lay, ub):
+def rule_block_mib(path, lay, ub, ctx=None, uncounted=0):
     """Room the long-prompt GPU block needs (MiB): one layer of experts + 35 MiB + the batch's intermediate results (per token n_used x (2 n_ff_exp + n_embd) x 4 B x 1.2;
-    Flash-Next 0.18 MiB, measured 923 MiB at -ub 1024 and 1107 at 2048) + the 256 MiB the plugin wants free before it allocates a block."""
+    Flash-Next 0.18 MiB, measured 923 MiB at -ub 1024 and 1107 at 2048) + the 256 MiB the plugin wants free before it allocates a block.
+    ctx / uncounted: below BLOCK_FULL_CTX a share of the layer's weights only (small_ctx_block, the same rule as long_prompt_block_bytes)."""
+    e = lay["expert_bytes_per_layer"]
+    return small_ctx_block(_rule_block_full_mib(path, lay, ub) * 1048576, e, ctx, uncounted) / 1048576 if e else 0.0
+
+
+def _rule_block_full_mib(path, lay, ub):
     per_tok = 0.18 * 1048576
     try:
         m = read_meta(shards(path)[0]); a = m.get("general.architecture")
@@ -1047,7 +1053,7 @@ def plan_table(path, ctx=8192, free=None, kv_q8=False, reserve_gb=0.5, fit_param
     prefetch_fit_params(fit_params, path, ctx, ubs, kv_q8)
     for u in ubs:
         buf, src = rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params, ubs)
-        blk = rule_block_mib(path, lay, u)
+        blk = rule_block_mib(path, lay, u, ctx, loop_bias_bytes(ctx, u, loop_heads(path)))
         room = free - fixed - buf * 1048576 - reserve_gb * 1e9 - blk * 1048576
         gl = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"])))
         old = compute_buffer_guess_mib(ctx, u)
@@ -1080,9 +1086,62 @@ def gpu_fixed_weights_bytes(lay):
     return lay["other_bytes"] - lay.get("cpu_only_bytes", 0)
 
 
-def long_prompt_block_bytes(lay, ub):
-    """Room kept free for the plugin's long-prompt GPU block at micro-batch ub (one expert layer plus the batch's results, rule of ours; see tune()). 0 for a dense model."""
-    return ((1.6 if ub > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
+# LAUNCHER-1303/1236: below this context the long-prompt block's room keeps only a share of one expert layer's weights (block_weight_share). The plugin
+# splits a block that does not fit into up to 16 parts that each fit the room (src/mc_backend.inl, N23 "chunks", on by default), so a partial room keeps
+# prompt batches on the GPU. A split costs prompt speed on EVERY batch of MOE_CACHE_GPU_MIN_TOKENS+ tokens (each part runs the whole batch; MOE_CACHE_GPU_COMPACT is
+# off), at any context: the trade is that cost against one more static expert layer for every decoded token, which weighs more when the context (so the
+# prompt work per conversation) is short. NOT MEASURED: neither the split's cost nor the trade; the 32k line and the 1/4 floor are rules of ours.
+# The weight room is never cut below BLOCK_MIN_WEIGHT_SHARE (about a 2-4 part split when the batch's results are as estimated; the plugin allows 16) and
+# the batch's results and the plugin's 256 MiB headroom are kept in full.
+# PC 2026-11-25 (chain29 item 020, RX 9070 XT, Inkling 2 Mini UD-IQ4_XS, ctx 4096, n=1 per arm = forecast): stock with no block and 2 more GPU layers
+# was 5.5 % faster on decode AND 6.7 % faster on prompts than the plugin plan with a full block. The share itself is a rule of ours, not measured.
+BLOCK_FULL_CTX = 32768
+BLOCK_MIN_WEIGHT_SHARE = 0.25
+
+
+def block_weight_share(ctx):
+    """Share of one expert layer's weights the long-prompt block's room keeps at this context: 1 from BLOCK_FULL_CTX on (and when ctx is unknown),
+    ctx / BLOCK_FULL_CTX below it, never under BLOCK_MIN_WEIGHT_SHARE."""
+    if not ctx or ctx >= BLOCK_FULL_CTX:
+        return 1.0
+    return max(BLOCK_MIN_WEIGHT_SHARE, ctx / BLOCK_FULL_CTX)
+
+
+def loop_heads(path):
+    """n_head of a looped model (GGUF <arch>.loop.count > 1: Inkling 2 Mini today), else 0. Read from the header; nothing keyed on a model name."""
+    try:
+        m = read_meta(shards(path)[0])
+        a = m.get("general.architecture") or ""
+        if not a or not isinstance(m.get(a + ".loop.count"), int) or m[a + ".loop.count"] <= 1:
+            return 0
+        h = m.get(a + ".attention.head_count")
+        h = max(h) if isinstance(h, list) and h else h
+        return int(h) if isinstance(h, int) and h > 0 else 1
+    except Exception:
+        return 0
+
+
+def loop_bias_bytes(ctx, ub, n_head):
+    """A looped model's relative-position bias buffers on the GPU: two dense n_kv x n_tokens x n_head F32 tensors alive at once (LAUNCHER-1284, 2.8 GiB measured
+    at 32k -ub 512 on the laptop vs this 3 GiB). 0 for n_head 0."""
+    return 2 * ctx * ub * n_head * 4 if n_head and ctx else 0
+
+
+def small_ctx_block(full, weights, ctx, uncounted=0):
+    """The block room at a context below BLOCK_FULL_CTX: `full` less the weights' share given up (block_weight_share), but never less than `full` minus what is
+    given up after `uncounted` bytes (a looped model's bias buffer the compute estimate does not count): room the plan cannot see is never handed to expert layers."""
+    give = (1.0 - block_weight_share(ctx)) * weights
+    return full - max(0.0, give - uncounted)
+
+
+def long_prompt_block_bytes(lay, ub, ctx=None, uncounted=0):
+    """Room kept free for the plugin's long-prompt GPU block at micro-batch ub (one expert layer plus the batch's results, rule of ours; see tune()). 0 for a dense model.
+    ctx: below BLOCK_FULL_CTX only a share of the layer's weights is kept (small_ctx_block; None = the full layer, as before). uncounted: see small_ctx_block."""
+    e = lay["expert_bytes_per_layer"]
+    if not e:
+        return 0
+    full = (1.6 if ub > 1024 else 1.35) * e + (160 + 256) * 1048576
+    return small_ctx_block(full, e, ctx, uncounted)
 
 
 def room_bytes(free, compute_mib, reserve_gb, block=0):
@@ -1180,12 +1239,24 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     # (measured at -ub 2048: 1107 MiB for the same layer, 1.57x: the batch's intermediate results grow with the micro-batch)
     # plus the 256 MiB the plugin itself requires free before it allocates a block (gpu_segment's headroom check): without it the reserve had 24 MiB of
     # slack on Flash-Next at -ub 2048, and at ctx 8192 the block found 423 MiB free where it needed 455, so prompts fell back to the CPU (~20 tok/s)
-    def block_for(u):
-        if not plugin:
-            return 0              # stock llama-server: no plugin, no long-prompt GPU block (LAUNCHER-1177: 839 MiB were kept free for nothing on the laptop 35B)
+    # LAUNCHER-1303/1236: below BLOCK_FULL_CTX the room keeps only a share of the layer's weights (the plugin splits a block that does not fit). A looped model's
+    # bias buffer that the compute estimate does not count (loop_n_head 0) is never handed to expert layers out of that room (uncounted).
+    heads_uncounted = loop_heads(path) if not loop_n_head and ctx < BLOCK_FULL_CTX else 0
+
+    def block_full_for(u):
         if rule:
             return rule_block_mib(path, lay, u) * 1048576
         return long_prompt_block_bytes(lay, u)
+
+    def block_for(u):
+        if not plugin:
+            return 0              # stock llama-server: no plugin, no long-prompt GPU block (LAUNCHER-1177: 839 MiB were kept free for nothing on the laptop 35B)
+        if want_cache:
+            return block_full_for(u)          # a GPU expert cache plan keeps the full room (the cut is passed to the plugin only for static layers, block_cap_stage)
+        unc = 0 if mbuf.get(u, {}).get("compute_mib") else loop_bias_bytes(ctx, u, heads_uncounted)       # a measured buffer already holds the bias
+        if rule:
+            return rule_block_mib(path, lay, u, ctx, unc) * 1048576
+        return long_prompt_block_bytes(lay, u, ctx, unc)
     best = None
     fixed_ub = ub
     # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
@@ -1238,10 +1309,17 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         note("gpu_compute_mib", comp or 0, "measured" if fit_params else "constant", "compute buffer by MOE_CACHE_PLAN_RULE (" + ("llama-fit-params" if fit_params else "formula") + ")")
     else:
         note("gpu_compute_mib", comp or 0, "constant", f"compute buffer at -ub {ub}: our table (measured on Flash-Next on the PC); no load of this model, context and micro-batch recorded here")
+    share = 1.0 if want_cache else block_weight_share(ctx)
     note("long_prompt_block_mib", block / MiB, "constant",
-         "room for the plugin's long-prompt GPU block (one expert layer plus the batch's results, rule of ours)" if plugin else "0: stock llama-server runs no plugin, so no long-prompt block")
+         ("room for the plugin's long-prompt GPU block (one expert layer plus the batch's results, rule of ours)" if share >= 1 else
+          f"room for the plugin's long-prompt GPU block at a short context: {share:.0%} of one expert layer's weights (the plugin splits a bigger block) plus the batch's results, "
+          f"rule of ours" + ("; a looped model's uncounted bias buffer keeps part of the full room" if heads_uncounted else ""))
+         if plugin else "0: stock llama-server runs no plugin, so no long-prompt block")
     note("gpu_reserve_mib", reserve_gb * 1e9 / MiB, "constant", "kept free for other programs and growth (0.5 GB rule of ours, more when the desktop holds GPU memory, --gpu-margin)")
-    return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
+    # LAUNCHER-1303/1236: a block room cut below the full layer is only safe when the plugin keeps the block inside it: the launcher passes it as
+    # MOE_CACHE_GPU_BLOCK_CAP_MIB (the plugin's free figure overstates the real room on Windows AMD / Intel, LAUNCHER-1133). 0 = no cap (full room, as before).
+    block_cap = int(block // MiB) if plugin and block and share < 1 and block < block_full_for(ub) else 0
+    return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576), "block_cap_mib": block_cap,
             "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not mbuf.get(ub, {}).get("compute_mib")) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 
 
