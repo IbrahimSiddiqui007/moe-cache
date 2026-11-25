@@ -3452,6 +3452,14 @@ def gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None, say_leave=None):
     return {"free": free, "kw": kw, "desk_kw": desk_kw, "use_room": use_room}
 
 
+def plan_fit_params(ls):
+    """LAUNCHER-1236: the llama-fit-params path the plan rule measures with, or None when the rule is off (then tune() uses the table, as before)."""
+    planner_path()
+    from gguf_plan import plan_rule_active, find_fit_params
+    fp = find_fit_params(ls)
+    return fp if plan_rule_active(fp) else None
+
+
 def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes):
     """ENGINE-029, stage "tuner": micro-batch, GPU expert cache and the number of static expert layers, from the one shared tuner (planner/gguf_plan.py: tune),
     with the VRAM other programs hold (desk reserve), --gpu-margin and --leave-room counted (gpu_room_inputs). Returns (tuned dict or None, the reserve in GB when the desktop
@@ -4033,12 +4041,12 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
         # engine is chosen after the GPU facts are known and with the memory the plan will really have (follow-ups 5 and 9)
         inp = gpu_room_inputs(a, machine, gpu, mm_bytes)
         lay_n = machine.planner_answer(model, ctx, ram_gib, float(a.vram) if a.vram else None)["layers"]       # raises for a dense model: stock stays
-        t = tune(model, ctx, free=inp["free"], want_cache=False, plugin=False, **inp["kw"],
+        t = tune(model, ctx, free=inp["free"], want_cache=False, plugin=False, fit_params=plan_fit_params(ls), **inp["kw"],
                  measured=measured_loads(a, ls, model, ctx, False, machine, False, False, None, inp["kw"]["free_source"]))      # as stock runs it: does every expert fit the GPU?
         ncmoe = min(int(t["n_cpu_moe"]), int(lay_n))
         if ncmoe > 0:
             # LAUNCHER-1236: the plugin keeps room free for its long-prompt GPU block, which moves expert layers to the CPU. Same inputs, plugin on, f16 KV, usual micro-batch:
-            tp = tune(model, ctx, free=inp["free"], want_cache=False, plugin=True, **inp["kw"],
+            tp = tune(model, ctx, free=inp["free"], want_cache=False, plugin=True, fit_params=plan_fit_params(ls), **inp["kw"],
                       measured=measured_loads(a, ls, model, ctx, False, machine, True, False, None, inp["kw"]["free_source"]))
             ncmoe_p = min(int(tp["n_cpu_moe"]), int(lay_n))
     except Exception as e:
@@ -4548,7 +4556,7 @@ def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False, model=None):
     return pinargs
 
 
-def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine):
+def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine, ls=None):
     """ENGINE-029, stage "micro-batch and static layers": -ub from the tuner (or the user), and without a GPU cache the number of static expert layers from the same decision (the planner alone assumes a small compute buffer, RESULTS 61); the hint for --fast=kv; the MTP warning for an --n-cpu-moe that puts more layers on the GPU than planned. Returns (ub as text, n_cpu_moe as text, whether the tuner had no GPU memory figure)."""
     ub = a.ub
     if ub == "auto":
@@ -4571,7 +4579,7 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
         if not kv_q8 and not a.fast:
             try:
                 from gguf_plan import fast_kv_hint
-                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
+                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None, fit_params=plan_fit_params(ls),
                                  **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
                 if h:
                     say("moe-cache: " + h)
@@ -5967,7 +5975,7 @@ def _launch_plan(a, extra, argv, machine):
     a.plan_plugin = method != "none (stock)"        # the plugin's long-prompt GPU block is planned for only when the plugin runs (LAUNCHER-1177)
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     kv_q8, tuned, desk_kw, ub_asked = long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked)
-    ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
+    ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine, ls)
     # LAUNCHER-1285 (loop-speed-2): the looped-model stage runs on the ncmoe the GPU-cache stage resolved (a cache too small to keep becomes the planner's static N, a normal spilled
     # placement that gets the use-count order; a real cache plan, 999, stays untouched). That order changes the CUDA auto-cache fallback command (-ub 2048 + op-offload -> -ub 128 +
     # --no-op-offload; critic, unmeasured), so it is opt-in with MOE_CACHE_LOOP_FIT=1; without it the old order stands (stage first, owner rule: defaults stay as today).
@@ -6149,7 +6157,7 @@ def run_launch_plan(plan):
                 tf = free_now()
                 def tune_free(tf_):
                     reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf_)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
-                    t = tune(model, ctx, free=tf_[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd,
+                    t = tune(model, ctx, free=tf_[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
                              free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
                     return t["n_cpu_moe"], t["ub"]
                 def record_fail(mib, free_mib):
@@ -6195,7 +6203,7 @@ def run_launch_plan(plan):
                 return None
             reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
             # the tables, not the load records, after an out-of-memory load (a record may be what was too tight); the same engine, free-figure and MTP terms as the plan
-            t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd,
+            t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
                      free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
             lay = model_layout(model)
             old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])
