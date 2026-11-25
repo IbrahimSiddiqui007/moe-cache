@@ -4255,6 +4255,102 @@ def live_keep_decision(total, *, stock=False, exact=False, env_keep=None, off=No
     return ram_keep_bytes(total) / 2**30
 
 
+WEIGHTS_PLUGIN_MIN_GIB = 4.0       # LAUNCHER-1165: the RAM the plugin's expert cache takes at the least (ram_cap_decision never plans it under 4 GiB)
+WEIGHTS_CTX_STEPS = (32768, 16384, 8192)     # the shorter contexts weights_ram_check may name (it never applies one: "never a shorter context", R19 + the user's --ctx wins)
+
+
+def weights_ram_check(need, avail, total, *, ctx, ctx_user=False, stock_path=True, cpu_expert_bytes=0.0, kv_at=None, table_bytes=0.0):
+    """LAUNCHER-1165: will the model's weights that stay in RAM (need, bytes: the plan's CPU-side part) fit beside the programs already open? avail = the RAM available at
+    start (Windows ullAvailPhys, Linux MemAvailable), total = physical RAM; the room is avail minus what the machine keeps free (ram_keep_bytes: max(4 GiB, 12.5 %)).
+    Returns None when it fits (or a figure is missing), else a dict: need, room, avail, lines (plain text for the plan and the control page's log), ctx_hint (a shorter
+    context that would fit by the estimate, or None). A shorter context only helps on the stock path with a GPU: the KV memory it frees takes expert layers off the CPU
+    (kv_at(c) = KV bytes at c tokens; the freed bytes are counted 1:1 against the CPU-side experts: an estimate, the tuner places whole layers). Nothing is applied here:
+    the launcher never shortens a context by itself, and --load-mode none would make the same bytes private memory, so it is not offered. table_bytes: tables read from
+    the file as needed (Flash-Next's n-gram table, 28.8 GB in the 75.8 GB IQ3_XXS): NOT counted in need (how much of it stays in RAM is not measured; counting all of it warned on
+    every 32 and 64 GB PC, self-critic), only named in a note when it is bigger than what is left. Pure: no probes."""
+    if not need or not avail or not total:
+        return None
+    keep = ram_keep_bytes(total)
+    room = max(avail - keep, 0.0)
+    g = lambda b: f"{b / 1e9:.1f}"
+    table_note = (f"moe-cache: note: this model also reads a {g(table_bytes)} GB table from the file as it runs; the pages it reads stay in RAM while there is room and can take "
+                  f"what is left beside your apps (how much is not measured, so it is not in the launcher's RAM estimate)") if table_bytes and table_bytes > max(room - need, 0.0) else None
+    if need <= room:
+        return {"need": need, "room": room, "avail": avail, "keep": keep, "lines": [table_note], "ctx_hint": None, "warn": False} if table_note else None
+    hint = None
+    if stock_path and kv_at and cpu_expert_bytes > 0 and not ctx_user:
+        try:
+            kv_now = kv_at(ctx)
+            for c in WEIGHTS_CTX_STEPS:
+                if c >= ctx:
+                    continue
+                kv_c = kv_at(c)
+                if kv_now is None or kv_c is None:
+                    break
+                if need - min(max(kv_now - kv_c, 0.0), cpu_expert_bytes) <= room:
+                    hint = c
+                    break
+        except Exception:
+            hint = None
+    lines = [f"moe-cache: warning: this model needs about {g(need)} GB of RAM beside your open apps; {g(room)} GB is free. Close apps or use a smaller context/model."]
+    detail = (f"moe-cache: RAM for the weights: {g(need)} GB of the model stays in RAM with this plan "
+              + ("(the experts not on the GPU and the input embedding; memory-mapped pages, counted as all read in over a conversation)" if stock_path else
+                 f"(the least the plugin's RAM plan ever takes, {WEIGHTS_PLUGIN_MIN_GIB:.0f} GiB, plus {RAM_STREAM_GIB:.0f} GiB for a model file bigger than the room, read through "
+                 "memory-mapped pages: both assumed, not measured)")
+              + f"; {avail / 1e9:.1f} GB available now minus {keep / 1e9:.1f} GB kept free for your programs = {g(room)} GB (an estimate from the file, not measured)")
+    lines.append(detail)
+    if hint:
+        lines.append(f"moe-cache: a context of {hint} instead of {ctx} would fit by this estimate (the freed GPU memory takes expert layers off the RAM): --ctx {hint}. "
+                     "The launcher does not shorten the context by itself.")
+    elif ctx_user and stock_path and cpu_expert_bytes > 0:
+        lines.append(f"moe-cache: your --ctx {ctx} is kept; a shorter context leaves more of the model on the GPU and less in RAM")
+    if table_note:
+        lines.append(table_note)
+    return {"need": need, "room": room, "avail": avail, "keep": keep, "lines": lines, "ctx_hint": hint, "warn": True}
+
+
+def weights_ram_stage(a, model, ctx, cmd, machine, stock_path):
+    """LAUNCHER-1165, plan stage: the weights_ram_check() figures from this plan and machine (Windows and Linux alike) and its lines said (to the terminal and the control
+    page's log). Read-only: it changes nothing in the command. MoE models only (a dense model's RAM spill is load_mode_low_ram's job). The CPU-side part: stock path, the
+    expert layers under --n-cpu-moe (all of them and every other weight with -ngl 0) + token_embd when the model has its own output layer; plugin path, the plugin's RAM floor
+    + the streamed-file term of ram_cap_decision (its own budget already follows the available RAM, LAUNCHER-1145). Tables read from the file (Flash-Next's n-gram table) are only
+    named in a note. Linux inside a cgroup limit: the system's MemAvailable is used, not the limit (not handled). Returns the check's dict or None."""
+    try:
+        planner_path()
+        from gguf_plan import model_layout, gpu_expert_bytes, kv_bytes
+        lay = model_layout(model)
+        if not lay.get("n_layers") or not lay.get("expert_bytes_per_layer"):
+            return None
+        experts = float(sum((lay.get("expert_bytes_by_layer") or {}).values()) or lay["n_layers"] * lay["expert_bytes_per_layer"])
+        ngl = arg_after(cmd, "-ngl", "--n-gpu-layers", "--gpu-layers")
+        n = arg_after(cmd, "--n-cpu-moe", "-ncmoe")
+        if str(ngl) == "0" or (n is None and ("--cpu-moe" in cmd or "-cmoe" in cmd)):
+            cpu_exp = experts
+        else:
+            cpu_exp = max(experts - gpu_expert_bytes(lay, int(n)), 0.0) if n is not None else 0.0
+        table = float(lay.get("table_bytes", 0) or 0)
+        side = float(lay.get("cpu_only_bytes", 0) or 0)
+        if str(ngl) == "0":
+            side = float(lay.get("total_bytes", 0)) - experts - table
+        avail = getattr(machine, "mem_available", lambda: machine.mem_for_server(None))()
+        total = machine.mem_total()
+        if stock_path:
+            need = side + cpu_exp
+        else:              # the plugin sizes its own RAM from the available RAM (LAUNCHER-1145): only its floor (cache + the rest of the server) and the streamed-file term can fail to fit
+            room0 = (avail or 0) - ram_keep_bytes(total or 0)
+            need = WEIGHTS_PLUGIN_MIN_GIB * 2**30 + (RAM_STREAM_GIB * 2**30 if float(lay.get("total_bytes", 0)) > room0 else 0.0)
+        kvq = kv_quantized(cmd)
+        d = weights_ram_check(need, avail, total, ctx=int(ctx), ctx_user=bool(getattr(a, "ctx", None)), stock_path=stock_path, cpu_expert_bytes=cpu_exp,
+                              kv_at=(lambda c: kv_bytes(model, c, kv_q8=kvq)) if str(ngl) != "0" else None, table_bytes=table)
+    except Exception as e:
+        say(f"moe-cache: could not estimate the RAM the weights need ({type(e).__name__}: {e})", err=True)
+        return None
+    if d:
+        for line in d["lines"]:
+            say(line, err=True)
+    return d
+
+
 def avail_reserve_gib(a, machine, stock=False, model=None):
     """GiB the plugin's cache may plan with: ram_cap_decision() with this machine's figures: (gib, avail, keep, decision) or None when it does not apply. Windows and Linux; --exact
     behaves as before (Windows keeps the reserve, Linux has none). Chain's Flash-Next probe 2026-11-13 and the 2026-11-17 daily-use run: without it the cache left 1.3 GB, then 0, available beside the open programs."""
@@ -6075,6 +6171,8 @@ def _launch_plan(a, extra, argv, machine):
     if new_cram is not None and cram is not None and re.fullmatch(r"[0-9]+", str(new_cram)) and str(new_cram) != str(cram):
         cram = new_cram                     # the stage shrank the prompt cache: the plan and the plugin's host reserve follow
         env[:] = [(k, str(host_reserve_mib(new_cram, a.agent)) if k == "MOE_CACHE_HOST_RESERVE_MIB" else v) for k, v in env]
+    if not dense:
+        weights_ram_stage(a, model, ctx, cmd, machine, method == "none (stock)")      # LAUNCHER-1165: warns (never changes the plan) when the weights left in RAM will not fit beside the open apps
     if commit_refusal:
         say(commit_refusal, err=True)       # the plan still describes the launch (--dry-run, the control page); run_launch_plan refuses to start it
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
