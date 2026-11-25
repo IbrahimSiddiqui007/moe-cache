@@ -112,7 +112,7 @@ Step by step for each agent, the desktop apps and the context limit to set: [doc
 
 ## Results
 
-**No stock-against-moe-cache table in v0.3.9.** No speed figure is shown and no headline speed claim is made for the default model, Q2_0 or Qwen3.6-35B; speed numbers for this release follow in a later release. Older records on the earlier head kit (v0.3.7.1 code, b12064) are kept in [docs/results-archive/](docs/results-archive/RESULTS.md); they are not v0.3.9 numbers. Test PC of earlier records: Windows desktop, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM at 6000 MT/s (EXPO), Vulkan.
+**No stock-against-moe-cache table in this release.** No speed figure is shown and no headline speed claim is made for the default model, Q2_0 or Qwen3.6-35B; speed numbers for this release follow in a later release. Older records on the earlier head kit (v0.3.7.1 code, b12064) are kept in [docs/results-archive/](docs/results-archive/RESULTS.md); they are not numbers for this release. Test PC of earlier records: Windows desktop, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM at 6000 MT/s (EXPO), Vulkan.
 
 **The long-prompt mode (the default)** has no table in this release. Speed numbers for this release follow in a later release. The q8_0 KV cache is not byte-identical to stock (see the top of this page); `--no-long-prompt` and `--exact` turn the mode off.
 

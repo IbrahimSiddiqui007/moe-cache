@@ -41,7 +41,7 @@ jobs:
           # release b12064 = ggml 0.28.0, the previous pin (kept as a row). The vendored headers (third_party/ggml-v3, from 0.26) differ from it by new
           # declarations only, plus three optional hooks appended to ggml_backend_buffer_i (set_tensor_n, get_tensor_n, cpy_tensor_n; the plugin passes its interface zero-padded, src/mc_buffer.inl)
           - { name: "ggml-0.28-b12064-api3", sha: "51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c", api: "3", tested: "yes" }
-          # release b12207 = ggml 0.29.0, the current pin since 2026-11-09 (the build the Windows kit and the Linux tarball bundle; upstream's own moe-cache cache, PRs 30966 / 31233 / 31888, is in it)
+          # release b12207 = ggml 0.29.0, the identity reference pin; the kits bundle b12651 since v0.3.9 (the build the Windows kit and the Linux tarball bundle; upstream's own moe-cache cache, PRs 30966 / 31233 / 31888, is in it)
           - { name: "ggml-0.29-b12207-api3", sha: "998200491327347eed85f007e4de7a1a7c871453", api: "3", tested: "yes" }
           # DRAFT: master after #32807 (ggml 1.0.0, API 4), the Inkling 2 pin; tested only after the API-4 plugin passes this workflow
           - { name: "ggml-1.0-b12651-api4", sha: "f5e6915c28f10330885fcb9243a93ae98d3115ab", api: "4", tested: "yes" }
