@@ -174,6 +174,26 @@ try:
     del os.environ["MOE_CACHE_LIB"]
     # no GPU: the planner puts every expert layer on the CPU (--vram 0): the plugin is asked for, no GPU requirement (owner decision 2026-11-08)
     check(bool(f(_A(vram="0"), _M(lay["n_layers"]))), "plugin_for_partial_offload: no GPU (all expert layers on the CPU) -> the plugin, as on a GPU machine")
+    # LAUNCHER-1303 critic (pick-3): the stock-or-plugin check cuts the long-prompt block room only where the plan will (cut_block of its plugin=True tune)
+    import gguf_plan as _gp
+    class _MC(_M):
+        def __init__(self, cap, **k): super().__init__(**k); self.cap = cap
+        def lib_has_block_cap(self, lib): return self.cap
+    _seen_cut, _real_tune = [], _gp.tune
+    def _spy(*a_, **k_):
+        if k_.get("plugin"): _seen_cut.append(k_.get("cut_block"))
+        return _real_tune(*a_, **k_)
+    _gp.tune = _spy
+    try:
+        for _tag, _ea, _cap, _env, _want in (("current plugin", {}, True, None, True), ("plugin without the cap", {}, False, None, False), ("--exact", {"exact": True}, True, None, False),
+                                              ("MOE_CACHE_GPU_CHUNKS=0", {}, True, "0", False)):
+            if _env is not None: os.environ["MOE_CACHE_GPU_CHUNKS"] = _env
+            _seen_cut.clear()
+            f(_A(**_ea), _MC(_cap, ncmoe_=5))
+            os.environ.pop("MOE_CACHE_GPU_CHUNKS", None)
+            check(_seen_cut[:1] == [_want], f"plugin_for_partial_offload stock check: {_tag}: block-room cut {'on' if _want else 'off'} ({_seen_cut})")
+    finally:
+        _gp.tune = _real_tune
 finally:
     for k, v in _old_env.items():
         if v is not None: os.environ[k] = v

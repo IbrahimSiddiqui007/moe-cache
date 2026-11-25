@@ -238,6 +238,9 @@ lr.save(cache, GID, build, MID, 32768, 2048, ("f16", "f16"), "stock", False, ent
 got = mc.measured_loads(A2, LS, TWIN, 32768, False, _M2(), False, False, None, "nvidia-smi")
 check(got.get("buffers", {}).get(2048, {}).get("compute_mib") == 660.0 and got.get("gap_mib") == gap, f"launcher: the record is found ({got})")
 check(mc.measured_loads(types.SimpleNamespace(vram="8"), LS, TWIN, 32768, False, _M2(), False, False, None, "nvidia-smi") == {}, "launcher: --vram given: no record used")
+lr.save(cache, GID, build, MID, 32768, 128, ("f16", "f16"), "stock", False, {"buffers": {"compute_mib": 153.3, "context_mib": 768.0, "at": "t"}}, free_source="nvidia-smi")
+got128 = mc.measured_loads(A2, LS, TWIN, 32768, False, _M2(), False, False, None, "nvidia-smi")
+check(got128.get("buffers", {}).get(128, {}).get("compute_mib") == 153.3, f"launcher: a load recorded at the looped-model rule's -ub 128 is found (LAUNCHER-1303; got {got128.get('buffers')})")
 os.environ["MOE_CACHE_LOAD_RECORD"] = "0"
 check(mc.measured_loads(A2, LS, TWIN, 32768, False, _M2(), False, False, None, "nvidia-smi") == {}, "launcher: MOE_CACHE_LOAD_RECORD=0: no record used")
 del os.environ["MOE_CACHE_LOAD_RECORD"]
