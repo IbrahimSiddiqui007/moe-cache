@@ -160,6 +160,17 @@ xd = tempfile.mkdtemp(dir=T)
 h, rc, out = run_default(lambda h: ["--prefix", os.path.join(xd, "moe-cache")], xdg=xd)
 check(rc == 0 and "own_cache=0" in open(os.path.join(xd, "moe-cache", ".installed")).read(), "--prefix naming the XDG_DATA_HOME default folder: own_cache=0")
 
+# LAUNCHER-1222 critic G (Linux half): the "cache:" line names the folder the launcher reads: XDG_CACHE_HOME when set, else ~/.cache (bin/moe_cache.py CACHE_DIR)
+xc = tempfile.mkdtemp(dir=T)
+os.environ["XDG_CACHE_HOME"] = xc
+try:
+    h, rc, out = run_default(lambda h: [])
+finally:
+    os.environ.pop("XDG_CACHE_HOME")
+check(rc == 0 and f"cache:   {xc}/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME set: the cache line names $XDG_CACHE_HOME/moe-cache")
+h, rc, out = run_default(lambda h: [])
+check(rc == 0 and f"cache:   ~/.cache/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME unset: the cache line names ~/.cache/moe-cache")
+
 # ---- failure midway (AUD-049): a failed update keeps the old install, a failed first install leaves nothing
 def state():
     return sorted(os.listdir(prefix)) if os.path.isdir(prefix) else None
