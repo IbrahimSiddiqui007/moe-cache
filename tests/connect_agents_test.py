@@ -367,6 +367,7 @@ if os.name != "nt":
     check(isinstance(rc, str) and "partly set up" in rc and "model.provider" in rc and "model.default" in rc, f"hermes: a failure half-way says what is done and what is not ({str(rc)[:120]})")
 
 # ---- jsonc / BOM / UTF-16 opencode.jsonc (PowerShell 5.1 '>' writes UTF-16), and backups private from the first byte ----
+os.environ.pop("XDG_CONFIG_HOME", None)      # CI sets it: the default opencode folder must be the one under HOME
 ocd = os.path.join(HOME, ".config", "opencode"); os.makedirs(ocd, exist_ok=True)
 ocj = os.path.join(ocd, "opencode.json"); occ = ocj + "c"
 
@@ -428,15 +429,15 @@ finally:
     mc.WINDOWS = real_w
     mc.subprocess.run = real_run
     if real_user is not None: os.environ["USERNAME"] = real_user
-check(len(n_ok) == 2 and n_ok[0][1:] == [_kd, "/grant:r", "tester:(OI)(CI)F"] and n_ok[1][1:] == [_kd, "/inheritance:r"] and n_ok[0][0].endswith("icacls"),
+check(len(n_ok) == 2 and n_ok[0][1:] == [_kd, "/grant:r", "tester:(OI)(CI)F"] and n_ok[1][1:] == [_kd, "/inheritance:r"] and "icacls" in os.path.basename(n_ok[0][0]).lower(),
       f"Windows: harden_key_dir grants the user FIRST, then removes the inherited entries ({n_ok})")
 check(n_nouser == [], f"Windows: without a user name harden_key_dir runs nothing ({n_nouser})")
 runs.clear()
-mc.subprocess.run = _rec
+mc.subprocess.run = _rec; mc.WINDOWS = False
 try:
     mc.harden_key_dir(_kd)
 finally:
-    mc.subprocess.run = real_run
+    mc.WINDOWS = real_w; mc.subprocess.run = real_run
 check(runs == [], f"POSIX: harden_key_dir runs nothing ({runs})")
 
 print("\n%d failed" % len(fails) if fails else "\nall ok")
