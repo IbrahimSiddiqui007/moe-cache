@@ -16,6 +16,7 @@
 | Kits / launcher | **The patched llama.cpp kits bundle `llama-fit-params`**; the planner passes it to the stock-vs-plugin check and the retunes. No change while the plan rule is off; users who set `MOE_CACHE_PLAN_RULE=1` now measure with the bundled tool. | Built and unit tested |
 | Benchmark records | The environment line says "desktop with apps closed" when the harness clean check passed, else "working desktop"; a record names the GPU the run used (`--device`), not the first listed device. | Unit tested |
 | Docs | **What the launcher runs for a model that fits in RAM is stated as the code does it:** stock llama.cpp for a dense model, when every expert fits the card and when the model only nearly fits the GPU; the plugin for a MoE model that fits in RAM with part of its experts on the CPU (`--stock` opts out), also with no GPU. The old line that a machine without a GPU stays on stock was wrong and is removed. | none |
+| Packs | **Opt-in payload hash for packs:** `moe_cache.py pack --hash` records a hash of the pack's payload and `MOE_CACHE_PACK_VERIFY=1` checks it when the pack is loaded. Default off. | Model-free tests only; the cost on a large pack is not measured |
 | Docs | **Inkling 2 Mini is a thinking model:** an empty `content` with `finish_reason` `length` means the token limit ran out while it was thinking (the text so far is in `reasoning_content`); raise max tokens (`docs/TROUBLESHOOTING.md`). | none |
 
 ## Known limits
