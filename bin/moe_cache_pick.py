@@ -153,6 +153,7 @@ def fixed_drives():
             return got
     except Exception:
         pass
+    mc.say_once("fixed_drives", "moe-cache: Windows could not list the fixed drives: only C: and D: are searched for models (--model-dir or a full path reaches other drives)")
     return ["C", "D"]
 
 

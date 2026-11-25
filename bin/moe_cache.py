@@ -119,6 +119,16 @@ def say(msg, err=False):
         print(msg, file=sys.stderr if err else sys.stdout, flush=True)
 
 
+_SAID_ONCE = set()
+
+
+def say_once(key, msg, err=True):
+    """LAUNCHER-1158: one plain line per run for a fallback (an auto value replaced by a guess), however often the code asks."""
+    if key not in _SAID_ONCE:
+        _SAID_ONCE.add(key)
+        say(msg, err=err)
+
+
 def which(prog):
     return shutil.which(prog) or prog
 
@@ -1054,7 +1064,9 @@ def physical_cores():
                 return len(seen)
         except OSError:
             pass
-    return max(1, (os.cpu_count() or 2) // 2)
+    n = max(1, (os.cpu_count() or 2) // 2)
+    say_once("physical_cores", f"moe-cache: the CPU's core count could not be read: assuming {n} physical cores (half of the {os.cpu_count() or 2} logical CPUs; hyper-threading is the common case), so the thread count may be off (-t N in the server arguments sets it)")
+    return n
 
 
 # --leave-room (owner 2026-10-30: a big-model test made the desktop PC stutter while the owner used it; a friend using the PC while a model runs hits
@@ -3809,6 +3821,8 @@ def real_room_stage(a, g, machine):
         by_driver = driver - others if driver >= by_card else driver
         which = "the card's size minus that" if by_card <= by_driver else "llama-server's own free figure minus that"
         room = real_room_mib(min(by_card, by_driver), 0.0)     # the reserve off the smaller term; None when implausible (< 1 GiB)
+        if room is None:
+            say_once("room_implausible", f"moe-cache: GPU room: the figure worked out from the card ({min(by_card, by_driver):.0f} MiB after the other programs' use) is not plausible (under 1 GiB): the driver's own free figure ({driver:.0f} MiB) is used as it is")
         if room:
             REAL_ROOM["room_mib"] = room
         why_ceil = bool(ceil_ and (room is None or ceil_ < room))
