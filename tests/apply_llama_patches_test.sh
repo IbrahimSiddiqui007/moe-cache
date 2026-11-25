@@ -34,4 +34,12 @@ if grep -q 'filepath + ".tmp"' "$P20"; then fail "0020: shared NAME.tmp temp nam
 git checkout -q -f "$BASE"; git clean -qfd
 mkdir "$T/with space"; cp "$T/good/"*.patch "$T/with space/"
 LLAMA_PATCH_DIR="$T/with space" "$S" "$R" | grep -q "2 patch" || fail "patch dir with spaces should apply"
+# PATCH-834/835: the Vulkan error-path patches keep their guards (model-free; the real apply + build is llama_patched.yml)
+P93="$HERE/patches/llama.cpp/0093-vulkan-oom-catch.patch"; P94="$HERE/patches/llama.cpp/0094-vulkan-buffer-leak.patch"
+grep -q 'return ggml_backend_vk_graph_compute_impl(backend, cgraph);' "$P93" || fail "0093: compute must run inside the try"
+grep -q 'catch (const vk::SystemError' "$P93" || fail "0093: vk::SystemError must be caught"
+grep -q 'return GGML_STATUS_ALLOC_FAILED;' "$P93" || fail "0093: failure must return ALLOC_FAILED, not exit"
+grep -q 'device->device.freeMemory(buf->device_memory);' "$P94" || fail "0094: failure path must free the device memory"
+grep -q 'device->device.destroyBuffer(buf->buffer);' "$P94" || fail "0094: failure path must destroy the buffer"
+grep -q '^+        throw;' "$P94" || fail "0094: failure path must rethrow"
 echo "apply_llama_patches_test: PASS"

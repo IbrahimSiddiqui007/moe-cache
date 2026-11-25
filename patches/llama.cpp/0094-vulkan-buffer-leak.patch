@@ -1,0 +1,60 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp b/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
+index 778d012..cdbb660 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
+@@ -182,24 +182,42 @@ static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std
+         throw vk::OutOfDeviceMemoryError("No suitable memory type found");
+     }
+ 
+-    buf->ptr = nullptr;
++    // moe-cache patch 0094: mapMemory/bindBufferMemory/getBufferAddress can throw here.
++    // buf->size is still 0 at that point, so ~vk_buffer_struct frees nothing and the
++    // vk::DeviceMemory and vk::Buffer would leak. Clean them up before rethrowing.
++    // freeMemory on imported host memory is still correct; never unmap it.
++    try {
++        buf->ptr = nullptr;
+ 
+-    if (import_ptr) {
+-        buf->ptr = import_ptr;
+-    } else {
+-        if (buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible) {
+-            buf->ptr = device->device.mapMemory(buf->device_memory, 0, VK_WHOLE_SIZE);
++        if (import_ptr) {
++            buf->ptr = import_ptr;
++        } else {
++            if (buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible) {
++                buf->ptr = device->device.mapMemory(buf->device_memory, 0, VK_WHOLE_SIZE);
++            }
+         }
+-    }
+ 
+-    device->device.bindBufferMemory(buf->buffer, buf->device_memory, 0);
++        device->device.bindBufferMemory(buf->buffer, buf->device_memory, 0);
+ 
+-    buf->device = device;
+-    buf->size = size;
++        buf->device = device;
++        buf->size = size;
+ 
+-    if (device->buffer_device_address) {
+-        const vk::BufferDeviceAddressInfo addressInfo(buf->buffer);
+-        buf->bda_addr = device->device.getBufferAddress(addressInfo);
++        if (device->buffer_device_address) {
++            const vk::BufferDeviceAddressInfo addressInfo(buf->buffer);
++            buf->bda_addr = device->device.getBufferAddress(addressInfo);
++        }
++    } catch (...) {
++        if (buf->ptr && !import_ptr) {
++            device->device.unmapMemory(buf->device_memory);
++        }
++        device->device.freeMemory(buf->device_memory);
++        device->device.destroyBuffer(buf->buffer);
++        buf->device_memory = vk::DeviceMemory{};
++        buf->buffer = vk::Buffer{};
++        buf->ptr = nullptr;
++        buf->size = 0;
++        buf->device = nullptr;
++        throw;
+     }
+ 
+     device->memory_logger->log_allocation(buf, size);

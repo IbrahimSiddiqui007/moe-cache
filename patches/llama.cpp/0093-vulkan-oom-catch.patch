@@ -1,0 +1,49 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 60cebe4..c195829 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -15447,7 +15447,7 @@ static int32_t find_first_set(uint32_t x) {
+     return ret;
+ }
+ 
+-static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
++static ggml_status ggml_backend_vk_graph_compute_impl(ggml_backend_t backend, ggml_cgraph * cgraph) {
+     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
+     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+ 
+@@ -15963,6 +15963,35 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+     UNUSED(backend);
+ }
+ 
++// moe-cache patch 0093: a Vulkan out-of-device-memory thrown by lazy prealloc growth
++// (ggml_vk_preallocate_buffers) during compute must not terminate the process.
++// llama_decode maps GGML_STATUS_ALLOC_FAILED to a -2 return and the server survives.
++static ggml_status ggml_vk_compute_failure(ggml_backend_t backend, const char * what) {
++    GGML_LOG_ERROR("ggml_vulkan: graph compute failed (%s); returning GGML_STATUS_ALLOC_FAILED\n", what);
++
++    ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
++    if (ctx != nullptr) {
++        try {
++            ctx->device->device.waitIdle();
++        } catch (...) {}
++        try {
++            ctx->compute_ctx.reset();
++            ctx->submit_pending = false;
++        } catch (...) {}
++    }
++    return GGML_STATUS_ALLOC_FAILED;
++}
++
++static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
++    try {
++        return ggml_backend_vk_graph_compute_impl(backend, cgraph);
++    } catch (const vk::SystemError & e) {
++        return ggml_vk_compute_failure(backend, e.what());
++    } catch (const std::exception & e) {
++        return ggml_vk_compute_failure(backend, e.what());
++    }
++}
++
+ void ggml_vk_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * graph, struct ggml_backend_graph_optimize_params * params)
+ {
+     VK_LOG_DEBUG("ggml_vk_graph_optimize(" << graph->n_nodes << " nodes)");

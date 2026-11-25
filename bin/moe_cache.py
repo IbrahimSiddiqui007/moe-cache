@@ -228,7 +228,7 @@ def ls_build(ls):
 
 def llama_patch_line(ls):
     """The one-line note the kit's patched llama.cpp carries next to llama-server (PATCHES-moe-cache.txt, written by tools/bundle_llama_patched.sh), e.g.
-    'llama.cpp b12651 + moe-cache patches 0004,0020,0030,0040,0090,0091,0092 built in, all off'. None for an official or any other build (no such file)."""
+    'llama.cpp b12651 + moe-cache patches 0004,0020,0030,0040,0090,0091,0092,0093,0094 built in, all off'. None for an official or any other build (no such file)."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(ls)), "PATCHES-moe-cache.txt"), encoding="utf-8", errors="replace") as f:
             line = f.readline().strip()
