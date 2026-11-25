@@ -36,9 +36,12 @@ with tempfile.TemporaryDirectory() as tmp:
     check(mc.autotune_model_id(os.path.join(a, "m.gguf")) == mc.autotune_model_id(os.path.join(b, "m.gguf")), "autotune_model_id: copied model, same key")
     with open(os.path.join(b, "libggml-base.so"), "r+b") as f:
         f.seek(2 * 2**20); c = f.read(1); f.seek(2 * 2**20); f.write(bytes([c[0] ^ 0xFF]))     # flip the byte: a fixed b"X" equalled the random byte 1 time in 256 (flaky)
+    lib = os.path.join(b, "libggml-base.so"); st = os.stat(lib)
+    os.utime(lib, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))      # a real edit moves the mtime; on a coarse clock the write can land in the same tick as the copy, and the in-process memo (path, size, mtime) would return the old id
     check(lr.build_id(os.path.join(a, "llama-server")) != lr.build_id(os.path.join(b, "llama-server")), "build_id: one byte changed in a library (whole-file hash) -> new id")
     with open(os.path.join(b, "m.gguf"), "r+b") as f:
         f.seek(10); c = f.read(1); f.seek(10); f.write(bytes([c[0] ^ 0xFF]))     # flip, same reason
+    st = os.stat(os.path.join(b, "m.gguf")); os.utime(os.path.join(b, "m.gguf"), ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))   # same reason
     check(lr.model_id(os.path.join(a, "m.gguf")) != lr.model_id(os.path.join(b, "m.gguf")), "model_id: a changed byte in the metadata (sampled part) -> new id")
     t0 = time.monotonic(); lr.content_id(big); lr.content_id(big)
     check(time.monotonic() - t0 < 2.0, "content_id of a sampled file is quick and memoised")
