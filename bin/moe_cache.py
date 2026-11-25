@@ -5619,6 +5619,7 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
 DENSE_SPILL_MIN_CTX = 65536          # the floor of the env override MOE_CACHE_DENSE_SPILL_RULE=1
 DENSE_SPILL_DEFAULT_CTX = 131072     # the default turns on from here (LAUNCHER-1225 items 607 + 614); below it the rule lost 49 % prompt at 64k (item 606_r)
 DENSE_SPILL_UB = 256
+DENSE_SPILL_UB_SAVES_GIB = 0.137     # 140 MiB, half the 280 MiB compute buffer, 27B on the PC, TEST-1121
 
 
 def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
@@ -5656,8 +5657,12 @@ def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
     new = set_cmd_flag(new, "-ub", str(DENSE_SPILL_UB), ("--ubatch-size",))
     new = set_cmd_flag(new, "-np", "1", ("--parallel",))
     a.spill_locked = True             # the auto-tune leaves -ub / -np alone (autotune_stage)
-    say(f"moe-cache: dense spill rule ({why}): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k: -np 1 (one request at a time; frees llama.cpp's per-slot buffers) and "
-        f"-ub {DENSE_SPILL_UB} (half the compute buffer); rule tried on our test PC (27B UD-IQ4_XS, 128k); no speed figure is claimed")
+    after = max(fit['over_gib'] - fit.get('np1_saves_gib', 0.0) - DENSE_SPILL_UB_SAVES_GIB, 0.0)
+    a.dense_spill_after_gib = after
+    say(f"moe-cache: dense spill rule ({why}): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k (estimate with 4 slots and -ub 512): "
+        f"-np 1 (frees {fit.get('np1_saves_gib', 0.0):.1f} GiB of per-slot state, from the GGUF header) and -ub {DENSE_SPILL_UB} (frees about {DENSE_SPILL_UB_SAVES_GIB:.2f} GiB, measured once on the 27B) "
+        f"leave about {after:.1f} GiB spilled; GPU weights {fit['model_gib']:.1f} GiB = file minus token embedding {fit['host_side_gib']:.1f} GiB (kept on the CPU) "
+        f"minus MTP {fit['mtp_skipped_gib']:.1f} GiB (not loaded while MTP is off); rule tried on our test PC (27B UD-IQ4_XS, 128k); no speed figure is claimed")
     return new, str(DENSE_SPILL_UB)
 
 

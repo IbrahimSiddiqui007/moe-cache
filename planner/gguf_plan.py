@@ -359,7 +359,7 @@ def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0
         free = free_bytes / GiB - gap_gib
         need = model + kv / GiB + fixed + margin_gib
         kv1 = kv_bytes(path, ctx, kv_q8=kv_q8, n_seq=1)
-        out = {"np1_saves_gib": ((kv - kv1) / GiB if kv1 is not None else 0.0), "model_gib": model, "mtp_skipped_gib": skipped, "kv_gib": kv / GiB, "fixed_gib": fixed, "margin_gib": margin_gib, "need_gib": need, "free_gib": free,
+        out = {"np1_saves_gib": ((kv - kv1) / GiB if kv1 is not None else 0.0), "model_gib": model, "host_side_gib": emb / GiB, "mtp_skipped_gib": skipped, "kv_gib": kv / GiB, "fixed_gib": fixed, "margin_gib": margin_gib, "need_gib": need, "free_gib": free,
                "fits": need <= free, "over_gib": max(need - free, 0.0), "ctx_fit": ctx if need <= free else 0}
         if need > free:
             lo, hi = 0, ctx // 1024
