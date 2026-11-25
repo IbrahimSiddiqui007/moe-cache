@@ -3512,10 +3512,15 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             kw["plugin"] = getattr(a, "plan_plugin", True)          # the long-prompt GPU block only when the plugin runs (LAUNCHER-1177)
             kw["keep_ub"] = bool(getattr(a, "cuda_listing", False))        # CUDA llama-server: a stock cache keeps -ub 2048 (CACHE-1187); other backends keep the old 1024 rule
             kw["mtp"] = "draft-mtp" in extra
-            if loop_fit_on() and not (a.exact or a.cpu_only):          # LAUNCHER-1284: opt-in until measured (defaults stay as today): the planner counts a looped model's dense bias buffer
-                lm_ = loop_meta(model)
-                if lm_:
-                    kw["loop_n_head"] = lm_[5]
+            # LAUNCHER-1284/1303 (2026-11-25, default for looped models; was opt-in with MOE_CACHE_LOOP_FIT=1): the planner counts a looped model's dense bias buffer (tune reads
+            # the head count from the header) and, when the looped-model rule will run a small -ub (inkling_loop_stage), plans at that -ub (loop_ubs). --exact / --cpu-only keep the old plan.
+            lm_ = loop_meta(model)
+            if a.exact or a.cpu_only or not lm_:
+                kw["loop_n_head"] = 0
+            else:
+                kw["loop_n_head"] = lm_[5]
+                if a.ub == "auto" and not (ub_asked or "").isdigit():
+                    kw["loop_ubs"] = LOOP_UBS if loop_fit_on() else (LOOP_RULE_UB,)
             kw["measured"] = measured_loads(a, ls, model, ctx, kv_q8, machine, kw["plugin"], kw["mtp"], ub_asked, kw["free_source"])
             a.plan_free_mib = (free / 2**20) if free else None
             a.plan_free_source = kw["free_source"]
@@ -4625,6 +4630,7 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
 LOOP_OP_OFFLOAD_BUILD = 12642     # first llama.cpp release with PR 32807 (commit 5bacb7c = b12642, checked with the GitHub compare API 2026-11-23): before it, op-offload on a
                                   # looped model gives NaN / '!!!!' (INKLING-1250, upstream 32807 thread)
 LOOP_UBS = (512, 256, 128)        # micro-batches tried for a looped model, largest first; 128 is the floor (the old fixed rule)
+LOOP_RULE_UB = 128                # the looped-model rule's -ub without MOE_CACHE_LOOP_FIT (inkling_loop_stage), which the planner plans at (LAUNCHER-1303)
 LOOP_MAX_TENSOR_GIB = 2.0         # one bias tensor (ctx x ub x n_head x 4 B) must stay under this: Vulkan drivers often cap one allocation at 2-4 GiB (assumed, not read from the device)
 LOOP_KNOWN_ARCHS = ("inkling2_loop",)   # where the bias formula, the NaN rule and PR 32704 were seen; any other looped arch gets them as "assumed from Inkling 2" (printed)
 _LS_BUILD = {}
@@ -4696,8 +4702,8 @@ def loop_compute_mib(ctx, ub, n_head, staged_bytes):
     """Our estimate (errs high) of the GPU compute buffer of a looped model at this context and micro-batch, without llama.cpp's compact bias (PR 32740 is not in b12651):
     the relative-position bias is a dense n_kv x n_tokens x n_head F32 tensor and two of them are alive at once (2 x 32768 x 512 x 24 x 4 B = 3 GiB vs 2.8 GiB measured at
     32k -ub 512, INKLING-1243, laptop), plus the normal-model buffer at -ub 512 from our table, plus what op-offload stages (staged_bytes)."""
-    from gguf_plan import compute_buffer_guess_mib
-    return 2 * ctx * ub * max(n_head, 1) * 4 / 1048576 + compute_buffer_guess_mib(ctx, 512) + staged_bytes / 1048576
+    from gguf_plan import loop_base_mib
+    return 2 * ctx * ub * max(n_head, 1) * 4 / 1048576 + loop_base_mib(ctx, ub) + staged_bytes / 1048576
 
 
 def loop_fit_on():
@@ -4779,8 +4785,8 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
     loop_cpu = [i for i in (cpu if cpu is not None else range(ls_, le_)) if ls_ <= i < le_]
     staged = sum(by.get(i, 0) for i in loop_cpu) or max([by.get(i, 0) for i in (cpu or []) if not ls_ <= i < le_] or [0])
     budget = tuned.get("compute_mib") if isinstance(tuned, dict) else None
-    if budget and isinstance(tuned, dict) and tuned.get("loop_bias_mib"):
-        budget -= tuned["loop_bias_mib"]          # the planner (LAUNCHER-1284) already added the bias for its own -ub; the estimate below adds it per candidate -ub
+    # LAUNCHER-1303: the planner's compute budget already holds the bias at its own -ub (counted by default since 2026-11-25) and loop_compute_mib uses the same
+    # base (loop_base_mib), so a candidate -ub is checked against the whole budget (before: the bias was taken off it, which with a planner -ub of 128 left no room for any)
     ctx_n = int(ctx) if str(ctx or "").isdigit() else 0
     # n_head unknown (0) = nothing to size the bias from = no fit (loop-speed-2 critic); cap=False checks the budget only (the per-tensor cap says nothing about op-offload's staging)
     fits = (lambda u, st, cap=True: n_head > 0 and bool(budget and ctx_n) and (dense or bool(by)) and loop_compute_mib(ctx_n, u, n_head, st) <= budget and (not cap or loop_tensor_ok(ctx_n, u, n_head)))
@@ -4819,7 +4825,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
         if fit_on:
             pick = next((u for u in LOOP_UBS if u <= int(ub) and fits(u, st)), 128)
         else:
-            pick = 128
+            pick = LOOP_RULE_UB
         for i, x in enumerate(extra):
             if x == "-ub" and i + 1 < len(extra):
                 extra[i + 1] = str(pick)

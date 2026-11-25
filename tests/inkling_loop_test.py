@@ -74,8 +74,8 @@ extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=131072, tuned={"compute_mib": 7958}, ls="ls")
 check("--no-op-offload" not in extra and ub == "128", f"b12651 at 128k: -ub 256 fits the budget (7651 <= 7958) but its bias tensor (131072 x 256 x 24 x 4 B = 3 GiB) is over the 2 GiB per-tensor cap -> -ub 128 [got {ub}]")
 extra = ["-ub", "4096"]
-ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=262144, tuned={"compute_mib": 7958}, ls="ls")
-check("--no-op-offload" in extra and ub == "128", f"b12651 at 256k with the same budget: even -ub 128 + staging (6144 + 1403 + 547) is over: op-offload off, -ub 128 [got {ub}]")
+ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=262144, tuned={"compute_mib": 7000}, ls="ls")
+check("--no-op-offload" in extra and ub == "128", f"b12651 at 256k, budget 7000 MiB: even -ub 128 + staging (6144 bias + 577 loop_base_mib + 547) is over: op-offload off, -ub 128 [got {ub}]")
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned=None, ls="ls")
 check("--no-op-offload" in extra and ub == "128", "no planner budget: op-offload off, -ub 128 (the old rule)")
@@ -200,7 +200,7 @@ check(src.index("ncmoe = gpu_cache_stage(", k) < src.index("ub, ncmoe = inkling_
 rename("inkling2_loop"); gguf_plan.model_layout = lambda p: {"expert_bytes_by_layer": {i: (668 if i in (20, 21) else 547) * MiB for i in range(24)}}; os.environ["MOE_CACHE_LOOP_FIT"] = "1"; mc.ls_build = lambda ls: 12651; mc._LS_BUILD.clear()
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=65536, tuned={"compute_mib": 4660 + 3072, "loop_bias_mib": 3072}, ls="ls")
-check(ub == "256", f"tuned with loop_bias_mib: budget = compute_mib - bias, same pick as without [got {ub}]")
+check(ub == "256", f"tuned with loop_bias_mib: the whole compute budget counts (LAUNCHER-1303: the bias is no longer taken off it); -ub 512 stays out by the 2 GiB per-tensor cap [got {ub}]")
 del os.environ["MOE_CACHE_LOOP_FIT"]
 # plugin long-prompt block and --no-op-offload (LOOP-SPEED-2)
 Ah = lambda **kw: types.SimpleNamespace(**{"hybrid": False, **kw})

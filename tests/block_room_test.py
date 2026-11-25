@@ -121,12 +121,15 @@ for name, path in (("35B-like", TWIN), ("Inkling-like", INK)):
         diff = [f for f in FREES if (lambda o, n: (o["n_cpu_moe"], o["ub"], block_mib(o)) != (n["n_cpu_moe"], n["ub"], block_mib(n)) or n["block_cap_mib"])(plan(path, ctx, f, old=True), plan(path, ctx, f))]
         check(not diff, f"{name} ctx {ctx}: the same plan as before, no cap ({diff or 'identical'})")
 
-# a looped model whose bias buffer is not counted (MOE_CACHE_LOOP_FIT off): the room the plan cannot see is never given to expert layers
+# a looped model whose bias buffer is not counted (loop_n_head=0, as --exact plans it): the room the plan cannot see is never given to expert layers
 for ctx in (4096, 8192):
-    same = all(plan(INKL, ctx, f)["n_cpu_moe"] == plan(INKL, ctx, f, old=True)["n_cpu_moe"] for f in FREES)
-    n = plan(INKL, ctx, 14.0)
-    check(same and block_mib(n) == block_mib(plan(INKL, ctx, 14.0, old=True)) and n["block_cap_mib"] == 0,
+    same = all(plan(INKL, ctx, f, loop_n_head=0)["n_cpu_moe"] == plan(INKL, ctx, f, old=True, loop_n_head=0)["n_cpu_moe"] for f in FREES)
+    n = plan(INKL, ctx, 14.0, loop_n_head=0)
+    check(same and block_mib(n) == block_mib(plan(INKL, ctx, 14.0, old=True, loop_n_head=0)) and n["block_cap_mib"] == 0,
           f"looped Inkling-like ctx {ctx} -ub {n['ub']}: bias {gguf_plan.loop_bias_bytes(ctx, n['ub'], 24) // MiB} MiB uncounted >= the cut: full block, same pick, no cap")
+# LAUNCHER-1284/1303: by default (loop_n_head None) tune() reads the head count from the header and counts the bias
+dflt = plan(INKL, 4096, 14.0)
+check(dflt["loop_bias_mib"] == round(2 * 4096 * dflt["ub"] * 24 * 4 / MiB) and dflt["block_cap_mib"] > 0, f"looped, default: bias counted from the header ({dflt['loop_bias_mib']} MiB at -ub {dflt['ub']}), the cut applies")
 # ... and when the bias is counted (loop_n_head given), the cut applies again
 nc = plan(INKL, 4096, 14.0, loop_n_head=24)
 check(block_mib(nc) < block_mib(plan(INKL, 4096, 14.0, old=True, loop_n_head=24)) and nc["block_cap_mib"] > 0, f"looped, bias counted: the block room is cut ({block_mib(nc)} MiB, cap {nc['block_cap_mib']})")

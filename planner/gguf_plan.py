@@ -431,6 +431,9 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     if isinstance(heads, list):         # LAUNCHER-741 (b): per-layer head counts (zero on layers without attention): the widest layer gives the head size
         heads = max((h for h in heads if isinstance(h, int)), default=0)
     kv_list = kvh if isinstance(kvh, list) and all(isinstance(x, int) and x >= 0 for x in kvh) else None
+    lk = loop_kv_bytes(g, blocks, kv_list, ctx, kv_q8, n_seq)
+    if lk is not None:
+        return lk
     if not isinstance(blocks, int) or not isinstance(heads, int) or (isinstance(kvh, list) and kv_list is None) or \
             g("attention.key_length_mla") is not None or g("attention.kv_lora_rank") is not None or g("attention.sliding_window") is not None:
         return None
@@ -458,6 +461,39 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
         per_layer = rank * (inner // rank) * n_state * 4 + (conv - 1) * (inner + 2 * groups * n_state) * 4
         state = (n_main - n_attn) * per_layer * n_seq
     return ctx * per_tok + state
+
+
+SWA_KV_UB = 512          # the micro-batch the sliding-window cache size is counted with (llama.cpp adds n_ubatch; 512 errs high for the looped rule's -ub 128)
+
+
+def loop_kv_bytes(g, blocks, kv_list, ctx, kv_q8=False, n_seq=4):
+    """LAUNCHER-1303: KV cache + conv state of a LOOPED model with sliding-window layers (<arch>.loop.count > 1, attention.sliding_window_pattern per layer; Inkling 2 Mini),
+    as llama.cpp sizes it: every pass through a loop layer has its own cache (loop.count caches for layers loop.start..loop.end-1), a full layer keeps ctx cells, a
+    sliding-window layer min(ctx, pad256(window x n_seq + -ub)) cells (unified cache, n_seq slots), and every pass has a shortconv state (l_cache-1) x 3 n_embd f32 per slot.
+    Checked against the PC (2026-11-25, chain29 -lv 4, UD-IQ4_XS, f16, -ub 128): ctx 4096 = 8 full + 40 window caches of 4096 cells = 768 MiB + 14.6 MiB state (this: 768 + 15.2);
+    ctx 65536 context 2742.6 MiB recorded (this: 2048 + 720 + 15.2 = 2783, errs high by the -ub term). None when the model is not looped or the header lacks the per-layer pattern
+    (the flat 40 KB per token stays, which was 156 MiB at 4k: 5x short)."""
+    cnt, ls_, le_, win, pat = g("loop.count"), g("loop.start"), g("loop.end"), g("attention.sliding_window"), g("attention.sliding_window_pattern")
+    if not (isinstance(cnt, int) and cnt > 1 and isinstance(ls_, int) and isinstance(le_, int) and isinstance(blocks, int) and 0 <= ls_ < le_ <= blocks
+            and isinstance(win, int) and win > 0 and isinstance(pat, list) and len(pat) >= blocks and kv_list and len(kv_list) >= blocks):
+        return None
+    k_len = g("attention.key_length") or 0
+    v_len = g("attention.value_length") or k_len
+    if not k_len:
+        return None
+    ek, ev = kv_elems(kv_q8)
+    swa_cells = min(ctx, -(-(win * n_seq + SWA_KV_UB) // 256) * 256)
+    total = 0.0
+    passes = 0
+    for i in range(blocks):
+        reps = cnt if ls_ <= i < le_ else 1
+        passes += reps
+        if kv_list[i] > 0:
+            total += reps * (swa_cells if pat[i] else ctx) * kv_list[i] * (k_len * ek + v_len * ev)
+    lc = g("shortconv.l_cache")
+    if isinstance(lc, int) and lc > 1:
+        total += passes * (lc - 1) * 3 * (g("embedding_length") or 0) * 4 * n_seq      # 3 x n_embd per row: 15.2 MiB here vs 14.62 MiB measured (errs high)
+    return total
 
 
 def _kv_or_flat(path, ctx, kv_q8=False):
@@ -1127,6 +1163,43 @@ def loop_bias_bytes(ctx, ub, n_head):
     return 2 * ctx * ub * n_head * 4 if n_head and ctx else 0
 
 
+LOOP_BASE_MIB = (50.2, 0.001724)          # MiB at -ub 128: fixed + per context token (PC, see loop_base_mib)
+LOOP_BASE_MARGIN = 1.15
+
+
+def loop_base_mib(ctx, ub):
+    """A looped model's GPU compute buffer at -ub 128..512 besides its relative-position bias (MiB). Fitted to the PC's buffer lines (RX 9070 XT, Vulkan, Inkling 2 Mini
+    UD-IQ4_XS, f16, -fa auto, -ub 128, chain29 2026-11-25): 153.3 MiB at 4k and 1699.2 MiB at 64k less the bias (96 / 1536 MiB) = 57.3 / 163.2 MiB, a line in the context;
+    grown with the micro-batch (x ub/128, errs high) and +15 %. One model and one card: a forecast; a recorded load (load_record) replaces it. Our Flash-Next table (770 MiB
+    at 4k) was 13x the real figure here."""
+    a, b = LOOP_BASE_MIB
+    return (a + b * ctx) * max(ub, 128) / 128 * LOOP_BASE_MARGIN
+
+
+def loop_plan(kw):
+    """LAUNCHER-1303: the plan for a looped model whose launcher rule runs a small micro-batch (kw["loop_ubs"], largest first) whenever expert layers stay on the CPU
+    (inkling_loop_stage). Before, tune() planned at -ub 2048 (compute buffer from our table) and the rule then ran -ub 128: the room of the bigger batch was kept free
+    for nothing (PC 2026-11-25, RX 9070 XT, Inkling 2 Mini UD-IQ4_XS at 4k: 6 CPU layers where stock ran 4 at the same -ub 128, decode -5.5 %, n=1, forecast).
+    1. the usual plan (bias counted); when it keeps every expert on the GPU (or picks a GPU cache, or has no GPU facts) the rule does not apply: that plan stands.
+    2. else one static plan per rule micro-batch, at that -ub with its own bias; the fewest CPU layers win, the larger -ub on a tie (decode first: a looped layer is read
+       loop.count times per token)."""
+    ubs = tuple(kw["loop_ubs"])
+    base = tune(**dict(kw, loop_ubs=None))
+    n0 = int(base.get("n_cpu_moe", 999))
+    if base.get("gpu_cache_mib") or n0 == 0 or n0 >= 999 or not base.get("inputs"):
+        return base
+    cands = [tune(**dict(kw, ub=u, loop_ubs=None, want_cache=False, long_prompt=False)) for u in ubs]
+    best = min(int(c["n_cpu_moe"]) for c in cands)
+    pick = next(c for c in cands if int(c["n_cpu_moe"]) == best)
+    u = pick["ub"]
+    pick["why"] = [w if w != f"micro-batch {u} as asked" else
+                   f"micro-batch {u}: the looped-model rule runs -ub {u} while expert layers stay on the CPU, so the plan is made at that -ub and its bias buffer "
+                   f"(at -ub {base['ub']}, the usual ladder, {n0} layers would stay on the CPU)" for w in pick["why"]]
+    pick["inputs"].append({"setting": "loop_plan_ub", "value": u, "source": "constant",
+                           "why": f"looped model: the plan at the rule's micro-batch ({', '.join(str(x) for x in ubs)}) instead of -ub {base['ub']} ({best} vs {n0} CPU layers)"})
+    return pick
+
+
 def small_ctx_block(full, weights, ctx, uncounted=0):
     """The block room at a context below BLOCK_FULL_CTX: `full` less the weights' share given up (block_weight_share), but never less than `full` minus what is
     given up after `uncounted` bytes (a looped model's bias buffer the compute estimate does not count): room the plan cannot see is never handed to expert layers."""
@@ -1150,7 +1223,7 @@ def room_bytes(free, compute_mib, reserve_gb, block=0):
 
 
 def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False, plugin=True, measured=None,
-         free_source=None, mtp=False, keep_ub=False, loop_n_head=0):
+         free_source=None, mtp=False, keep_ub=False, loop_n_head=None, loop_ubs=None):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left. The only placement
     function of the launcher (planner map fix 1; planner/plan.py's formula no longer decides).
 
@@ -1165,7 +1238,15 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     falls back to the header (weights, KV) or our tables (compute buffer, gap). free_source: where `free` came from ("nvidia-smi" overstates it by the CUDA
     reserve and context, SMI_GAP_GIB until measured). mtp: MTP drafting is on (its draft context needs GPU memory, MTP_DRAFT_GIB until a load with MTP was recorded).
     keep_ub: a stock cache on a CUDA llama-server keeps -ub 2048 (CACHE-1187; measured on one NVIDIA laptop only), see the cache branch below.
+    loop_n_head: a looped model's head count for its dense relative-position bias buffer (LAUNCHER-1284/1303). None (the default) = read from the header (loop_heads:
+    <arch>.loop.count > 1), so the bias is always counted for a looped model; 0 = not counted. loop_ubs: the micro-batches the launcher's looped-model rule runs when expert
+    layers stay on the CPU (inkling_loop_stage: (128,) by default, LOOP_UBS with MOE_CACHE_LOOP_FIT=1); None = no such rule (callers that keep the planner's -ub). With it
+    the plan is made at the -ub that will really run (loop_plan), not at a -ub the rule then replaces.
     """
+    if loop_n_head is None:
+        loop_n_head = loop_heads(path)
+    if loop_n_head and loop_ubs and not ub:
+        return loop_plan(dict(locals()))
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
     why = []
@@ -1221,9 +1302,13 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         # on the laptop vs our 3 GiB estimate). The table and fit-params numbers are for a normal model; a measured load already contains it. loop_n_head 0 = not looped / not asked: 0.
         return 2 * ctx * u * loop_n_head * 4 / MiB if loop_n_head else 0
 
+    def has_bias(u):
+        # a buffer measured on this model already holds the bias: a recorded load at this -ub, or llama-fit-params under MOE_CACHE_PLAN_RULE (LAUNCHER-1284: was counted twice)
+        return bool(mbuf.get(u, {}).get("compute_mib")) or bool(rule and fit_params and rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params)[1] == "llama-fit-params")
+
     def cbm(u, guess):
         v = cbm0(u, guess)
-        return v if v is None or mbuf.get(u, {}).get("compute_mib") else v + loop_bias_mib(u)
+        return v if v is None or has_bias(u) else v + loop_bias_mib(u)
 
     def cbm0(u, guess):
         if rule:              # MOE_CACHE_PLAN_RULE=1: the table only says whether u is a candidate (as before); the number is the rule's
@@ -1232,6 +1317,8 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             return rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params)[0]
         if mbuf.get(u, {}).get("compute_mib"):
             return mbuf[u]["compute_mib"]           # measured at the last load with this context, micro-batch and KV type
+        if loop_n_head and u <= 512:
+            return loop_base_mib(ctx, u)            # a looped model at the rule's -ub 128..512: the part besides the bias (loop_base_mib; the Flash-Next table was 13x too high)
         return compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
     # long prompts run their expert block on the GPU and upload one whole layer of experts for it: the micro-batch, the cache and static layers must
     # all leave that room (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 18-24 tok/s instead
@@ -1253,7 +1340,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             return 0              # stock llama-server: no plugin, no long-prompt GPU block (LAUNCHER-1177: 839 MiB were kept free for nothing on the laptop 35B)
         if want_cache:
             return block_full_for(u)          # a GPU expert cache plan keeps the full room (the cut is passed to the plugin only for static layers, block_cap_stage)
-        unc = 0 if mbuf.get(u, {}).get("compute_mib") else loop_bias_bytes(ctx, u, heads_uncounted)       # a measured buffer already holds the bias
+        unc = 0 if has_bias(u) else loop_bias_bytes(ctx, u, heads_uncounted)       # a measured buffer already holds the bias
         if rule:
             return rule_block_mib(path, lay, u, ctx, unc) * 1048576
         return long_prompt_block_bytes(lay, u, ctx, unc)
@@ -1315,12 +1402,16 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
           f"room for the plugin's long-prompt GPU block at a short context: {share:.0%} of one expert layer's weights (the plugin splits a bigger block) plus the batch's results, "
           f"rule of ours" + ("; a looped model's uncounted bias buffer keeps part of the full room" if heads_uncounted else ""))
          if plugin else "0: stock llama-server runs no plugin, so no long-prompt block")
+    if loop_n_head and comp:
+        note("loop_bias_mib", 0 if has_bias(ub) else loop_bias_mib(ub), "probe" if not has_bias(ub) else "measured",
+             f"looped model: its dense relative-position bias (2 x ctx x -ub x {loop_n_head} heads x 4 B), part of gpu_compute_mib"
+             + (" (already inside the measured buffer)" if has_bias(ub) else " (not in our table, added to it)"))
     note("gpu_reserve_mib", reserve_gb * 1e9 / MiB, "constant", "kept free for other programs and growth (0.5 GB rule of ours, more when the desktop holds GPU memory, --gpu-margin)")
     # LAUNCHER-1303/1236: a block room cut below the full layer is only safe when the plugin keeps the block inside it: the launcher passes it as
     # MOE_CACHE_GPU_BLOCK_CAP_MIB (the plugin's free figure overstates the real room on Windows AMD / Intel, LAUNCHER-1133). 0 = no cap (full room, as before).
     block_cap = int(block // MiB) if plugin and block and share < 1 and block < block_full_for(ub) else 0
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576), "block_cap_mib": block_cap,
-            "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not mbuf.get(ub, {}).get("compute_mib")) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
+            "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not has_bias(ub)) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 
 
 def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072, fit_params=None):
