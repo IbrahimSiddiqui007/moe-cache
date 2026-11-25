@@ -17,22 +17,22 @@ def show(tree, commit, path):
 def struct_inserts(mine, theirs, opcodes):
     """Lines inserted upstream INSIDE a struct / enum / union body of ours: a plugin built with our header reads and fills these types, so a new member in the middle moves
     every later member (a layout change), unlike a new declaration between structs (audit row 26: all inserts were called safe). Returns [(our line no., [inserted lines])]."""
-    depth, inside = 0, [False] * (len(mine) + 1)       # inside[i]: our line i (0-based) is within a {...} of a struct-like declaration
     start_re = ("struct ", "enum ", "union ", "typedef struct", "typedef enum", "typedef union")
-    open_kind = []
-    for i, l in enumerate(mine):
+    stack, pending = [], False       # stack: one flag per open brace, True for a struct / enum / union body; pending: that keyword was seen, its brace is on a later line
+    after = []                       # after[i]: our line i leaves us inside such a body
+    for l in mine:
         t = l.strip()
-        if "{" in t and t.startswith(start_re):
-            open_kind.append(True)
-        elif "{" in t:
-            open_kind.append(False)
-        inside[i] = any(open_kind)
-        for _ in range(t.count("}")):
-            if open_kind:
-                open_kind.pop()
+        if t.startswith(start_re) and ";" not in t:
+            pending = True
+        for ch in t:
+            if ch == "{":
+                stack.append(pending); pending = False
+            elif ch == "}" and stack:
+                stack.pop()
+        after.append(any(stack))
     out = []
     for tag, i1, i2, j1, j2 in opcodes:
-        if tag == "insert" and 0 < i1 < len(mine) and inside[i1 - 1] and inside[i1]:
+        if tag == "insert" and 0 < i1 < len(mine) and after[i1 - 1]:
             out.append((i1 + 1, theirs[j1:j2]))
     return out
 

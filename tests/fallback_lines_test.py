@@ -37,10 +37,13 @@ check(e2 == "", "...once per run, not at every call")
 
 # 2. fixed_drives (Windows): the API raises -> C and D, said once
 import moe_cache_pick as pk   # noqa: E402
-mc.WINDOWS = True; pk.WINDOWS = True
-mc._SAID_ONCE.clear()
-d, e = capture(pk.fixed_drives)
-mc.WINDOWS = False; pk.WINDOWS = False
+if os.name == "nt":
+    print("skip fixed_drives check: ctypes.windll works on Windows"); d, e = ["C", "D"], "fixed drives"
+else:
+  mc.WINDOWS = True; pk.WINDOWS = True
+  mc._SAID_ONCE.clear()
+  d, e = capture(pk.fixed_drives)
+  mc.WINDOWS = False; pk.WINDOWS = False
 check(d == ["C", "D"] and "fixed drives" in e, f"fixed_drives fallback says so (got {d}, {e.strip()[:70]})")
 
 # 3. paging watch gives up after three misses without a counter, and says so

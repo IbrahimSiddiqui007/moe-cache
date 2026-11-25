@@ -3822,7 +3822,7 @@ def real_room_stage(a, g, machine):
         which = "the card's size minus that" if by_card <= by_driver else "llama-server's own free figure minus that"
         room = real_room_mib(min(by_card, by_driver), 0.0)     # the reserve off the smaller term; None when implausible (< 1 GiB)
         if room is None:
-            say_once("room_implausible", f"moe-cache: GPU room: the figure worked out from the card ({min(by_card, by_driver):.0f} MiB after the other programs' use) is not plausible (under 1 GiB): the driver's own free figure ({driver:.0f} MiB) is used as it is")
+            say_once("room_implausible", f"moe-cache: GPU room: after the other programs' use and the reserve the card has under 1 GiB ({min(by_card, by_driver):.0f} MiB before the reserve), too little to plan with: the driver's own free figure ({driver:.0f} MiB) or a learned ceiling plans instead")
         if room:
             REAL_ROOM["room_mib"] = room
         why_ceil = bool(ceil_ and (room is None or ceil_ < room))
@@ -6189,6 +6189,7 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
 
 
 def _launch_plan(a, extra, argv, machine):
+    _SAID_ONCE.clear()                # LAUNCHER-1158: each plan (a control page plan, a nested quiet one) tells its own fallbacks once
     extra = split_equals_flags(extra)          # review finding 1/2: callers that did not come through parse_server (tests, on-demand, plan files)
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist

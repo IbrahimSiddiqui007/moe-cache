@@ -24,6 +24,8 @@ def run(upstream, extra_vendored=()):
 rc, out = run(BASE); check(rc == 0, "identical header: exit 0")
 rc, out = run(BASE + "int g(void);\n"); check(rc == 0 and "add " in out, "a new declaration after our lines: safe, exit 0")
 rc, out = run(BASE.replace("    int y;\n", "    int y;\n    int z;\n") ); check(rc == 1 and "INSIDE" in out, f"a member inserted inside our struct: exit 1 ({out.strip().splitlines()[0][:60]})")
+rc, out = run(BASE.replace("};\n\nint f(void);\n", "};\nint newfn(void);\n\nint f(void);\n")); check(rc == 0, "a declaration right after '};' (no blank line) is not inside the struct")
+rc, out = run(BASE.replace("struct a {", "struct a\n{").replace("    int y;\n", "    int y;\n    int z;\n")); check(rc == 1, "a brace on the next line is tracked")
 rc, out = run(BASE.replace("int x;", "long x;")); check(rc == 1 and "DIFF" in out, "a changed line: exit 1")
 rc, out = run(BASE, extra_vendored=("ggml-gone.h",)); check(rc == 1 and "not available" in out, "a vendored header missing at the commit: exit 1 (was 0)")
 print("check_ggml_headers: " + (f"{fails} failed" if fails else "all passed")); sys.exit(1 if fails else 0)
