@@ -191,6 +191,15 @@ for _r in _runs0.values():      # real runs recorded since 2026-11-25 carry the 
 bt0 = cc.board_text(cc.load_claims(os.path.join(HERE, "..", "benchmarks")), _runs0, "0.3.8", 12207)
 check("Working desktop" not in bt0, "board without any block: no new column")
 
+# a record whose harness clean check said "clean: yes" (apps closed) says so, instead of "working desktop"
+rec_closed = json.loads(json.dumps(rec2)); rec_closed["conditions"]["other_programs"] = "clean: yes (harness clean check before the run: programs with a window: none)"
+lc = rr.env_line_for(rec_closed, "moe-cache")
+check(lc and lc.startswith("desktop with apps closed (at peak): 31 GB RAM") and "working desktop" not in lc, f"apps closed: the line says so ({(lc or '')[:60]})")
+rec_open = json.loads(json.dumps(rec2)); rec_open["conditions"]["other_programs"] = "browser and chat open"
+lo = rr.env_line_for(rec_open, "moe-cache")
+check(lo and lo.startswith("working desktop (at peak)"), "other programs named: still 'working desktop'")
+check(rr.env_line_for(rec2, "moe-cache").startswith(("working desktop", "desktop with apps closed")), "no other_programs text: unchanged default")
+
 # ---- 8. the real machine
 exe = rr.find_gtm()
 if exe:

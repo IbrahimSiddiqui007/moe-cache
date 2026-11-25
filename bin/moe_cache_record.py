@@ -823,7 +823,9 @@ def env_of(rec, arm=None):
 def env_line_for(rec, arm=None):
     """The line for one arm: the stock arm's server is plain llama-server, so the line says that instead of 'moe-cache'."""
     e, n = env_of(rec, arm)
-    line = env_line(e, server="stock llama-server" if str(arm or "").lower().startswith("stock") else "moe-cache")
+    op = str((rec.get("conditions") or {}).get("other_programs", "")) if isinstance(rec, dict) else ""
+    label = "desktop with apps closed" if op.lower().startswith("clean: yes") else "working desktop"      # the harness's clean check said no other programs: the line must not say "working desktop"
+    line = env_line(e, label=label, server="stock llama-server" if str(arm or "").lower().startswith("stock") else "moe-cache")
     return line + (f" [the busiest of {n} runs]" if line and n > 1 else "") if line else None
 
 
