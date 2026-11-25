@@ -405,6 +405,8 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
                "gpu_blocks": delta(s0, s1, "gpu_segments"),
                "gpu_up_saved_gb": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "gpu_up_saved")),
                "ssd_wait_s": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "ns_ssd_wait")),
+               "evict_dec_s": (lambda d: round(d / 1e9, 4) if d is not None else None)(delta(s0, s1, "ns_evict_dec")),   # DECODE-123: seconds inside evict() during this turn's decode steps
+               "evict_s": (lambda d: round(d / 1e9, 4) if d is not None else None)(delta(s0, s1, "ns_evict")),
                "answer_chars": len(r["text"]), "answer_sha256": hashlib.sha256(r["text"].encode("utf-8")).hexdigest()[:16],
                "finish_reason": r.get("finish_reason"), "reasoning_chars": r.get("reasoning_chars", 0)}
         if keep_answers:

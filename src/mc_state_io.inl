@@ -125,12 +125,13 @@
         std::string j;
         {
             std::lock_guard<std::mutex> lk(mu);
-            char b[2200];
-            snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,"
+            char b[2400];
+            snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,\"ns_evict\":%llu,\"ns_evict_dec\":%llu,\"evict_calls_dec\":%llu,"
                      "\"resident_bytes\":%llu,\"budget\":%llu,\"ns_prep\":%llu,\"ns_read\":%llu,\"ns_cpu\":%llu,\"ns_total\":%llu,\"graphs\":%llu,"
                      "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu,\"policy\":\"%s\",\"cls_promotions\":%llu,\"cls_demotions\":%llu,\"rb_rounds\":%llu,\"rb_reads\":%llu,\"rb_bytes\":%llu,\"rb_swaps\":%llu,\"rb_cancelled\":%llu,\"rb_dec_hits\":%llu,\"rb_dec_miss\":%llu,\"rb_pre_hits\":%llu,\"rb_pre_miss\":%llu",
                      (unsigned long long) hits, (unsigned long long) misses, (unsigned long long) hits_dec, (unsigned long long) misses_dec, (unsigned long long) bytes,
-                     (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) resident_bytes, (unsigned long long) budget,
+                     (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) evict_t.ns.load(), (unsigned long long) evict_t.ns_dec.load(), (unsigned long long) evict_t.calls_dec.load(),
+                     (unsigned long long) resident_bytes, (unsigned long long) budget,
                      (unsigned long long) ns_prep, (unsigned long long) ns_read, (unsigned long long) ns_cpu, (unsigned long long) ns_total, (unsigned long long) graphs,
                      (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs, (unsigned long long) gpu_segments,
                      (unsigned long long) gpu_split_blocks, (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
@@ -424,6 +425,8 @@
             if (async_in) {
                 fprintf(stderr, "moe-cache: inputs read from the GPU asynchronously: %llu\n", (unsigned long long) async_in);
             }
+            fprintf(stderr, "moe-cache: time evict=%.3fs (decode %.3fs, %llu decode calls) of prep %.2fs\n",
+                    evict_t.ns.load() / 1e9, evict_t.ns_dec.load() / 1e9, (unsigned long long) evict_t.calls_dec.load(), ns_prep / 1e9);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
             if (n_gap) {
                 static const char * bn[4] = { "<0.2 ms", "<1 ms", "<5 ms", ">=5 ms" };
