@@ -77,7 +77,8 @@ def alive3():
     n2[0] += 1
     return n2[0] < 30
 rr.watch_room(8, "GPU X", os.path.join(TMP, "x"), said2.append, alive3, lambda: True, sampler=lambda pid: (ev.append(1) or ""), sleep=lambda s: None)
-check(not said2 and len(ev) == 3, f"watcher: gives up after 3 readings without a counter ({len(ev)})")
+check(len(said2) == 1 and "paging watch" in said2[0] and len(ev) == 3, f"watcher: gives up after 3 readings without a counter, and says so ({len(ev)})")
+said2.clear()
 k = [0]
 rr.watch_room(9, "GPU Y", os.path.join(TMP, "y"), said2.append, lambda: (k.__setitem__(0, k[0] + 1) or k[0] < 4), lambda: False, sampler=lambda pid: 1 / 0, sleep=lambda s: None)
 check(not said2, "watcher: nothing is read before the server is ready")
