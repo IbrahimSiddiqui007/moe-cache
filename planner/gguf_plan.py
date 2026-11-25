@@ -1184,12 +1184,16 @@ def loop_plan(kw):
     2. else one static plan per rule micro-batch, at that -ub with its own bias; the fewest CPU layers win, the larger -ub on a tie (decode first: a looped layer is read
        loop.count times per token)."""
     ubs = tuple(kw["loop_ubs"])
-    base = tune(**dict(kw, loop_ubs=None))
+    # the usual plan as before 2026-11-25 (bias not counted, its block room kept instead): on CUDA the bias is not a dense buffer (laptop 4060, pinprep b12642, -fa on,
+    # Inkling 2 Mini IQ4_XS 4k -ub 2048: compute 547 MiB where the dense bias alone would be 1536; n=1), so counting it at -ub 2048 shrank the GPU cache for nothing
+    base = tune(**dict(kw, loop_ubs=None, loop_n_head=0))
     n0 = int(base.get("n_cpu_moe", 999))
     if base.get("gpu_cache_mib") or n0 == 0 or n0 >= 999 or not base.get("inputs"):
         return base
     cands = [tune(**dict(kw, ub=u, loop_ubs=None, want_cache=False, long_prompt=False)) for u in ubs]
     best = min(int(c["n_cpu_moe"]) for c in cands)
+    if best >= n0:
+        return base                                   # the rule's -ub is smaller than the usual plan's, so its layers fit there too: never more CPU layers than before
     pick = next(c for c in cands if int(c["n_cpu_moe"]) == best)
     u = pick["ub"]
     pick["why"] = [w if w != f"micro-batch {u} as asked" else
