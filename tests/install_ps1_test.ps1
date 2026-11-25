@@ -160,7 +160,7 @@ try {
     try {
         $r = & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -BaseUrl (Join-Path $T 'good2') -Version 9.9.2 2>&1 | Out-String
         # LAUNCHER-1222 critic G: the "cache:" line names the folder the launcher really reads (bin/moe_cache.py CACHE_DIR: XDG_CACHE_HOME first), not a fixed %USERPROFILE%\.cache
-        Check ($r -like ('*cache:*your user cache (' + (Join-Path $xdgDir 'moe-cache') + ')*')) "...the 'cache:' line follows XDG_CACHE_HOME ($xdgDir\moe-cache)"
+        Check ($r.Contains('your user cache (' + (Join-Path $xdgDir 'moe-cache') + ')')) "...the 'cache:' line follows XDG_CACHE_HOME ($xdgDir\moe-cache)"
         $recD = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'moe-cache\install.json') -Raw | ConvertFrom-Json
         Check ($LASTEXITCODE -eq 0 -and $recD.own_cache -eq $false) '...an install into the default root does not isolate the cache'
         & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -NoPath -Uninstall 2>&1 | Out-Null

@@ -162,14 +162,16 @@ check(rc == 0 and "own_cache=0" in open(os.path.join(xd, "moe-cache", ".installe
 
 # LAUNCHER-1222 critic G (Linux half): the "cache:" line names the folder the launcher reads: XDG_CACHE_HOME when set, else ~/.cache (bin/moe_cache.py CACHE_DIR)
 xc = tempfile.mkdtemp(dir=T)
-os.environ["XDG_CACHE_HOME"] = xc
+_saved_xch = os.environ.pop("XDG_CACHE_HOME", None)
 try:
+    os.environ["XDG_CACHE_HOME"] = xc
     h, rc, out = run_default(lambda h: [])
-finally:
     os.environ.pop("XDG_CACHE_HOME")
-check(rc == 0 and f"cache:   {xc}/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME set: the cache line names $XDG_CACHE_HOME/moe-cache")
-h, rc, out = run_default(lambda h: [])
-check(rc == 0 and f"cache:   ~/.cache/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME unset: the cache line names ~/.cache/moe-cache")
+    check(rc == 0 and f"cache:   {xc}/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME set: the cache line names $XDG_CACHE_HOME/moe-cache")
+    h, rc, out = run_default(lambda h: [])
+    check(rc == 0 and "cache:   ~/.cache/moe-cache   (settings, key and chats)" in out, "no --prefix, XDG_CACHE_HOME unset: the cache line names ~/.cache/moe-cache")
+finally:
+    if _saved_xch is not None: os.environ["XDG_CACHE_HOME"] = _saved_xch
 
 # ---- failure midway (AUD-049): a failed update keeps the old install, a failed first install leaves nothing
 def state():

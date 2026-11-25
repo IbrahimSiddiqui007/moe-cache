@@ -133,5 +133,6 @@ finally:
     gp.fit_params_buffer_mib, gp.prefetch_fit_params = _orig_fp, _orig_pf
     gp.PLAN_RULE_DEFAULT_ON = _saved_default
     os.environ.pop("MOE_CACHE_PLAN_RULE", None)
+    import shutil; shutil.rmtree(_rd, ignore_errors=True)      # the sparse model is ~28 GiB of apparent size
 print(f"plan_rule_test: {len(fails)} failed")
 sys.exit(1 if fails else 0)

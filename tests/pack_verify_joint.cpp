@@ -1,4 +1,4 @@
-// Joint check: a pack written by `moe_cache.py pack --hash` passes the plugin's MOE_CACHE_PACK_VERIFY=1 payload check, and a corrupted one is refused.
+// Joint check (pack_test writer x plugin payload-CRC code): a pack written by `moe_cache.py pack --hash` passes the payload check of MOE_CACHE_PACK_VERIFY=1, a corrupted one is refused. NOTE: the record loop below is a COPY of the one in src/mc_state_pack.inl (shared: mcpack::payload_crc_ok, crc32_bytes, HASH_FLAG); the inl's earlier checks (sampled model CRC, sizes) are not run. Linux only (plain fseek).
 //   g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/pack_verify_joint.cpp -o /tmp/pack_verify_joint && /tmp/pack_verify_joint MODEL.moepack
 // argv[1] = path to a .moepack. Replicates the verify loop of src/mc_state_pack.inl (pack_try_open, MOE_CACHE_PACK_VERIFY branch):
 // header u32 at 28 must hold mcpack::HASH_FLAG, then for every layer record the payload CRC-32 is re-read and compared with the stored one.
@@ -50,7 +50,7 @@ int main(int argc, char ** argv) {
         return fread(b, 1, n, f);
     };
     const std::function<size_t(uint64_t, void *, size_t)> vfn = vread;
-    std::vector<char> buf((size_t) (1 << 20) + 100);       // ~1 MiB, not a divisor of a layer's payload
+    std::vector<char> buf(4096 + 100);       // small and not a divisor of a layer payload: every layer needs several reads (multi-chunk CRC path)
     for (uint32_t r = 0; r < n_rec; r++) {
         const unsigned char * b = rec.data() + (size_t) r * 512;
         uint32_t layer, n_exp, want;

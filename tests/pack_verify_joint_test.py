@@ -90,5 +90,6 @@ r = helper(pack_fz)
 check(r.returncode == 2 and "REFUSED: no payload hash" in r.stdout,
       f"zeroed hash flag: exit 2 (exit {r.returncode}, out {r.stdout.strip()!r})")
 
+import shutil; shutil.rmtree(d, ignore_errors=True)
 print(f"pack_verify_joint_test: {len(fails)} failed")
 sys.exit(1 if fails else 0)
