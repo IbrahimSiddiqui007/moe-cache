@@ -9,8 +9,8 @@
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py update --check                                            is a newer moe-cache or llama.cpp out? (downloads nothing)
   moe_cache.py update --apply [--tag vX.Y.Z] [--allow-downgrade] [--yes] [--yes-unverified] [--dry-run]   install the newer release (sha256 always, attestation unless --yes-unverified; Linux keeps the old version)
-  moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md)
-  moe_cache.py bench-record collect|monitor|assemble|validate|card|ingest|ingest-issue|claim|board|lint|replay     the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
+  moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/guides/share-your-numbers.md)
+  moe_cache.py bench-record collect|monitor|assemble|validate|card|ingest|ingest-issue|claim|board|lint|replay     the benchmark record (docs/reference/benchmark-template.md): VRAM, RAM, CPU, settings, versions
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode|claude|codex|pi|openclaw|aider|qwen [--url URL] [--write]   point Hermes Agent, OpenCode, Claude Code, Codex CLI, Pi, OpenClaw, Aider or Qwen Code at a running server (start it with --agent); --check proves the setup works (models, chat, tool call, window; --json)
@@ -2623,9 +2623,9 @@ def exit_reason(rc, ready):
 
 SERVER_HELP = """\
 --fast     DEPRECATED alias (still works; forces the mode on): approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
-           also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/results-archive/RESULTS.md).
-           Faster only in a laptop test with memory far below the model; no win on the PC. About 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
---fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
+           also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/results/archive/results-windows-desktop.md).
+           Faster only in a laptop test with memory far below the model; no win on the PC. About 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results/archive/results-old-laptop.md section 31).
+--fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/reference/quality-gate.md, level kv); the default at --ctx 131072 and above
 --exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
            llama.cpp's (EXACTNESS.md). It also turns off the model-card sampling defaults and the chat-template fix (--no-sampling-defaults / --chat-template-file after -- are the single switches). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
 --retune   auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, a bigger -ub from a small plan, RAM_LOCK, -np; only what you did not set; never the KV type; one more expert layer on the GPU per load, 2 while far from a known fit limit; not for a model bigger than the memory the server may use; a first load over 60 s stops it), for at most 180 s in
@@ -2635,7 +2635,7 @@ SERVER_HELP = """\
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). It reads long prompts faster than -ub 2048 with
            the f16 KV cache (speed figures follow in a later release). The q8_0 KV cache means answers are NOT byte-identical to plain
-           llama.cpp's (against f16; quality figures: docs/EXACTNESS.md). Not with --exact, --stock or your own --ub
+           llama.cpp's (against f16; quality figures: docs/reference/exactness.md). Not with --exact, --stock or your own --ub
 --kv-4bit        dense models: when the q8_0 KV cache would still spill the GPU, also try K q8_0 / V q4_0 and then q4_0 / q4_0 before moving layers to system RAM. Off by default (a quality cost, README); your own -ctk/-ctv win
 --no-long-prompt  turn the long-prompt mode off: -ub 2048 and the f16 KV cache, as before v0.3.8
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
@@ -2646,7 +2646,7 @@ SERVER_HELP = """\
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
 --approx safe|careful|aggressive  DEPRECATED alias (still works; forces the modes of the tier on; the default launch enables the modes measured as a win by itself). Speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
            head (every expert is computed). careful: --fast (rarely picked experts not in RAM are skipped, about 1 token in 40-50 differs) + the same. aggressive: --fast=2 (up to 4 low-ranked experts skipped, about 1 token
-           in 28 differs). Each mode has a quality gate (docs/QUALITY_GATE.md, docs/CONFIGURATION.md) and runs only for models with a gate record, else --approx-unverified. Your own --fast wins and is reported.
+           in 28 differs). Each mode has a quality gate (docs/reference/quality-gate.md, docs/reference/configuration.md) and runs only for models with a gate record, else --approx-unverified. Your own --fast wins and is reported.
            At the start a short canary (about 256 scored tokens, against the exact setting of the same model) re-measures the tier and steps it down when the KL divergence is past its gate
            (--no-approx-canary skips it; it guards, it never proves). Not with --exact or --stock. --approx-off MODE removes one mode (kv8, spec-exact, fast1, fast2)
 --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
@@ -2958,7 +2958,7 @@ def parse_server(argv):
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
-    ap.add_argument("--lan", action="store_true")           # SERVER-016: listen on this PC's home-network address, API key forced (bin/moe_cache_lan.py, docs/LAN_ACCESS.md)
+    ap.add_argument("--lan", action="store_true")           # SERVER-016: listen on this PC's home-network address, API key forced (bin/moe_cache_lan.py, docs/guides/lan-access.md)
     ap.add_argument("--lan-address", default=None)          # with --lan: which private address of this PC (default: the first one found)
     ap.add_argument("--allow-public", action="store_true")  # lets --host / --lan listen on a public (internet) address; off by default
     ap.add_argument("--stock", action="store_true")
@@ -2967,7 +2967,7 @@ def parse_server(argv):
     ap.add_argument("--no-sampling-defaults", action="store_true")
     ap.add_argument("--approx", choices=["exact", "safe", "careful", "aggressive"], default=None)      # QUALITY-970: opt-in tiers that change answers (bin/moe_cache_approx.py); off by default
     ap.add_argument("--approx-off", action="append", default=[], metavar="MODE"); ap.add_argument("--approx-unverified", action="store_true"); ap.add_argument("--no-approx-canary", action="store_true")
-    ap.add_argument("--print-systemd", action="store_true")  # SERVER-005: print docs/moe-cache-server.service filled with this command line and the memory limits, and exit
+    ap.add_argument("--print-systemd", action="store_true")  # SERVER-005: print docs/reference/moe-cache-server.service filled with this command line and the memory limits, and exit
     ap.add_argument("--plan-file", metavar="PATH", help=argparse.SUPPRESS)           # write the plan file (every setting, its source and reason) there; a real start writes it to <cache>/plans/port-PORT.json
     ap.add_argument("--plan-json", action="store_true")      # print the launch plan as JSON (argv, environment, reasons, warnings) and exit; nothing is started
     extra = []
@@ -2985,7 +2985,7 @@ def fast_levels_only(argv):
     return ["--fast=1" if t == "--fast" and (i + 1 >= len(argv) or argv[i + 1] not in FAST_LEVELS) else t for i, t in enumerate(argv)]
 
 
-SYSTEMD_TEMPLATE = os.path.join(HERE, "docs", "moe-cache-server.service")
+SYSTEMD_TEMPLATE = os.path.join(HERE, "docs", "reference", "moe-cache-server.service")
 
 
 def unit_word(w):
@@ -2995,7 +2995,7 @@ def unit_word(w):
 
 
 def systemd_unit(a, extra, argv, template=None):
-    """SERVER-005: the text of docs/moe-cache-server.service with this launcher's paths and this command line in ExecStart (absolute model, llama-server and
+    """SERVER-005: the text of docs/reference/moe-cache-server.service with this launcher's paths and this command line in ExecStart (absolute model, llama-server and
     launcher paths, because a user unit has no shell PATH), and MemoryMax / MemoryHigh from --ram, else the launcher's own memory cap (MemoryHigh 8 % below
     it). The API key never goes into the unit (a unit file is readable); returns (text, notes)."""
     notes = []
@@ -3265,7 +3265,7 @@ def share_ram_start(a, machine):
 def multi_gpu_start(a, extra, machine, ls, listing, vram_user, win):
     """--multi-gpu, first half (PROTOTYPE): read the cards and, when the planner will be asked for one card's number anyway, make that the card the launcher
     names (MG4: the planner took line 0 of nvidia-smi, the launcher's pick_gpu the card with most free memory). Returns the facts for multi_gpu_apply."""
-    say("moe-cache: --multi-gpu is a PROTOTYPE: planned from the device list, not speed-tested on a machine with two discrete GPUs (docs/PLATFORMS.md)")
+    say("moe-cache: --multi-gpu is a PROTOTYPE: planned from the device list, not speed-tested on a machine with two discrete GPUs (docs/reference/platforms.md)")
     planner_path()
     import multigpu
     listing = listing if listing is not None else machine.list_devices(ls)
@@ -4309,7 +4309,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
         env.append(("MOE_CACHE_PEERS", peers_dir))
         if cap:
             env.append(("MOE_CACHE_PEER_CAP_GIB", f"{cap / 2**30:.2f}"))
-        say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/PLATFORMS.md)")
+        say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/reference/platforms.md)")
     if cap:
         say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
             else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
@@ -4364,7 +4364,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         kv128_default = True
         say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; approximate: its quality was "
             "measured at 4k-60k context, not at 128k or above (4k gate run: KL 0.0079, same top token 96.7 %; Flash-Next IQ3_XXS at 32k / 60k: KL 0.009 / 0.011), "
-            "docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+            "docs/reference/quality-gate.md); --exact keeps the f16 KV")
     if (dense and ax.default_on("kv8") and not a.fast and not a.exact and not a.stock and not getattr(a, "approx_kv", False)
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)):
         # LAUNCHER-982 (PC 2026-11-08: Qwen3.8-27B UD-Q3_K_XL at --agent --ctx 65536 ran 18.9 tok/s against 35 at 24k: the f16 KV cache did not fit beside the model, llama.cpp's --fit
@@ -4488,7 +4488,7 @@ def fast_env_stage(a, env, stock, model, machine):
         elif a.fast == "fewer":
             env.append(("MOE_CACHE_FEWER", "2"))
             say("moe-cache: --fast=fewer: --fast, and on the CPU-held layers the 2 lowest-ranked experts of every token are never computed (top-10 -> 8 on Flash-Next); "
-                "output no longer identical to stock, quality limits in docs/QUALITY_GATE.md (level fewer)")
+                "output no longer identical to stock, quality limits in docs/reference/quality-gate.md (level fewer)")
         else:
             say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (output no longer identical to stock; faster only in a laptop test with memory far below the model, no win on the PC)")
     elif not stock:
@@ -4816,7 +4816,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
 
 
 def plugin_no_op_offload_stage(a, env, user_extra, stock):
-    """Plugin long-prompt block ignored llama.cpp's --no-op-offload (docs/TECHNIQUES.md, LOOP-SPEED-2): the plugin runs the expert block of every batch of MOE_CACHE_GPU_MIN_TOKENS+ tokens
+    """Plugin long-prompt block ignored llama.cpp's --no-op-offload (docs/reference/techniques.md, LOOP-SPEED-2): the plugin runs the expert block of every batch of MOE_CACHE_GPU_MIN_TOKENS+ tokens
     on the GPU itself. A --no-op-offload (or -nopo) YOU gave after `--` now also switches that block off (MOE_CACHE_GPU_MIN_TOKENS=0 = never, src/mc_state_gpu.h), so the flag means
     the same with and without the plugin. Our own --no-op-offload (the looped-model rule) does not: that launch keeps its measured speed. Not with --hybrid (the block is its mechanism),
     not for stock runs, and a MOE_CACHE_GPU_MIN_TOKENS you set wins. Plan-time only: the plugin side is unchanged. Returns env."""
@@ -6637,7 +6637,7 @@ def project_folder_hint(cwd):
 
 
 # ---- connect: Codex CLI, Pi, OpenClaw, Aider, Qwen Code ----
-# Formats read from each agent's own docs on 2026-11-03 (links in docs/AGENTS.md). Every writer keeps the first backup as .bak, never replaces it,
+# Formats read from each agent's own docs on 2026-11-03 (links in docs/guides/agents.md). Every writer keeps the first backup as .bak, never replaces it,
 # writes the file private (it holds the API key) and refuses a file that is not the expected format instead of guessing.
 
 QWEN_KEY_VAR = "MOE_CACHE_API_KEY"
@@ -6651,7 +6651,7 @@ KEY_HINT = "<your API key: python3 bin/moe_cache.py key>"      # shown in a prev
 
 
 def agent_window(ctx):
-    """The window handed to an agent: the server's context minus 12.5 % headroom (docs/AGENTS.md 'Keep the agent's own context limit below the
+    """The window handed to an agent: the server's context minus 12.5 % headroom (docs/guides/agents.md 'Keep the agent's own context limit below the
     server's'), in whole 1024s, so the agent's own compaction starts before llama-server refuses a request. 65536 -> 57344."""
     return max(4096, (int(ctx) - int(ctx) // 8) // 1024 * 1024)
 
@@ -7604,7 +7604,7 @@ def check(argv):
     if ctot and cfree is not None:      # XA-3: Windows refuses memory when commit (RAM + page file) is used up, even with RAM free; llama-server then stops
         facts["ram"] += f"; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB"
         (ok if cfree >= 20e9 else warn)("commit", f"{cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)" + ("" if cfree >= 20e9 else
-            ": tight for a 16 GB GPU plus llama-server's buffers; close big programs or let Windows manage the page file size (docs/TROUBLESHOOTING.md)"))
+            ": tight for a 16 GB GPU plus llama-server's buffers; close big programs or let Windows manage the page file size (docs/guides/troubleshooting.md)"))
     try:
         sw = next(int(l.split()[1]) * 1024 / 1e9 for l in open("/proc/meminfo") if l.startswith("SwapTotal"))
         if sw >= 1:
@@ -8016,7 +8016,7 @@ def main():
     if sys.argv[1:2] == ["bench-report"]:     # R2-1: stock vs moe-cache on this machine, a report to paste into a GitHub issue
         from moe_cache_bench import bench_report
         return bench_report(sys.argv[2:]) or 0
-    if sys.argv[1:2] == ["bench-record"]:     # the benchmark record's tools: collect, monitor, assemble, validate, card (docs/BENCHMARK_TEMPLATE.md)
+    if sys.argv[1:2] == ["bench-record"]:     # the benchmark record's tools: collect, monitor, assemble, validate, card (docs/reference/benchmark-template.md)
         from moe_cache_record import main as record_main
         return record_main(sys.argv[2:]) or 0
     if sys.argv[1:2] in (["--version"], ["-V"], ["version"]):

@@ -8,13 +8,13 @@ seeded script of user turns (small follow-ups, code pastes, tool-output-like log
 
   run       one conversation against one server       python3 tools/conversation_bench.py run --url http://127.0.0.1:8080 --arm moe-cache --ctx 65536 --out run1.json
   ab        stock and plugin servers that are both up   ... ab --stock-url U1 --plugin-url U2 --ctx 65536 --out-dir DIR      (order stock, plugin, plugin, stock)
-  assemble  run files (in the order they were run) -> ONE bench record (docs/bench_record.schema.json) and the readable tables
+  assemble  run files (in the order they were run) -> ONE bench record (docs/reference/bench-record.schema.json) and the readable tables
   table     print the tables of a run file or a record
 
 Per turn: tokens added, depth before and after, prompt and decode tok/s (the server's own timings), tokens reused from the cache, time to first token, and
 the plugin's hits_dec / misses_dec of that turn when --stats-pid and --stats-log are given (the plugin must run with MOE_CACHE_STATS_SIGNAL=1; its
 stderr goes to the log). Per depth band (a quarter of the context each): the same, summed over the turns that start in that band.
-A value the server did not give is null in the run file and "not recorded" in the record; nothing is guessed. Standard library only. Docs: docs/CONVERSATION_BENCH.md."""
+A value the server did not give is null in the run file and "not recorded" in the record; nothing is guessed. Standard library only. Docs: docs/reference/conversation-bench.md."""
 import argparse, datetime, hashlib, http.client, json, os, random, re, signal, statistics, subprocess, sys, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))

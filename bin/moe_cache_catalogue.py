@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The model catalogue (models.json at the repo root): one list of the models moe-cache recommends, read by `pick`, `launch`, `models`,
-tools/gen_models_md.py (docs/MODELS.md) and tools/check_model_links.py. Standard library only. This file only loads and checks the JSON and turns an
+tools/gen_models_md.py (docs/reference/models.md) and tools/check_model_links.py. Standard library only. This file only loads and checks the JSON and turns an
 entry into the dict shape the picker has always used (`legacy`); the fit rule is moe_cache_pick.fit()."""
 import json, os
 

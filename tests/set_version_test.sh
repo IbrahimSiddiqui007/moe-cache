@@ -8,14 +8,14 @@ fail() { echo "FAIL: $*"; exit 1; }
 
 mk() {   # mk DIR VERSION_TEXT   a tree holding the given version in every place
   local d="$1" v="$2" b="${2//-/--}"
-  mkdir -p "$d/tools" "$d/docs/releases" "$d/bin" "$d/src"
+  mkdir -p "$d/tools" "$d/docs/releases" "$d/docs/reference" "$d/bin" "$d/src"
   cp "$HERE/tools/set_version.sh" "$d/tools/"
   printf '# Changelog\n\n## Unreleased\n\n| Area | Change |\n|---|---|\n| X | new thing |\n\n## 0.3.4 (2026-10-30)\n\nold\n' > "$d/CHANGELOG.md"
   printf '<img src="https://img.shields.io/badge/status-v%s%%20beta-orange">\n## Known issues in v%s (honest list)\n- **v%s vs v0.3.4:** history stays\n' "$b" "$v" "$v" > "$d/README.md"
   printf 'MOE_CACHE_REF="${MOE_CACHE_REF:-v%s}"   # tag\n' "$v" > "$d/install.sh"
   printf 'fprintf(stderr, "moe-cache: plugin v%s (ggml backend API %%d)\\n", 3);\n' "$v" > "$d/src/mc_state.inl"
   printf 'VERSION = "%s"                    # tools/set_version.sh fills this in\n' "$v" > "$d/bin/moe_cache.py"
-  printf 'status as of 0.3.3\n' > "$d/docs/ROADMAP.md"; printf 'security\n' > "$d/docs/SECURITY.md"
+  printf 'status as of 0.3.3\n' > "$d/docs/reference/roadmap.md"; printf 'security\n' > "$d/docs/reference/security.md"
 }
 
 # ---- flow 1: after the 0.3.5 release ----
@@ -74,7 +74,7 @@ if bash "$R/tools/set_version.sh" "x.y" >"$T/out" 2>&1; then fail "bad version n
 R="$T/placeholder"; mk "$R" 0.0.0.TBD
 sed -i "s/^## Unreleased/## 0.0.0.TBD (2026-01-01)/" "$R/CHANGELOG.md"
 echo "notes 0.0.0.TBD" > "$R/docs/releases/RELEASE_NOTES_v0.0.0.TBD.md"
-for f in docs/ROADMAP.md docs/SECURITY.md; do echo "v0.0.0.TBD" >> "$R/$f"; done
+for f in docs/reference/roadmap.md docs/reference/security.md; do echo "v0.0.0.TBD" >> "$R/$f"; done
 bash "$R/tools/set_version.sh" 0.3.6 >"$T/out" 2>&1 || { cat "$T/out"; fail "placeholder flow stopped"; }
 [ -f "$R/docs/releases/RELEASE_NOTES_v0.3.6.md" ] && [ ! -f "$R/docs/releases/RELEASE_NOTES_v0.0.0.TBD.md" ] && grep -q '^VERSION = "0.3.6"' "$R/bin/moe_cache.py" && grep -q '^## 0.3.6 ' "$R/CHANGELOG.md" || fail "placeholder flow result"
 echo "set_version_test: PASS"

@@ -171,13 +171,13 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             const int api = moe_cache_api_of_ggml(ggml_version());
             if (api > 0 && api != GGML_BACKEND_API_VERSION) {
                 fail("this plugin was built for ggml backend API " + std::to_string(GGML_BACKEND_API_VERSION) + " but the server uses ggml " + ggml_version() +
-                     " (API " + std::to_string(api) + "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
+                     " (API " + std::to_string(api) + "): use the plugin build that matches your llama.cpp (see docs/guides/quickstart.md)");
                 return;
             }
             const std::string abi = ggml_abi_mismatch();
             if (!abi.empty()) {
                 fail(std::string("the running ggml ") + ggml_version() + " does not match the ggml headers this plugin was built with (" + abi +
-                     "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
+                     "): use the plugin build that matches your llama.cpp (see docs/guides/quickstart.md)");
                 return;
             }
         }

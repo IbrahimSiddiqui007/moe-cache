@@ -449,7 +449,7 @@ def peek_servers(ports=None, own=None, extra=()):
     return [dict(res[p], started_here=p == own or p in extra) for p in ports if p in res and res[p].get("up")]
 
 
-# Measured decode speeds from README "Results" / docs/results-archive/RESULTS.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
+# Measured decode speeds from README "Results" / docs/results/archive/results-windows-desktop.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
 # row): (machine, RAM GB, setting, stock tok/s or None, moe-cache tok/s, where). Machines: laptop = i7-13620H, 31 GB RAM, RTX 4060 8 GB, Linux;
 # PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
 LAPTOP, PC = "laptop", "PC"
@@ -2341,14 +2341,14 @@ class Store:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
        "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
-# GUI-012 (--ui-lan, docs/LAN_ACCESS.md): what a request from another computer may do. An ALLOW-LIST, checked for GET and POST: a route not named here is
+# GUI-012 (--ui-lan, docs/guides/lan-access.md): what a request from another computer may do. An ALLOW-LIST, checked for GET and POST: a route not named here is
 # 403 for a non-loopback peer, so a new route is closed to the network until someone decides. Allowed: reading the page, status, log, lists and plans, and
 # the chat itself (talks only to a model server on this PC, with the key kept server-side). Everything that starts, stops, benchmarks or configures, anything
 # that reads a secret (/api/key) or reaches other ports (/api/peek), downloads, Trash moves and share reports stay on the PC itself.
 REMOTE_GET = ("/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/api/downloads", "/api/download", "/api/models", "/api/plan", "/api/status",
               "/api/bench", "/api/servers", "/api/chats", "/api/log")
 REMOTE_POST = ("/api/chat", "/api/chats/save")
-REMOTE_REFUSED = "this action is not offered to other computers (it starts or changes things on this PC, or reads a secret): do it on the PC itself (docs/LAN_ACCESS.md)"
+REMOTE_REFUSED = "this action is not offered to other computers (it starts or changes things on this PC, or reads a secret): do it on the PC itself (docs/guides/lan-access.md)"
 TOKEN_FAILS, TOKEN_WINDOW = 20, 60.0          # wrong tokens from one remote address before it is answered 429 for a minute
 GROUP_ERROR_SHOWN = 30      # seconds a failed group start is still reported after the page first got the reason
 MAX_EXTRA = 2              # servers the page may start besides the main one (GUI-013)
@@ -3257,7 +3257,7 @@ def ui(argv):
     ap.add_argument("--ui-port", type=int, default=8070)
     ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--no-browser", action="store_true", help="do not open the page in the browser")
-    ap.add_argument("--ui-lan", action="store_true", help="also answer on this PC's home-network address (the page token is still required; some actions stay local). docs/LAN_ACCESS.md")
+    ap.add_argument("--ui-lan", action="store_true", help="also answer on this PC's home-network address (the page token is still required; some actions stay local). docs/guides/lan-access.md")
     ap.add_argument("--lan-address", default=None, help="with --ui-lan: which private address of this PC to tell you (default: the first found)")
     ap.add_argument("--allow-public", action="store_true", help="let --ui-lan listen although this PC has a public address (not recommended)")
     a = ap.parse_args(argv)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bench_record_test (docs/BENCHMARK_TEMPLATE.md): the benchmark record's collector without a model, a server or a GPU. Linux and Windows readers are driven with
+"""bench_record_test (docs/reference/benchmark-template.md): the benchmark record's collector without a model, a server or a GPU. Linux and Windows readers are driven with
 fake /proc files and fake command output (nvidia-smi, lsblk, typeperf, powercfg, PowerShell JSON); the Sampler with a fake probe; the record against the schema;
 the renderers (card lines, row, RESULTS section, issue body); and a smoke run of the real probe on this machine's own process. Same file on both systems."""
 import copy, json, os, re, sys, tempfile, time
@@ -184,7 +184,7 @@ if os.environ.get("BENCH_RECORD_DUMP"):                  # writes the filled rec
     json.dump(rec, open(os.environ["BENCH_RECORD_DUMP"], "w"), indent=1)
 schema = rr.load_schema()
 errs = rr.validate(rec, schema)
-check(not errs, f"the filled record is valid against docs/bench_record.schema.json ({errs[:2]})")
+check(not errs, f"the filled record is valid against docs/reference/bench-record.schema.json ({errs[:2]})")
 bad = json.loads(json.dumps(rec)); del bad["settings"]["gpu_expert_layers"]; bad["runs"][0]["decode_tps"] = "fast"; bad["outputs"]["identical_to_baseline"] = "maybe"
 errs = rr.validate(bad, schema)
 check(any("gpu_expert_layers" in e and "required" in e for e in errs) and any("decode_tps" in e for e in errs) and any("identical_to_baseline" in e for e in errs),

@@ -1,4 +1,4 @@
-# Quality gate for the approximate mode (docs/QUALITY_GATE.md) on a GitHub runner: Granite 1B-A400M, CPU only, cache forced to evict (0.2 GiB) and the executor
+# Quality gate for the approximate mode (docs/reference/quality-gate.md) on a GitHub runner: Granite 1B-A400M, CPU only, cache forced to evict (0.2 GiB) and the executor
 # forced on, so route skip and the other approximate items really act. Smoke limits (a tiny model is far more sensitive than a 100 B one): every level must run,
 # the plugin must be active, `exact` must stay at KL 0 and 100 % top-1, the approximate levels must stay within an order of magnitude of the real limits.
 # q8_0 KV cannot be tested here: stock llama-perplexity at this pin aborts with -ctk q8_0 on the CPU-only build (ggml-impl.h:330, stock too). The approximate
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   push:
     branches: ["claude/approx"]
-    paths: ["src/**", "tools/quality_gate.py", "tools/quality_yardstick.py", "tools/quality_tasks.json", ".github/workflows/quality.yml", "docs/QUALITY_GATE.md"]
+    paths: ["src/**", "tools/quality_gate.py", "tools/quality_yardstick.py", "tools/quality_tasks.json", ".github/workflows/quality.yml", "docs/reference/quality-gate.md"]
 
 permissions:
   contents: read

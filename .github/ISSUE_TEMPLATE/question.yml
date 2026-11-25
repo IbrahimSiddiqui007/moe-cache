@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please look at [docs/FAQ.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/FAQ.md) and [docs/TROUBLESHOOTING.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/TROUBLESHOOTING.md) first. Something broken is a bug report, not a question.
+        Please look at [docs/guides/faq.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/guides/faq.md) and [docs/guides/troubleshooting.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/guides/troubleshooting.md) first. Something broken is a bug report, not a question.
   - type: textarea
     id: question
     attributes:

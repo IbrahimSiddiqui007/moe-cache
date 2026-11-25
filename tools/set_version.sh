@@ -10,7 +10,7 @@
 #       src/mc_state.inl      the plugin's start-up banner
 #       bin/moe_cache.py      VERSION (--version, the check header)
 #     docs/releases/RELEASE_NOTES_vVERSION.md (the release text the release workflow uses) must exist already: write it first, the script does not invent it.
-#     docs/ROADMAP.md and the history lines in README.md stay as they are (they are prose; review them in git diff).
+#     docs/reference/roadmap.md and the history lines in README.md stay as they are (they are prose; review them in git diff).
 #  2. Older flow, kept: every place holds the placeholder 0.0.0.TBD and docs/releases/RELEASE_NOTES_v0.0.0.TBD.md exists: the placeholder is replaced
 #     everywhere and the notes file is renamed.
 set -e
@@ -21,7 +21,7 @@ V="$1"; P=0.0.0.TBD
 esc() { printf '%s' "$1" | sed 's/[][\.*^$/&]/\\&/g'; }      # a version as a sed pattern / replacement
 B="${V//-/--}"                                                # shields.io badge text: a dash is written as two
 
-FILES="CHANGELOG.md README.md docs/ROADMAP.md docs/SECURITY.md install.sh src/mc_state.inl bin/moe_cache.py docs/releases/RELEASE_NOTES_v$P.md"
+FILES="CHANGELOG.md README.md docs/reference/roadmap.md docs/reference/security.md install.sh src/mc_state.inl bin/moe_cache.py docs/releases/RELEASE_NOTES_v$P.md"
 have_placeholder=1
 for f in $FILES; do [ -f "$f" ] && grep -q -F "$P" "$f" || have_placeholder=0; done
 
@@ -56,4 +56,4 @@ sed -i "s/^VERSION = \"$Ce\"/VERSION = \"$Ve\"/" bin/moe_cache.py
 for pair in "CHANGELOG.md:^## $Ve (" "README.md:status-v$(esc "$B")" "install.sh:MOE_CACHE_REF:-v$Ve}" "src/mc_state.inl:plugin v$Ve (" "bin/moe_cache.py:^VERSION = \"$Ve\""; do
   grep -q -- "${pair#*:}" "${pair%%:*}" || { echo "FAIL: ${pair%%:*} does not name $V after the edit"; exit 1; }
 done
-echo "version $C -> $V in: CHANGELOG.md README.md install.sh src/mc_state.inl bin/moe_cache.py. Review README.md / docs/ROADMAP.md prose with git diff; nothing committed or tagged."
+echo "version $C -> $V in: CHANGELOG.md README.md install.sh src/mc_state.inl bin/moe_cache.py. Review README.md / docs/reference/roadmap.md prose with git diff; nothing committed or tagged."

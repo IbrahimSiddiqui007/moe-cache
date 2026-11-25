@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "about": "The one model catalogue of moe-cache: bin/moe_cache_catalogue.py reads it; pick, launch, models, docs/MODELS.md (tools/gen_models_md.py) and tools/check_model_links.py follow it. Schema in docs/MODELS.md. Numbers: only those written down in docs/results-archive/RESULTS.md or benchmarks/, each with machine, date and source.",
+ "about": "The one model catalogue of moe-cache: bin/moe_cache_catalogue.py reads it; pick, launch, models, docs/reference/models.md (tools/gen_models_md.py) and tools/check_model_links.py follow it. Schema in docs/reference/models.md. Numbers: only those written down in docs/results/archive/results-windows-desktop.md or benchmarks/, each with machine, date and source.",
  "machines": {
   "pc": {
    "name": "Windows PC: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Windows 11, llama.cpp Vulkan",
@@ -294,7 +294,7 @@
     "min_vram_gib": 6,
     "needs_ssd_if_oversize": true,
     "ctx_tested_max": 65536,
-    "ctx_tested_source": "docs/AGENTS.md: Hermes fixed a bug at 64k (laptop, 2026-10-29)"
+    "ctx_tested_source": "docs/guides/agents.md: Hermes fixed a bug at 64k (laptop, 2026-10-29)"
    },
    "measured": [
     {

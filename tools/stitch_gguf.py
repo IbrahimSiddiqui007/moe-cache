@@ -17,7 +17,7 @@ its parts and a layer is never half one type and half the other (with --scope la
 Checks before anything is written: both files have the same tensor names and the same shapes, the same architecture / block / expert counts and the same alignment.
 The manifest OUT.stitch.json lists, per tensor, where it came from (file, type, bytes) and, per layer, the source. general.file_type of the output is the
 resident file's (llama.cpp uses it only for the printed name); the real types are per tensor. Standard library only; reads and writes in chunks (a model is tens of GB).
-Not exact against either source: run the quality gate (docs/QUALITY_GATE.md) before using a stitched file for anything but speed."""
+Not exact against either source: run the quality gate (docs/reference/quality-gate.md) before using a stitched file for anything but speed."""
 import argparse, hashlib, json, os, re, struct, sys
 
 MAGIC = b"GGUF"

@@ -1,6 +1,6 @@
 # Benchmarks: runs, claims and the board
 
-What this folder is for: every number we publish (README, `docs/benchmark_card.html`, release notes) is a **claim** that points at the **runs** that produced it,
+What this folder is for: every number we publish (README, `docs/results/benchmark-card.html`, release notes) is a **claim** that points at the **runs** that produced it,
 and whether it still holds is **computed**, not remembered.
 
 | File | What it is |
@@ -13,11 +13,11 @@ and whether it still holds is **computed**, not remembered.
 Status of a claim: **current**, **stale** (the moe-cache version or the llama.cpp pin moved past what the claim is valid for; the number may still hold, nobody has
 re-measured), **superseded** (a newer claim covers the same cell) or **withdrawn** (written by hand, with the reason). A value nobody measured is `not recorded`.
 
-Runs that were converted from [docs/results-archive/RESULTS.md](../docs/results-archive/RESULTS.md) (everything before the record format existed) say so in their `notes`: only the numbers written
-down at the time are in them, and VRAM, process RAM and CPU are `not recorded`. `docs/results-archive/RESULTS.md` stays as the numbered history up to section 79.
+Runs that were converted from [docs/results/archive/results-windows-desktop.md](../docs/results/archive/results-windows-desktop.md) (everything before the record format existed) say so in their `notes`: only the numbers written
+down at the time are in them, and VRAM, process RAM and CPU are `not recorded`. `docs/results/archive/results-windows-desktop.md` stays as the numbered history up to section 79.
 
-Commands (all `python3 bin/moe_cache.py bench-record ...`; the format and the rules are in [docs/BENCHMARK_TEMPLATE.md](../docs/BENCHMARK_TEMPLATE.md), the schema in
-[docs/bench_record.schema.json](../docs/bench_record.schema.json)):
+Commands (all `python3 bin/moe_cache.py bench-record ...`; the format and the rules are in [docs/reference/benchmark-template.md](../docs/reference/benchmark-template.md), the schema in
+[docs/reference/bench-record.schema.json](../docs/reference/bench-record.schema.json)):
 
 | Command | Does |
 |---|---|

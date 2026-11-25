@@ -1,5 +1,5 @@
 """Serving to the home network (SERVER-016 `--lan`, GUI-012 `--ui-lan`): the address rules, in plain functions a test can fake. Standard library only.
-docs/LAN_ACCESS.md has the threat table; every rule there that is about an address is here.
+docs/guides/lan-access.md has the threat table; every rule there that is about an address is here.
 
   classify(addr)            "loopback" | "private" | "public" | "any" (0.0.0.0 / ::) | "bad"
   local_addresses()         the IPv4 addresses of this PC (best effort; tests pass their own)
@@ -99,5 +99,5 @@ def risk_lines(url, key_file=None):
     if key_file:
         out.append(f"moe-cache: LAN: the API key is stored in {key_file} (`python3 bin/moe_cache.py key` prints it); every request needs it")
     out.append("moe-cache: LAN: this is plain http: anyone who can watch your network can read the key and your chats. Use it on a network you trust "
-               "(or over a VPN); do not forward this port on your router (docs/LAN_ACCESS.md)")
+               "(or over a VPN); do not forward this port on your router (docs/guides/lan-access.md)")
     return out

@@ -41,7 +41,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; th
     b=$(basename "$tb" .tar.gz); tar -tzf "$tb" > "$T/$b.list"
     chk "$b: no src/top (the experimental native top is not shipped)" '! grep -q "/src/top" "$T/$b.list"'
     chk "$b: no docs/internal (design notes are not shipped)" '! grep -q "/docs/internal" "$T/$b.list"'
-    chk "$b: the control page, the plugin sources and the public docs are in" 'grep -q "/ui/index.html$" "$T/$b.list" && grep -q "/src/mc_common.inl$" "$T/$b.list" && grep -q "/docs/QUICKSTART.md$" "$T/$b.list"'
+    chk "$b: the control page, the plugin sources and the public docs are in" 'grep -q "/ui/index.html$" "$T/$b.list" && grep -q "/src/mc_common.inl$" "$T/$b.list" && grep -q "/docs/guides/quickstart.md$" "$T/$b.list"'
     chk "$b: BUILD_COMMIT carries the commit handed down (0.3.9 draft shipped it empty)" '[ "$(tar -xzOf "$tb" "$b/BUILD_COMMIT")" = abcdef012 ]'
     chk "$b: entries carry the handed-down date, not -2^63 (0.3.9 draft)" '[ -z "$(TZ=UTC tar --full-time -tvzf "$tb" 2>&1 | grep -v " 2023-11-14 22:13:20 ")" ]'
     chk "$b: the release scripts are not shipped" '! grep -q "/tools/make_release.sh$\|/tools/release_copy_src.sh$" "$T/$b.list"'

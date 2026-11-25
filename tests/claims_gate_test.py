@@ -23,7 +23,7 @@ check(g.run(LINT, 1, W.replace("chain1103-*", "*"), TODAY)[0] == 1, "a bare * cl
 check(g.run(LINT, 1, W.replace("claims chain1103-*; ", ""), TODAY)[0] == 1, "a waiver with no claims field is refused")
 check(g.run(LINT, 1, W.replace("expires 2026-11-12", "expires 2026-12-30"), TODAY)[0] == 1, "more than 30 days is refused")
 check(g.run(LINT, 1, W.replace("chain1103-*", "card-decode-*"), TODAY)[0] == 1, "a stale id the waiver does not name still fails")
-check(g.run(LINT, 1, W.replace("files README.md", "files docs/benchmark_card.html"), TODAY)[0] == 1, "an unclaimed number in a file the waiver does not name still fails")
+check(g.run(LINT, 1, W.replace("files README.md", "files docs/results/benchmark-card.html"), TODAY)[0] == 1, "an unclaimed number in a file the waiver does not name still fails")
 check(g.run(LINT, 1, W + "\nsecond line", TODAY)[0] == 1, "a second line is refused")
 check(g.run(LINT, 1, W.replace("reason: v0.3.6 not re-measured yet", "reason: x"), TODAY)[0] == 1, "a reason shorter than 8 characters is refused")
 check(g.run("docs/x.md:3: withdrawn: claim foo\n", 1, W, TODAY)[0] == 1, "other kinds of problem are not waivable")

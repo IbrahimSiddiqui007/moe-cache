@@ -62,7 +62,7 @@ jobs:
           REQUIRE_NODE: "1"       # AUD-094: ui_test skips its JavaScript checks without node; the script then runs tests/require_node_test.py, which fails instead
         run: tools/run_quick_tests.sh
 
-      - name: Model catalogue (docs/MODELS.md is generated from models.json)
+      - name: Model catalogue (docs/reference/models.md is generated from models.json)
         run: |
           python3 tools/gen_models_md.py --check
           python3 - <<'PY'
@@ -76,7 +76,7 @@ jobs:
           python3 bin/moe_cache.py bench-record lint --warn
           python3 bin/moe_cache.py bench-record board --check || echo "::warning::benchmarks/BOARD.md is out of date: run bench-record board"
 
-      - name: README card block matches docs/benchmark_card.html
+      - name: README card block matches docs/results/benchmark-card.html
         run: python3 tools/card_markdown.py --check
 
       - name: Scoop bucket push (local empty bucket repo; first push, unchanged, next version)
