@@ -59,7 +59,7 @@ jobs:
           path: ${{ runner.temp }}/vksdk
           key: dl-vulkansdk-1.4.357.0-81f47471
       - run: choco install ninja
-      - name: Build (Vulkan linked in, no DL backends: one folder, runs as is)
+      - name: Build (Vulkan linked in, no DL backends, one folder)
         working-directory: llama.cpp
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CONNECT=OFF -DLLAMA_BUILD_BORINGSSL=ON
