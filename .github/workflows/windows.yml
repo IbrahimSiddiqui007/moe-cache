@@ -324,6 +324,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "autotune test failed" }
           python tests/room_test.py               # LAUNCHER-1133: the planner plans against the GPU room the card really gives (fake counters)
           if ($LASTEXITCODE -ne 0) { throw "room test failed" }
+          python tests/real_room_test.py          # LAUNCHER-1131: paging detector, learned GPU ceiling, load measurements (fake counters, recorded log lines)
+          if ($LASTEXITCODE -ne 0) { throw "real_room test failed" }
           python tests/env_block_test.py          # BENCH-1150: the environment block of a published number (fake probe, fake gputaskman); the real commit_free ctypes call runs here
           if ($LASTEXITCODE -ne 0) { throw "env block test failed" }
           python tests/load_mode_test.py          # LAUNCHER-1133 follow-up: low RAM keeps --load-mode none for a dense model that spills

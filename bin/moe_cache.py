@@ -18,6 +18,7 @@
   moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
   moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
+  moe_cache.py room    [--reset]                                           show (or forget) what was learned about this GPU's real memory room (MOE_CACHE_LEARN_ROOM=0 turns it off)
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
   moe_cache.py --version                                                   print the moe-cache version
 
@@ -2557,6 +2558,8 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
+            if b"buffer size" in line or b"offloaded " in line:           # LAUNCHER-1131: the load's own buffer lines (a measurement of this plan)
+                seen.setdefault("buf", []).append(line.decode(errors="replace").strip()) if len(seen.get("buf", ())) < 400 else None
             cpn = None if EXPECT_CPU_WORK[0] else cpu_placement_note(line, cpu_run=("--device none" in " ".join(cmd) or " -ngl 0 " in " ".join(cmd) + " "))
             if cpn and cpn[0] not in seen.setdefault("cpuplace", set()):
                 seen["cpuplace"].add(cpn[0])
@@ -2574,6 +2577,21 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     seen["disabled"] = line.decode(errors="replace").strip()
     pump_t = threading.Thread(target=pump, daemon=True)
     pump_t.start()
+    if WINDOWS and REAL_ROOM.get("device") and "--device none" not in " ".join(cmd):      # LAUNCHER-1131: paging detector, learned ceiling, load measurement (planner/real_room.py)
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            import real_room as rr
+            dev, done = REAL_ROOM["device"], []
+            def first_reading(ded, sha):
+                if not done:                  # the first reading after the load: store the buffers and the counters as this plan's measurement
+                    done.append(1)
+                    b = rr.parse_load_buffers(seen.get("buf", []))
+                    if b:
+                        rr.measure_save(CACHE_DIR, cmd, dev, b, ded, sha)
+            threading.Thread(target=rr.watch_room, args=(p.pid, dev, CACHE_DIR, lambda m: say(m, err=True), lambda: p.poll() is None, lambda: seen["ready"]),
+                             kwargs={"room_mib": REAL_ROOM.get("room_mib"), "others_mib": REAL_ROOM.get("others_mib"), "on_reading": first_reading}, daemon=True).start()
+        except Exception:
+            pass
     if port:
         def check():       # seen["ready"] for every engine (LAUNCHER-1045 needs it for stock runs too); the plugin warnings only when the plugin was meant to load
             while True:    # no cap: a model that loads in 20 minutes is ready then, and a crash hours later must not look like "never came up"
@@ -3690,6 +3708,30 @@ def win_gpu_process_text():
     return text
 
 
+REAL_ROOM = {}        # LAUNCHER-1131: {"device": GPU name, "room_mib": pre-load room} while the planner plans against the room the card really gives; the watcher of _run_child learns for it
+
+
+DENSE_COMPUTE_BASE_GIB, DENSE_COMPUTE_PER_512_GIB = 0.20, 0.15      # the table's compute buffer of a dense plan (planner/commit_guard.py): 0.20 GiB at -ub 512, +0.15 GiB per further 512
+
+
+def measured_need(model, ctx, rung, ub=512):
+    """LAUNCHER-1131 (every load is a measurement): GiB an earlier load of this model at this context with this KV type needed on the GPU (llama-server's own buffer lines), or None. Only on the
+    Windows AMD / Intel path that knows the GPU (REAL_ROOM); never raises."""
+    try:
+        dev = REAL_ROOM.get("device")
+        if not dev:
+            return None
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from real_room import measure_load, measured_need_gib, enabled
+        if not enabled():
+            return None
+        m = measure_load(CACHE_DIR, model, ctx, rung[0], rung[1], dev, exe=REAL_ROOM.get("ls"))
+        ub = int(ub or 512)           # critic F1: the stored compute buffer belongs to the -ub it was measured with; another -ub takes the table's figure for THIS -ub
+        return measured_need_gib(m, ub, DENSE_COMPUTE_BASE_GIB + DENSE_COMPUTE_PER_512_GIB * max(0, ub - 512) / 512)[0] if m else None
+    except Exception:
+        return None
+
+
 def real_room_stage(a, g, machine):
     """LAUNCHER-1133 (Windows AMD / Intel, --vram not given; build's LAUNCHER-1131 WIP, pre-load half only): llama-server's free figure is the Vulkan budget; with the desktop on the card the
     process keeps only its dedicated share and the rest is paged silently (PC 2026-11-11, RX 9070 XT: 15.4 GiB "free", 13.1-13.5 GiB kept; q8_0 KV at 64k ran 18.5 tok/s against 27.8 with q4_0).
@@ -3698,21 +3740,55 @@ def real_room_stage(a, g, machine):
     try:
         planner_path()
         from gguf_plan import others_dedicated_mib, real_room_mib, ROOM_RESERVE_MIB
+        from real_room import _age_text
+        from real_room import room_ceiling_info, room_forget, enabled, NEAR_ROOM_MIB, OTHERS_MOVED_MIB, others_moved, const_label
         total, driver = float(g[3]), float(g[2])
+        REAL_ROOM.clear(); REAL_ROOM["device"] = g[1]
         others = others_dedicated_mib(machine.gpu_process_text())
+        learn = enabled()                                  # MOE_CACHE_LEARN_ROOM=0: no learned ceiling, no stored measurements (the pre-load room below stays)
+        if not learn:
+            REAL_ROOM.pop("device")
+        ci = room_ceiling_info(CACHE_DIR, g[1]) if learn else None
+        ceil_ = ci[0] if ci else None                      # LAUNCHER-1131: what an earlier start of this GPU kept in dedicated memory when it paged
+        if ceil_ and others is not None:
+            by_card0 = total - others
+            pre = real_room_mib(min(by_card0, driver - others if driver >= by_card0 else driver), 0.0)      # the same room as below (critic N1-N3)
+            mv = others_moved(CACHE_DIR, g[1], others)     # LAUNCHER-1154: the other programs' use moved since the ceiling was stored: measure again, do not wait for 30 days
+            if mv:
+                room_forget(CACHE_DIR, g[1])
+                say(f"moe-cache: GPU room: the other programs held {mv[0] / 1024:.1f} GiB of the card when the {ceil_ / 1024:.1f} GiB ceiling was learned ({_age_text(ci[1])} ago), they hold {mv[1] / 1024:.1f} GiB now (a move of more than {OTHERS_MOVED_MIB} MiB: "
+                    f"{const_label('OTHERS_MOVED_MIB')}): that ceiling is dropped and the room is measured again (MOE_CACHE_LEARN_ROOM=0 turns the learning off)")
+                ceil_ = None
+            elif pre and pre > ceil_ + NEAR_ROOM_MIB:      # critic F2: the desktop gave the room back (the counters show it now): do not plan against the stale ceiling, and forget it
+                room_forget(CACHE_DIR, g[1])
+                say(f"moe-cache: GPU room: the card has {pre / 1024:.1f} GiB of room now, more than the {ceil_ / 1024:.1f} GiB learned {_age_text(ci[1])} ago: that ceiling is dropped ({const_label('NEAR_ROOM_MIB')}; MOE_CACHE_LEARN_ROOM=0 turns the learning off)")
+                ceil_ = None
         if others is None:
             say("moe-cache: GPU room: the other programs' GPU memory use could not be read (Windows counters): planning with llama-server's free figure as before")
+            if ceil_ and ceil_ < driver - 256:
+                a.room_gib = ceil_ / 1024
+                say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, the most an earlier start kept in dedicated memory before the card paged, learned {_age_text(ci[1])} ago (trusted for {const_label('ROOM_KEEP_S')} unless the room changes; `moe_cache.py room --reset` forgets it)")
             return
         a.room_used_gib = others / 1024
+        REAL_ROOM["others_mib"] = others
         # critic N1-N3: the room is the smaller of (a) the card's size minus the others and (b) llama-server's free figure minus the others, then the growth reserve comes off the result.
         # (b) only when that figure does not already count the others (driver >= card - others); otherwise the driver's figure is taken as it is.
         by_card = total - others
         by_driver = driver - others if driver >= by_card else driver
         which = "the card's size minus that" if by_card <= by_driver else "llama-server's own free figure minus that"
         room = real_room_mib(min(by_card, by_driver), 0.0)     # the reserve off the smaller term; None when implausible (< 1 GiB)
-        if room is None or room >= driver:
+        if room:
+            REAL_ROOM["room_mib"] = room
+        why_ceil = bool(ceil_ and (room is None or ceil_ < room))
+        if why_ceil:
+            room = ceil_
+        if room is None or room >= (driver - 256 if why_ceil else driver):
             return
         a.room_gib = room / 1024
+        if why_ceil:
+            say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, the most an earlier start kept in dedicated memory before the card paged, learned {_age_text(ci[1])} ago (the desktop and other programs hold {others / 1024:.1f} GiB now; "
+                f"trusted for {const_label('ROOM_KEEP_S')} unless the room changes; `moe_cache.py room` shows what was learned, `moe_cache.py room --reset` forgets it, MOE_CACHE_LEARN_ROOM=0 turns it off)")
+            return
         if others >= 1024:                         # a card nearly empty of other programs: planned with the room, nothing worth saying
             say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB (the desktop and other programs hold {others / 1024:.1f} GiB of the card's "
                 f"{total / 1024:.1f} GiB: {which}, minus a {ROOM_RESERVE_MIB} MiB reserve for their growth); --vram GiB sets it by hand")
@@ -3758,6 +3834,8 @@ def gpu_stage(a, ls, win, machine):
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
             said_gpu = True
             real_room_stage(a, g, machine)
+            if REAL_ROOM.get("device"):
+                REAL_ROOM["ls"] = ls          # the llama-server binary a measurement belongs to (planner/real_room.py exe_ident)
             # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
             # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
     if not said_gpu and not getattr(a, "cpu_only", False):
@@ -3805,10 +3883,12 @@ def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False, skip_mtp=False):
             fixed, m = 0.20, (a.gpu_margin if a.gpu_margin is not None else 0.0)
         else:
             fixed, m = None, (a.gpu_margin if a.gpu_margin is not None else 0.25)
-        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed, skip_mtp)
-        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed, skip_mtp)
-        kq8vq4 = dense_gpu_fit(model, ctx, free, KV_K8V4, m, gap, fixed, skip_mtp) if with_q4 else True
-        q4 = dense_gpu_fit(model, ctx, free, "q4_0", m, gap, fixed, skip_mtp) if with_q4 else True
+        pub = getattr(a, "plan_ub", None) or (int(a.ub) if str(getattr(a, "ub", "")).isdigit() else 512)       # the -ub this dense plan will run with (the user's, else llama.cpp's 512)
+        ms = [measured_need(model, ctx, rung, pub) for rung in (("f16", "f16"), ("q8_0", "q8_0"), KV_K8V4, ("q4_0", "q4_0"))]      # LAUNCHER-1131: what an earlier load of this exact plan needed
+        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed, skip_mtp, ms[0])
+        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed, skip_mtp, ms[1])
+        kq8vq4 = dense_gpu_fit(model, ctx, free, KV_K8V4, m, gap, fixed, skip_mtp, ms[2]) if with_q4 else True
+        q4 = dense_gpu_fit(model, ctx, free, "q4_0", m, gap, fixed, skip_mtp, ms[3]) if with_q4 else True
     except Exception:
         return None
     if not (f16 and q8 and kq8vq4 and q4):
@@ -5919,6 +5999,8 @@ def _launch_plan(a, extra, argv, machine):
     if a.share_ram:
         share_ram_start(a, machine)
     user_flags, extra = adopt_user_flags(extra)
+    _ub = a.ub if str(a.ub).isdigit() else arg_after(extra, "-ub", "--ubatch-size")
+    a.plan_ub = int(_ub) if _ub and str(_ub).isdigit() else None          # LAUNCHER-1131 F1: the user's own -ub (None: the dense plan runs at llama.cpp's default 512)
     user_extra = list(extra)             # LAUNCHER-994: what the user gave after `--` (the stages below add their own flags to extra); the auto-tune leaves those settings alone
     if "port" in user_flags and user_flags["port"] != a.port:
         say(f"moe-cache: port {user_flags['port']} from the flags after '--' (the health checks, warm sessions and agent snippets use it)")
@@ -8285,8 +8367,23 @@ def key_cmd(argv):
     return 0
 
 
+def room_cmd(argv):
+    """moe_cache.py room [--reset]: what this PC has learned about the GPU's real room (planner/real_room.py): the planning ceiling after the card paged and the stored load measurements."""
+    ap = argparse.ArgumentParser(prog="moe_cache.py room", description="show (or with --reset forget) what moe-cache learned about this GPU's real memory room; MOE_CACHE_LEARN_ROOM=0 turns the learning off")
+    ap.add_argument("--reset", action="store_true", help="delete the learned ceilings and the stored load measurements")
+    a = ap.parse_args(argv)
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import real_room as rr
+    if a.reset:
+        print(f"forgot {rr.reset_learned(CACHE_DIR)} file(s) in {CACHE_DIR}")
+        return 0
+    print("learning is OFF (MOE_CACHE_LEARN_ROOM=0)" if not rr.enabled() else "learning is on (MOE_CACHE_LEARN_ROOM=0 turns it off)")
+    print("\n".join(rr.learned_text(CACHE_DIR)))
+    return 0
+
+
 def main():
-    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion, "pack": pack_cmd, "update": update_cmd}
+    cmds = {"room": room_cmd, "server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion, "pack": pack_cmd, "update": update_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
