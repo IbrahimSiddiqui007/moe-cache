@@ -38,7 +38,7 @@ for win in (True, False):
     e = stage([], 17.4 * GIB, win); n = "Windows" if win else "Linux"
     got = [v for k, v in e if k == "MOE_CACHE_MAX_RAM_GB"]
     check(len(got) == 1 and abs(float(got[0]) - 13.4 * GIB / 1e9) < 0.01, f"{n}: 17.4 GiB available -> the plugin gets MOE_CACHE_MAX_RAM_GB {got} (13.4 GiB = available - 4 GiB reserve)")
-    check(float(got[0]) * 1e9 < mc.Machine.mem_cap(M(0, win)) if got else False, f"{n}: below the plugin's own default cap (physical RAM - 12.5 %)")
+    check(float(got[0]) * 1e9 < M(0, win).mem_cap() if got else False, f"{n}: below the plugin's own default cap (physical RAM - 12.5 %)")
     check(not any(k == "MOE_CACHE_MAX_RAM_GB" for k, _ in stage([], 31.1 * GIB, win)), f"{n}: limit equal to the default cap -> nothing added, a normal start is unchanged")
     check([v for k, v in stage(["--max-ram", "20"], 17.4 * GIB, win) if k == "MOE_CACHE_MAX_RAM_GB"] == ["20"], f"{n}: --max-ram 20 wins (passed once, as given)")
     check(not any(k == "MOE_CACHE_MAX_RAM_GB" for k, _ in stage(["--ram", "12"], 17.4 * GIB, win)), f"{n}: --ram 12: no launcher limit added (the user's size)")
