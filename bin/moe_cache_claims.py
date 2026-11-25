@@ -537,8 +537,8 @@ def perf_numbers(line, wide=False):
     return [m.group(0).strip() for m in (PERF_WIDE if wide else PERF).finditer(text)]
 
 
-WIDE_PATTERNS = ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/*.md", "docs/releases/*.md",
-                 "docs/*.html", "docs/mockup/*.html", "benchmarks/README.md")
+WIDE_PATTERNS = ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/*.md", "docs/guides/*.md", "docs/reference/*.md", "docs/results/*.md",
+                 "docs/releases/*.md", "docs/*.html", "docs/results/*.html", "docs/mockup/*.html", "benchmarks/README.md")
 WIDE_EXCLUDE = re.compile(r"(?:^|/)(?:docs/internal|docs/results-archive|archive|third_party|benchmarks/claims|tests)(?:/|$)")
 
 
