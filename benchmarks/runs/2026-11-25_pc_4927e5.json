@@ -1,0 +1,226 @@
+{
+ "conditions": {
+  "baseline_check": "not recorded",
+  "cpu_temp_c": "not recorded",
+  "file_cache": "cold",
+  "gpu_temp_c": "not recorded",
+  "other_programs": "clean: yes (harness clean check before each run: programs with a window: none, programs over 0.5 GB RAM: none, VRAM over 0.3 GiB: none)",
+  "system_cpu_busy_before_pct": 4.9,
+  "system_ram_free_before_mib": 24601.0,
+  "uptime_h": 53.2,
+  "vram_in_use_before_mib": 1209.0
+ },
+ "created_utc": "2026-11-25 13:07",
+ "hardware": {
+  "cpu_cores": 16,
+  "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+  "cpu_threads": 32,
+  "gpu_driver": "32.0.21045.16010",
+  "gpu_model": "AMD Radeon(TM) Graphics",
+  "os": "Windows 11",
+  "os_build": "10.0.26200",
+  "power_plan": "Balanced",
+  "ram_gib": 31.1,
+  "ram_speed_mts": 6000,
+  "ram_type": "DDR5",
+  "storage": {
+   "drive": "D:",
+   "interface": "NVMe",
+   "model": "SanDisk Extreme 1TB X3N"
+  },
+  "vram_mib": 16204.0
+ },
+ "model": {
+  "file": "Qwen3.8-27B-UD-IQ4_XS.gguf",
+  "quant": "IQ4_XS",
+  "sha256_full": "not recorded",
+  "sha256_head16MiB": "not recorded",
+  "size_gb": "not recorded",
+  "source_url": "not recorded"
+ },
+ "notes": [
+  "A B B A comparison of the dense-spill rule (MOE_CACHE_DENSE_SPILL_RULE) on a 27B dense model that spills out of GPU memory at 128k context; built from the chain log handover/sessions/chain28_2026-11-25/files/records/dense27_128k_spill_rule_abba.log (SUMMARY and FACTS lines of 2026-11-25 13:07); the per-run record files were not on the laptop, so prompt is given to 1 decimal, decode to 2, and fields the log does not hold say not recorded",
+  "rule-on = the launcher default for this case (-ub 256, one request at a time); rule-off = MOE_CACHE_DENSE_SPILL_RULE=0 (-ub 512, default slots, as told by the coordinator; -np is not in the log). The arms therefore differ in -ub and -np, which IS the rule: the comparison is the rule as a whole, not one flag",
+  "kit moe-cache-v0.0.0-ci-windows-x64 revision 2e823d2; llama-server 1.0.0-dev (build 12651, commit f5e6915c2), Clang 22.1.8; device Vulkan1; every layer on the GPU side as far as it fits (ngl not recorded), KV q8_0/q8_0, ctx 131072",
+  "apps closed (harness clean check before each run: clean); hardware and driver copied from the 35B run of the same day on the same machine",
+  "earlier runs of the same item in the same log: 2026-11-25 04:14 rule-on 370.5 / 373.2 pp, 9.46 / 9.50 dec; rule-off 263.4 / 263.3, 7.77 / 7.65; 2026-11-24 16:55 (a different state of the machine, spread 45 %) not used",
+  "forecast: n=2 per arm, one machine, one model"
+ ],
+ "outputs": {
+  "baseline_arm": "rule-on",
+  "identical_to_baseline": "not checked",
+  "text_sha256_by_arm": "not recorded"
+ },
+ "protocol": {
+  "arms": [
+   "rule-on",
+   "rule-off"
+  ],
+  "n_predict": 1500,
+  "order": "ABBA",
+  "prompt_set": "conversation script, 6 turns, filled to a 131072-token context",
+  "prompt_sha256": "not recorded",
+  "prompt_tokens": "not recorded",
+  "runs_per_arm": 2,
+  "sampler": "not recorded",
+  "seed": 42,
+  "temperature": 0
+ },
+ "record_schema": 1,
+ "reproduce": {
+  "commands": [
+   "python tools/conversation_bench.py run --ctx 65536 --max-tokens 1500 --seed 42 ..."
+  ],
+  "kit": "not recorded",
+  "model_url": "not recorded"
+ },
+ "runs": [
+  {
+   "arm": "rule-on",
+   "cache_hit_pct": "not recorded",
+   "cpu_avg_pct": 34.8,
+   "cpu_peak_pct": "not recorded",
+   "decode_tps": 9.51,
+   "disk_read_gb": "not recorded",
+   "error": "",
+   "gpu_blocks": "not recorded",
+   "index": 1,
+   "load_s": 22.2,
+   "ok": true,
+   "process_ram_peak_mib": 17444.0,
+   "prompt_tokens": "not recorded",
+   "prompt_tps": 374.4,
+   "system_ram_free_min_mib": 6779.0,
+   "text_sha256": "not recorded",
+   "ttft_s": "not recorded",
+   "vram_source": "not recorded",
+   "vram_used_peak_mib": 13641.0,
+   "wall_s": "not recorded"
+  },
+  {
+   "arm": "rule-off",
+   "cache_hit_pct": "not recorded",
+   "cpu_avg_pct": 29.6,
+   "cpu_peak_pct": "not recorded",
+   "decode_tps": 7.71,
+   "disk_read_gb": "not recorded",
+   "error": "",
+   "gpu_blocks": "not recorded",
+   "index": 1,
+   "load_s": 22.2,
+   "ok": true,
+   "process_ram_peak_mib": 17782.0,
+   "prompt_tokens": "not recorded",
+   "prompt_tps": 264.4,
+   "system_ram_free_min_mib": 6437.0,
+   "text_sha256": "not recorded",
+   "ttft_s": "not recorded",
+   "vram_source": "not recorded",
+   "vram_used_peak_mib": 13595.0,
+   "wall_s": "not recorded"
+  },
+  {
+   "arm": "rule-off",
+   "cache_hit_pct": "not recorded",
+   "cpu_avg_pct": 29.6,
+   "cpu_peak_pct": "not recorded",
+   "decode_tps": 7.69,
+   "disk_read_gb": "not recorded",
+   "error": "",
+   "gpu_blocks": "not recorded",
+   "index": 2,
+   "load_s": 22.2,
+   "ok": true,
+   "process_ram_peak_mib": 17779.0,
+   "prompt_tokens": "not recorded",
+   "prompt_tps": 263.8,
+   "system_ram_free_min_mib": 6562.0,
+   "text_sha256": "not recorded",
+   "ttft_s": "not recorded",
+   "vram_source": "not recorded",
+   "vram_used_peak_mib": 13599.0,
+   "wall_s": "not recorded"
+  },
+  {
+   "arm": "rule-on",
+   "cache_hit_pct": "not recorded",
+   "cpu_avg_pct": 35.1,
+   "cpu_peak_pct": "not recorded",
+   "decode_tps": 9.5,
+   "disk_read_gb": "not recorded",
+   "error": "",
+   "gpu_blocks": "not recorded",
+   "index": 2,
+   "load_s": 22.2,
+   "ok": true,
+   "process_ram_peak_mib": 17443.0,
+   "prompt_tokens": "not recorded",
+   "prompt_tps": 373.9,
+   "system_ram_free_min_mib": 6931.0,
+   "text_sha256": "not recorded",
+   "ttft_s": "not recorded",
+   "vram_source": "not recorded",
+   "vram_used_peak_mib": 13648.0,
+   "wall_s": "not recorded"
+  }
+ ],
+ "settings": {
+  "batch": "not recorded",
+  "command_line": "not recorded",
+  "ctx": 131072,
+  "environment": {
+   "MOE_CACHE_DENSE_SPILL_RULE": "0 on rule-off runs, unset on rule-on runs",
+   "MOE_CACHE_NO_AUTOTUNE": "1"
+  },
+  "fact_sources": {
+   "ubatch": "rule-on arm; the rule-off arm ran -ub 512"
+  },
+  "fast_flag": "no",
+  "flash_attn": "not recorded",
+  "gpu_expert_layers": 0,
+  "kv_type_k": "q8_0",
+  "kv_type_v": "q8_0",
+  "mtp": "no",
+  "n_cpu_moe": 999,
+  "n_layer": "not recorded",
+  "ngl": "not recorded",
+  "threads": "not recorded",
+  "ubatch": 256
+ },
+ "software": {
+  "llama_backend": "Vulkan",
+  "llama_build": 12651,
+  "llama_commit": "f5e6915c2",
+  "moe_cache_commit": "2e823d2",
+  "moe_cache_version": "0.3.9",
+  "plugin_file": "not recorded",
+  "plugin_sha256_prefix": "not recorded",
+  "python": "not recorded"
+ },
+ "summary": {
+  "rule-off": {
+   "cache_hit_pct": "not recorded",
+   "cpu_avg_pct": 29.6,
+   "cpu_peak_pct": "not recorded",
+   "decode_tps": 7.7,
+   "process_ram_peak_mib": 17780.5,
+   "prompt_tps": 264.1,
+   "runs": 2,
+   "system_ram_free_min_mib": 6499.5,
+   "ttft_s": "not recorded",
+   "vram_used_peak_mib": 13597.0
+  },
+  "rule-on": {
+   "cache_hit_pct": "not recorded",
+   "cpu_avg_pct": 34.95,
+   "cpu_peak_pct": "not recorded",
+   "decode_tps": 9.51,
+   "process_ram_peak_mib": 17443.5,
+   "prompt_tps": 374.15,
+   "runs": 2,
+   "system_ram_free_min_mib": 6855.0,
+   "ttft_s": "not recorded",
+   "vram_used_peak_mib": 13644.5
+  }
+ }
+}
