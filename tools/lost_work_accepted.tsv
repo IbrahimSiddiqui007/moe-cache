@@ -31,3 +31,12 @@ archive/wt-win-defaults	archived	same (tag)
 *claude/hard-tasks-1141	open	hard task set (MODELS-1141): merges after v0.3.8
 archive/multimodel-010	dropped	desktop app dropped by the owner 2026-11-14 (folder removed before v0.3.8)	d8528dd58,a3210d949,0506add43
 archive/next-v0.3.7	dropped	desktop app dropped by the owner 2026-11-14 (folder removed before v0.3.8)	d8528dd58,a3210d949,0506add43
+claude/cache694-unload-state	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	a5e6f22bd,f5643b243
+claude/docs-defaults-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	b3caa5ae1,e4fdf9612
+claude/launcher-1067	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	2af98f1b4,b73387dc8,d6d1e2bd6
+claude/patch067-b12207	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	264149bf4,5eeaaf2a0,94f8d56e3,e9343a3d8,f1897cb90
+claude/planner-fixes-3	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	be2cd971c
+claude/public-text-tools-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	90b30796d
+claude/tests-gaps-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	a7b30cc08,fb92de6b3
+claude/tooling-fixes-1	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	21cb8e612,5b7ccecc9,e2caf644a
+claude/vk-oom-fixes	parked	in flight, merges after 0.3.9.1 (owner box main37 2026-11-25)	2d135c183,3e264a32b
