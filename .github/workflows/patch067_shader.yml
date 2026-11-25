@@ -68,7 +68,7 @@ jobs:
         run: |
           Get-ChildItem llama.cpp\build\bin\Release | Select-Object Name, Length
           # no MinGW runtime DLL may be imported (the PC lacks them); MSVC builds import only system DLLs and vcruntime
-          foreach ($e in 'test-backend-ops.exe','llama-bench.exe') { $d = & dumpbin /dependents "llama.cpp\build\bin\Release\$e" | Out-String; Write-Host $d; if ($d -match 'libgcc|libstdc|libgomp|libwinpthread') { throw "MinGW DLL imported by $e" } }
+          foreach ($e in 'test-backend-ops.exe','llama-bench.exe') { $t = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("llama.cpp\build\bin\Release\$e")); if ($t -match 'libgcc_s|libstdc\+\+-6|libgomp-1|libwinpthread') { throw "MinGW DLL name found in $e" } }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: patch067-${{ matrix.variant }}-win-vulkan-x64
