@@ -19,7 +19,7 @@ script = os.path.join(HERE, "tools", "bundle_llama_patched.sh")
 lic = os.path.join(HERE, "LICENSE")
 env = dict(os.environ, LLAMA_LICENSE_FILE=lic)
 nums = ",".join(re.match(r"\d+", os.path.basename(p)).group(0) for p in sorted(glob.glob(os.path.join(HERE, "patches", "llama.cpp", "[0-9]*.patch"))))
-want = f"llama.cpp b12651 + moe-cache patches {nums} built in, all off"
+want = f"llama.cpp b12651 + moe-cache patches {nums} built in, switches all off"
 check(nums == "0004,0020,0030,0040,0090,0091,0092,0093,0094", f"the patch set is 0004,0020,0030,0040,0090,0091,0092,0093,0094 (got {nums}); update the docs and this test when it changes")
 
 def write(path, data=b"x"):

@@ -1,8 +1,8 @@
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 60cebe4..c195829 100644
+index dc183b7..e712a0c 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -15447,7 +15447,7 @@ static int32_t find_first_set(uint32_t x) {
+@@ -15503,7 +15503,7 @@ static int32_t find_first_set(uint32_t x) {
      return ret;
  }
  
@@ -11,36 +11,55 @@ index 60cebe4..c195829 100644
      VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
      ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
  
-@@ -15963,6 +15963,35 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+@@ -16019,6 +16019,54 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
      UNUSED(backend);
  }
  
-+// moe-cache patch 0093: a Vulkan out-of-device-memory thrown by lazy prealloc growth
-+// (ggml_vk_preallocate_buffers) during compute must not terminate the process.
-+// llama_decode maps GGML_STATUS_ALLOC_FAILED to a -2 return and the server survives.
-+static ggml_status ggml_vk_compute_failure(ggml_backend_t backend, const char * what) {
-+    GGML_LOG_ERROR("ggml_vulkan: graph compute failed (%s); returning GGML_STATUS_ALLOC_FAILED\n", what);
++// moe-cache patch 0093: an exception thrown while a graph is computed (typically a Vulkan
++// out-of-device-memory from the lazy prealloc growth in ggml_vk_preallocate_buffers) must not
++// terminate the process. Out-of-memory returns GGML_STATUS_ALLOC_FAILED, anything else
++// (device lost, ...) GGML_STATUS_FAILED. llama_decode returns -2 / -3 for them and the server
++// answers every active request with "Compute error." and keeps running (both codes are handled alike).
++static ggml_status ggml_vk_compute_failure(ggml_backend_t backend, const char * what, ggml_status status) {
++    GGML_LOG_ERROR("ggml_vulkan: graph compute failed (%s); returning status %d\n", what, (int) status);
 +
 +    ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
-+    if (ctx != nullptr) {
++    if (ctx != nullptr && ctx->device) {
++        // 1. drain the device: nothing of the half-built graph may still run when its state is dropped
++        try { ctx->device->device.waitIdle(); } catch (...) {}
 +        try {
-+            ctx->device->device.waitIdle();
-+        } catch (...) {}
-+        try {
++            // 2. drop the recorded but never completed command contexts
 +            ctx->compute_ctx.reset();
++            ctx->transfer_ctx.reset();
 +            ctx->submit_pending = false;
++            // 3. ggml_vk_submit_transfer_ctx() raises transfer_semaphore.value before it submits; if the
++            //    submit threw, the next compute context would wait for a value nobody signals. Everything
++            //    is idle now, so continue from the value the semaphore really reached.
++            if (ctx->device->async_use_transfer_queue) {
++                const uint64_t reached = ctx->device->device.getSemaphoreCounterValue(ctx->transfer_semaphore.s);
++                ctx->transfer_semaphore.value = reached;
++                ctx->transfer_semaphore_last_submitted = reached;
++            }
 +        } catch (...) {}
++        // 4. the same reset a normal synchronize does: tensor contexts, semaphores, events, pools, sync flags
++        try { ggml_vk_graph_cleanup(ctx); } catch (...) {}
 +    }
-+    return GGML_STATUS_ALLOC_FAILED;
++    return status;
 +}
 +
 +static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
 +    try {
 +        return ggml_backend_vk_graph_compute_impl(backend, cgraph);
++    } catch (const vk::OutOfDeviceMemoryError & e) {
++        return ggml_vk_compute_failure(backend, e.what(), GGML_STATUS_ALLOC_FAILED);
++    } catch (const vk::OutOfHostMemoryError & e) {
++        return ggml_vk_compute_failure(backend, e.what(), GGML_STATUS_ALLOC_FAILED);
++    } catch (const std::bad_alloc & e) {
++        return ggml_vk_compute_failure(backend, e.what(), GGML_STATUS_ALLOC_FAILED);
 +    } catch (const vk::SystemError & e) {
-+        return ggml_vk_compute_failure(backend, e.what());
++        return ggml_vk_compute_failure(backend, e.what(), GGML_STATUS_FAILED);
 +    } catch (const std::exception & e) {
-+        return ggml_vk_compute_failure(backend, e.what());
++        return ggml_vk_compute_failure(backend, e.what(), GGML_STATUS_FAILED);
 +    }
 +}
 +

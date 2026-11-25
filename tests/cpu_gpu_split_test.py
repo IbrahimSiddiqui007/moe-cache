@@ -21,7 +21,7 @@ def kit(patches):
     open(ls, "w").close()
     if patches is not None:
         with open(os.path.join(d, "PATCHES-moe-cache.txt"), "w") as f:
-            f.write(f"llama.cpp b12064 + moe-cache patches {patches} built in, all off\n")
+            f.write(f"llama.cpp b12064 + moe-cache patches {patches} built in, switches all off\n")
     return ls
 
 CMD = ["llama-server", "-m", "m.gguf", "-ngl", "99", "-c", "8192", "-fa", "on", "--load-mode", "mmap", "--no-warmup", "-ot", "blk\\.(22|23)\\.ffn_(up|down|gate)\\.weight=CPU"]

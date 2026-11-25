@@ -18,7 +18,7 @@ FIT=llama-fit-params; [ "$P" = win ] && FIT=llama-fit-params.exe
 [ "$P" = linux ] || [ -f "$S/ggml-vulkan.dll" ] || { echo "FAIL: no ggml-vulkan.dll in $S (the Vulkan artifact was not unpacked next to the server)"; exit 1; }
 NUMS="$(cd "$HERE/patches/llama.cpp" && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -)"
 [ -n "$NUMS" ] || { echo "FAIL: no patches in patches/llama.cpp"; exit 1; }
-LINE="llama.cpp $TAG + moe-cache patches $NUMS built in, all off"
+LINE="llama.cpp $TAG + moe-cache patches $NUMS built in, switches all off"
 rm -rf "$D/llama"; mkdir -p "$D/llama"
 cp -a "$S"/. "$D/llama/"
 [ "$P" = linux ] && chmod +x "$D/llama/llama-server" && chmod +x "$D/llama/llama-fit-params"
@@ -29,7 +29,7 @@ printf '%s%b' "$LINE" "$NL" > "$D/llama/PATCHES-moe-cache.txt"
 {
   printf 'llama.cpp %s with moe-cache patches (%s), built from the official source by GitHub Actions (.github/workflows/llama_patched.yml).%b' "$TAG" "$NUMS" "$NL"
   printf 'The patches are in patches/llama.cpp/ of the moe-cache repository; the build is otherwise unmodified. Licence: MIT (LICENSE-llama.cpp.txt).%b' "$NL"
-  printf 'Every patch is built in but OFF: each has its own environment switch and does nothing until it is set (patches/llama.cpp/README.md). With none set the server behaves as the official build.%b' "$NL"
+  printf 'Every patch that changes behaviour is built in but OFF: each has its own environment switch and does nothing until it is set (patches/llama.cpp/README.md). Two error-path fixes (0093, 0094) have no switch: they only act when a Vulkan allocation fails. With no switch set the server answers as the official build.%b' "$NL"
   printf 'To use the official build instead, download it from https://github.com/ggml-org/llama.cpp/releases/tag/%s and point LLAMA_SERVER at its llama-server. moe-cache finds this one here otherwise.%b' "$TAG" "$NL"
   if [ "$P" = linux ]; then printf 'The Vulkan build needs the system Vulkan loader and a driver: sudo apt install libvulkan1 mesa-vulkan-drivers (Ubuntu / Debian). Without a GPU it runs on the CPU.\n'; fi
 } > "$D/llama/README-moe-cache.txt"
