@@ -54,6 +54,7 @@
 #include "mc_test_skip.h"
 #include "mc_env.h"
 #include "mc_guard.h"
+#include "mc_seg_readers.h"
 #include "mc_abort.h"
 #include "mc_lru_rule.h"
 #include "mc_names.h"

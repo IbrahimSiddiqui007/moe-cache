@@ -462,6 +462,28 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     for (int i = 0; i < n_all; i++) {
         produced.insert(ggml_graph_node(cg, i));
     }
+    {
+        // CACHE-1230: only the last node's output is copied back, so no node outside the range may read another node of it (or flag one as an output)
+        std::unordered_map<const ggml_tensor *, int> idx;
+        for (int i = 0; i < n_all; i++) {
+            idx.emplace(ggml_graph_node(cg, i), i);
+        }
+        const auto node_of = [&](const ggml_tensor * t) {
+            for (; t; t = t->view_src) {
+                const auto f = idx.find(t);
+                if (f != idx.end()) {
+                    return f->second;
+                }
+            }
+            return -1;
+        };
+        const bool priv = mcseg::inner_nodes_private(n_all, first, last, GGML_MAX_SRC,
+            [&](int i, int k) { const ggml_tensor * s = ggml_graph_node(cg, i)->src[k]; return s ? node_of(s) : -1; },
+            [&](int i) { return (ggml_graph_node(cg, i)->flags & GGML_TENSOR_FLAG_OUTPUT) != 0; });
+        if (!priv) {
+            return false;
+        }
+    }
     for (ggml_tensor * n : seg) {
         for (int k = 0; k < GGML_MAX_SRC; k++) {
             const ggml_tensor * src = n->src[k];

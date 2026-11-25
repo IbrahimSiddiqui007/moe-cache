@@ -40,6 +40,8 @@ def check_gpu_catch(compute, backend, hybrid):
             p.append(f"{name} no longer cleans up after a throw (gpu_failed_cleanup)")
         if "MOE_CACHE_GPU_CATCH" not in b:
             p.append(f"{name} no longer reads MOE_CACHE_GPU_CATCH")
+    if "mcseg::inner_nodes_private(" not in strip_comments(body(strip_comments(backend), "bool gpu_segment(")):
+        p.append("gpu_segment no longer refuses a block whose inner nodes are read outside its range (CACHE-1230, mcseg::inner_nodes_private)")
     if "the GPU block threw" not in compute or "the hybrid GPU block threw" not in compute:
         p.append("the log lines of the caught throws are gone")
     # no other caller of the unguarded functions: remove the wrappers and the definitions, then look for calls
@@ -106,6 +108,8 @@ m = mutate(compute, "const bool ok = mcguard::guarded(catch_mode, injected, [&] 
 if m: check(check_gpu_catch(m, backend, hybrid), "mutation: hybrid_group_guarded without mcguard::guarded() is caught")
 m = mutate(compute, "bool ok = gpu_segment_guarded(c, s, cg, gr.first, gr.last, seg);", "bool ok = gpu_segment(c, s, cg, gr.first, gr.last, seg);", "decode path calls gpu_segment directly")
 if m: check(check_gpu_catch(m, backend, hybrid), "mutation: the decode path calls gpu_segment() directly is caught")
+m = mutate(backend, "mcseg::inner_nodes_private(", "mcseg_removed(", "CACHE-1230 reader check removed")
+if m: check(check_gpu_catch(compute, m, hybrid), "mutation: removing the CACHE-1230 outside-reader check is caught")
 m = mutate(compute, "hybrid_group_guarded(c, s, cg, i, last)", "hybrid_group(c, s, cg, i, last)", "decode path calls hybrid_group directly")
 if m: check(check_gpu_catch(m, backend, hybrid), "mutation: the decode path calls hybrid_group() directly is caught")
 m = mutate(compute, "        gpu_failed_cleanup(c);\n        seg.clear();", "        seg.clear();", "no cleanup after the throw")
