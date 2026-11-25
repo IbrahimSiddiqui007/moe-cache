@@ -1319,6 +1319,19 @@ def _read_key(wait=0.0):
         time.sleep(0.02)
 
 
+def harden_key_dir(d):
+    """Windows only, best effort: replace the ACL a just-created folder inherits from its parent (when it is outside the user profile the key could
+    end up readable by others) with one that gives only this user full control. Any failure is ignored (the key file itself is still 0600).
+    POSIX gets the same from os.makedirs(mode=0o700); there this does nothing."""
+    if not WINDOWS:
+        return
+    try:
+        subprocess.run([win_tool("icacls"), d, "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME')}:(OI)(CI)F"],
+                       capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def stored_key(create=False):
     """The stable per-user API key kept in the cache folder (mode 0600 on Linux; on Windows the user profile is private); "" when there is none yet.
     create=True makes one on first use (secrets.token_urlsafe(24)). Agent mode and --project servers use it, so a web page in the browser cannot
@@ -1332,7 +1345,11 @@ def stored_key(create=False):
     k = secrets.token_urlsafe(24)
     while k.startswith("-"):              # a key starting with "-" breaks `connect --api-key KEY` (argparse reads it as an option)
         k = secrets.token_urlsafe(24)
-    os.makedirs(os.path.dirname(KEY_FILE), mode=0o700, exist_ok=True)
+    kd = os.path.dirname(KEY_FILE)
+    kd_new = not os.path.isdir(kd)
+    os.makedirs(kd, mode=0o700, exist_ok=True)
+    if kd_new:
+        harden_key_dir(kd)          # Windows: a folder created outside the user profile inherits the parent's ACL — strip it (best effort)
     fd, tmp = tempfile.mkstemp(prefix="api.key.", suffix=".tmp", dir=os.path.dirname(KEY_FILE))      # mkstemp: mode 0600
     try:
         with os.fdopen(fd, "w") as f:
@@ -6410,14 +6427,19 @@ def opencode_config_target(cfg):
     warn = []
     jc = os.path.splitext(cfg)[0] + ".jsonc"
     if os.path.isfile(jc):
-        text = open(jc, encoding="utf-8").read()
         try:
-            json.loads(text)
-            cfg = jc
-        except ValueError:
-            if '"model"' in text:
-                warn.append(f"{jc} (has comments, so it is not edited here) sets its own \"model\" and wins over {os.path.basename(cfg)}: "
-                            "change it there to moe-cache/NAME, or paste the block 'moe_cache.py connect opencode' prints")
+            text = open(jc, encoding="utf-8-sig").read()       # utf-8-sig: a BOM (Notepad) must not break json.loads
+        except UnicodeDecodeError:
+            # a UTF-16 file (PowerShell 5.1 '>') cannot be read here at all: fall back to opencode.json, the .jsonc is not edited
+            warn.append(f"{jc} is not UTF-8 (save it as UTF-8); OpenCode merges it after {os.path.basename(cfg)}, so its settings win")
+        else:
+            try:
+                json.loads(text)
+                cfg = jc
+            except ValueError:
+                if '"model"' in text:
+                    warn.append(f"{jc} (has comments, so it is not edited here) sets its own \"model\" and wins over {os.path.basename(cfg)}: "
+                                "change it there to moe-cache/NAME, or paste the block 'moe_cache.py connect opencode' prints")
     if os.environ.get("OPENCODE_CONFIG"):
         warn.append(f"OPENCODE_CONFIG={os.environ['OPENCODE_CONFIG']} is merged after this file and wins where they differ")
     return cfg, warn
@@ -6434,7 +6456,7 @@ def hermes_connected(h, base):
         if not path:
             return
         try:
-            marks = json.load(open(HERMES_MARK, encoding="utf-8"))
+            marks = json.load(open(HERMES_MARK, encoding="utf-8-sig"))
             marks = marks if isinstance(marks, dict) else {}
         except (OSError, ValueError):
             marks = {}
@@ -6497,7 +6519,7 @@ def hermes_backup(h):
     if not path or not os.path.isfile(path):
         return None, ""
     try:
-        marks = json.load(open(HERMES_MARK, encoding="utf-8"))
+        marks = json.load(open(HERMES_MARK, encoding="utf-8-sig"))
     except (OSError, ValueError):
         marks = {}
     ours = isinstance(marks, dict) and old["provider"] == "custom" and marks.get(path) == old["base_url"]
@@ -6510,9 +6532,7 @@ def hermes_backup(h):
         while os.path.lexists(bak):
             n += 1
             bak = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}-{n}"
-    shutil.copy2(path, bak)
-    if not WINDOWS:
-        os.chmod(bak, 0o600)               # it may hold the old provider's key
+    copy_private(path, bak)                           # it may hold the old provider's key: private from the first byte
     return bak, f"provider {old['provider'] or '(not set)'}, model {old['default'] or '(not set)'}, URL {old['base_url'] or '(not set)'}"
 
 
@@ -6582,7 +6602,7 @@ def write_claude_settings(cfg, env):
     data, eol, bak = {}, "\n", None
     if os.path.isfile(cfg):
         try:
-            data = json.load(open(cfg, encoding="utf-8"))
+            data = json.load(open(cfg, encoding="utf-8-sig"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON: add the lines printed by 'moe_cache.py connect claude' by hand")
         if not isinstance(data, dict):
@@ -6591,9 +6611,7 @@ def write_claude_settings(cfg, env):
         bak = claude_backup_path(cfg)
         if not os.path.isfile(bak):
             os.makedirs(os.path.dirname(bak), mode=0o700, exist_ok=True)
-            shutil.copy2(cfg, bak)                          # the first backup is kept: a second connect does not replace what the user had
-            if not WINDOWS:
-                os.chmod(bak, 0o600)
+            copy_private(cfg, bak)                      # the first backup is kept: a second connect does not replace what the user had; private from the first byte
     cur = data.get("env") if isinstance(data.get("env"), dict) else {}
     cur.update(env)
     data["env"] = cur
@@ -6665,14 +6683,29 @@ def bak_path(cfg):
     return os.path.realpath(cfg) + ".bak"
 
 
+def copy_private(src, dst):
+    """Copy src's bytes to dst, created exclusively with mode 0600, so a backup is private from the first byte (shutil.copy2 would first give it
+    the source's mode, which may be world-readable while the file can hold a key). No copystat: the mtime of the copy is the copy's own.
+    OSError when dst exists (the callers only copy when the name is free); the half-written file is removed on error."""
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as f:
+            shutil.copyfileobj(f, out)
+    except BaseException:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
+    return dst
+
+
 def keep_first_backup(cfg):
     """Copy an existing file to cfg.bak unless a backup is already there (the first one is the user's own setup). A symlink is followed: the backup sits beside the
     real file, which is also the one write_private replaces. Returns the backup path, None when there was nothing to copy."""
     cfg = os.path.realpath(cfg)
     if os.path.isfile(cfg) and not os.path.isfile(cfg + ".bak"):
-        shutil.copy2(cfg, cfg + ".bak")
-        if not WINDOWS:
-            os.chmod(cfg + ".bak", 0o600)
+        copy_private(cfg, cfg + ".bak")               # private from the first byte (a copy2 + chmod pair leaves the source's mode in between)
     elif os.path.isfile(cfg):
         keep_numbered_backup(cfg)
     return cfg + ".bak" if os.path.isfile(cfg + ".bak") else None
@@ -6692,9 +6725,7 @@ def keep_numbered_backup(cfg):
     except OSError:
         return None
     new = f"{cfg}.bak.{(nums[-1][0] + 1) if nums else 1}"
-    shutil.copy2(cfg, new)
-    if not WINDOWS:
-        os.chmod(new, 0o600)
+    copy_private(cfg, new)                            # private from the first byte (a copy2 + chmod pair leaves the source's mode in between)
     for _n, f in nums[:max(0, len(nums) + 1 - NUMBERED_BACKUPS)]:
         try:
             os.unlink(f)
@@ -6822,7 +6853,7 @@ def load_json_object(cfg, agent, kind="config"):
     if not os.path.isfile(cfg):
         return {}
     try:
-        data = json.load(open(cfg, encoding="utf-8"))
+        data = json.load(open(cfg, encoding="utf-8-sig"))
     except ValueError:
         raise SystemExit(f"{cfg} is not plain JSON (comments? JSON5?): nothing written; add the settings printed by 'moe_cache.py connect {agent}' by hand")
     if not isinstance(data, dict):
@@ -7205,7 +7236,7 @@ def connect_apply(a):
     if os.path.isfile(cfg):
         eol = file_eol(cfg)
         try:
-            data = json.load(open(cfg, encoding="utf-8"))
+            data = json.load(open(cfg, encoding="utf-8-sig"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
         if not isinstance(data, dict) or not isinstance(data.get("provider", {}), dict):

@@ -87,6 +87,28 @@ def save_choice(c):
     write_private(CHOICE_FILE, json.dumps(c, indent=2))
 
 
+def write_pid_file(port):
+    """The listener's PID, port and start token in PID_FILE, content `PID PORT START\\n`: through a private (0600 from the first byte) per-process
+    temp file in the same folder and an atomic os.replace, so a reader never sees a half-written file and no fixed .tmp name is followed (AUD-045)."""
+    text = f"{os.getpid()} {port} {mc.pid_start(os.getpid())}\n".replace("  ", " ")
+    tmp = "%s.%d.tmp" % (PID_FILE, os.getpid())
+    try:
+        os.unlink(tmp)               # a leftover of a crashed run with the same pid
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, PID_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_custom_key(k):
     """A user-given --api-key is kept here (mode 0600), not in on-demand.json and not in any argument list (AUD-029)."""
     write_private(CUSTOM_KEY_FILE, k + "\n")
@@ -612,6 +634,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Content-Length") not in (None, "0") or self.headers.get("Transfer-Encoding"):
                 self.close_connection = True
         if path in ("/health", "/v1/health"):        # public, as in llama-server; never starts the model
+            if not self.local_host():                # Host check: a DNS-rebinding page cannot read even the health answer
+                return self.reply(403, {"error": "forbidden host"})
             r = pool.running()
             return self.reply(200, dict({"status": "ok", "on_demand": pool.state}, **({"model": r.alias} if r and len(pool.bs) > 1 else {})))
         if not self.authed():
@@ -1011,8 +1035,7 @@ def on_demand(argv):
     b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout, release_min=c.get("idle_release", 5)) for e in [c] + list(c.get("extra") or [])],
              concurrent=bool(c.get("concurrent")) and len(c.get("extra") or []) > 0, peers=bool(c.get("peers")))
     srv = serve(b, port, srv=srv)
-    with open(PID_FILE, "w") as f:
-        f.write(f"{os.getpid()} {port} {mc.pid_start(os.getpid())}\n".replace("  ", " "))
+    write_pid_file(port)
     d = b.bs[0]
     log(f"listening on http://127.0.0.1:{port}/v1 for {', '.join(x.alias for x in b.bs)} (context {d.ctx}); the model starts on the first request "
         f"and stops after {d.idle / 60:g} idle min" + (("; all models at once (--concurrent, prototype)" if b.concurrent else "; one model at a time") + ", the request's model name picks it" if len(b.bs) > 1 else "")

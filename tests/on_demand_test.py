@@ -150,6 +150,28 @@ first, _ = raw("GET / HTTP/1.1\r\nHost: rebind.example:%d\r\n" % PORT)
 check("GET / without key from a foreign Host (DNS rebinding): 401, no model list (D3)", first.endswith("401 Unauthorized"), first)
 first, _ = raw("GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n" % PORT)
 check("GET / without key from 127.0.0.1: the text page", first.endswith("200 OK"), first)
+
+
+def host_get(path, host):
+    """GET with a hand-set Host header: (status, body)."""
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+    c.putrequest("GET", path, skip_host=1)      # putrequest would add its own Host header: send exactly the one under test
+    c.putheader("Host", host)
+    c.endheaders()
+    r = c.getresponse()
+    body = r.read().decode()
+    c.close()
+    return r.status, body
+
+
+st, body = host_get("/health", "evil.example")
+check("/health with a foreign Host (DNS rebinding): 403 forbidden host", st == 403 and json.loads(body).get("error") == "forbidden host", (st, body))
+st, body = host_get("/v1/health", "evil.example")
+check("/v1/health with a foreign Host: 403 too", st == 403, (st, body))
+st, body = host_get("/health", "127.0.0.1:%d" % PORT)
+check("/health with the loopback Host: 200 as before", st == 200 and json.loads(body)["status"] == "ok", (st, body))
+st, body = host_get("/health", "localhost:%d" % PORT)
+check("/health with localhost as Host: 200", st == 200, (st, body))
 check("audit checks did not start the model", b.p is None, b.state)
 
 for p in ("/api/v1/models", "/api/tags", "/v1/props", "/version"):      # Hermes' server-type probes: llama-server's own 404, model not started
@@ -537,6 +559,16 @@ finally:
     try: os.unlink(od.PID_FILE)
     except OSError: pass
 check("SERVER-836: running_pid() does not trust a PID file whose number is another program (or gone)", (stale is None and live == kid.pid and gone is None) if os.path.isdir("/proc") else live == kid.pid, (stale, live, gone))      # no /proc (Windows): the command line cannot be read, the PID file and the health answer stand as before
+
+# the PID file is written atomically and private: same `PID PORT START` content as before, 0600 from the first byte, no leftover temp file
+od.write_pid_file(8099)
+parts = open(od.PID_FILE).read().split("\n")
+check("PID file: the content parses as before (pid port start, one line)", len(parts) == 2 and parts[1] == "" and parts[0].split()[:2] == [str(os.getpid()), "8099"] and len(parts[0].split()) == 3, parts)
+check("PID file: the start token is pid_start's", parts[0].split()[2] == mc.pid_start(os.getpid()), parts)
+if os.name != "nt":
+    check("PID file: mode 0600", (os.stat(od.PID_FILE).st_mode & 0o777) == 0o600, oct(os.stat(od.PID_FILE).st_mode))
+check("PID file: no leftover temp file", not [f for f in os.listdir(mc.CACHE_DIR) if f.endswith(".tmp")], os.listdir(mc.CACHE_DIR))
+os.unlink(od.PID_FILE)
 
 print("FAILED: " + ", ".join(fails) if fails else "all on-demand tests passed")
 sys.exit(1 if fails else 0)

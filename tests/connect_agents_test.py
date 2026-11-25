@@ -366,5 +366,68 @@ if os.name != "nt":
     del os.environ["FAKE_HERMES_FAIL"]
     check(isinstance(rc, str) and "partly set up" in rc and "model.provider" in rc and "model.default" in rc, f"hermes: a failure half-way says what is done and what is not ({str(rc)[:120]})")
 
+# ---- jsonc / BOM / UTF-16 opencode.jsonc (PowerShell 5.1 '>' writes UTF-16), and backups private from the first byte ----
+ocd = os.path.join(HOME, ".config", "opencode"); os.makedirs(ocd, exist_ok=True)
+ocj = os.path.join(ocd, "opencode.json"); occ = ocj + "c"
+
+open(occ, "wb").write(b"\xef\xbb\xbf" + b'{"model": "mine"}')      # a BOM, as Notepad writes it
+rc, out, err = run("opencode", "--write")
+check(rc == 0 and not os.path.exists(ocj) and json.load(open(occ, encoding="utf-8-sig"))["provider"]["moe-cache"]["name"] == "moe-cache",
+      f"opencode: a UTF-8 BOM opencode.jsonc is still plain JSON: it is written into ({rc}, {err.strip()[-120:]})")
+for f in (ocj, occ, ocj + ".bak", occ + ".bak"):
+    if os.path.exists(f):
+        os.remove(f)
+
+open(occ, "wb").write('{"model": "mine"}'.encode("utf-16"))        # what PowerShell 5.1's '>' produces
+rc, out, err = run("opencode", "--write")
+check(rc == 0 and "is not UTF-8 (save it as UTF-8)" in err, f"opencode: a UTF-16 .jsonc gives a warning, no traceback ({rc}, {err.strip()[-160:]})")
+check(json.load(open(ocj))["provider"]["moe-cache"]["name"] == "moe-cache" and open(occ, "rb").read().startswith(b"\xff\xfe"),
+      "opencode: the settings fall back to opencode.json, the .jsonc is not edited")
+for f in (ocj, occ, ocj + ".bak", occ + ".bak"):
+    if os.path.exists(f):
+        os.remove(f)
+os.rmdir(ocd)
+
+# backups must be 0600 from the first byte, not the source's mode (a copy2 + chmod pair leaves the source's mode in between)
+src = os.path.join(W, "privbak", "cfg.json"); os.makedirs(os.path.dirname(src))
+put(src, '{"a": 1}')
+if os.name != "nt":
+    os.chmod(src, 0o644)
+    mc.keep_first_backup(src)
+    check((os.stat(src + ".bak").st_mode & 0o777) == 0o600 and open(src + ".bak").read() == '{"a": 1}',
+          "keep_first_backup: the backup is 0600 although the source is 0644, content identical")
+put(src, '{"a": 2}')
+if os.name != "nt":
+    os.chmod(src, 0o644)
+    mc.keep_numbered_backup(src)
+    check((os.stat(src + ".bak.1").st_mode & 0o777) == 0o600 and open(src + ".bak.1").read() == '{"a": 2}',
+          "keep_numbered_backup: the numbered backup is 0600, content identical")
+cls = os.path.join(W, "privclaude", "settings.local.json"); os.makedirs(os.path.dirname(cls))
+put(cls, '{"env": {}}')
+if os.name != "nt":
+    os.chmod(cls, 0o644)
+cbak = mc.write_claude_settings(cls, {"ANTHROPIC_MODEL": "fake-moe"})
+check(mode(cbak) == 0o600 and json.load(open(cbak)) == {"env": {}}, "claude: the first backup is private (0600) even when the source is wider")
+
+# ---- Windows only: the key folder just created gets icacls (POSIX does nothing); the run is only recorded here ----
+_kd = os.path.join(TMP, "keydir-probe")
+runs, real_run, real_w = [], mc.subprocess.run, mc.WINDOWS
+mc.subprocess.run = lambda *a, **k: runs.append(a[0] if a else k.get("args"))
+mc.WINDOWS = True
+try:
+    mc.harden_key_dir(_kd)
+finally:
+    mc.WINDOWS = real_w
+    mc.subprocess.run = real_run
+check(runs == [[runs[0][0], _kd, "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME')}:(OI)(CI)F"]] if runs and runs[0][0].endswith("icacls") else False,
+      f"Windows: harden_key_dir runs icacls /inheritance:r /grant:r USER:(OI)(CI)F on the folder ({runs})")
+runs.clear()
+mc.subprocess.run = lambda *a, **k: runs.append(a[0] if a else k.get("args"))
+try:
+    mc.harden_key_dir(_kd)
+finally:
+    mc.subprocess.run = real_run
+check(runs == [], f"POSIX: harden_key_dir runs nothing ({runs})")
+
 print("\n%d failed" % len(fails) if fails else "\nall ok")
 sys.exit(1 if fails else 0)

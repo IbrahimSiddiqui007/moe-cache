@@ -30,6 +30,10 @@ with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
             f.writestr(n + "/" + extra, "x")
     if mode == "slip":
         f.writestr(n + "/../../evil.txt", "x")
+    if mode == "ads":      # PACKAGING-832 item 18: an NTFS alternate data stream name
+        f.writestr(n + "/bin/x:stream", "x")
+    if mode == "aux":      # a reserved device name
+        f.writestr(n + "/bin/aux.txt", "x")
 h = hashlib.sha256(open(z, "rb").read()).hexdigest()
 open(os.path.join(d, "SHA256SUMS-windows"), "w").write(("0" * 64 if mode == "bad" else h) + "  " + n + ".zip\n")
 '@ | Set-Content -LiteralPath $maker -Encoding ASCII
@@ -64,6 +68,13 @@ try {
 
     $r = Run-Installer (New-Release 'slip' '9.9.1' 'slip') '9.9.1' @()
     Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and -not (Test-Path (Join-Path $T 'evil.txt')) -and -not (Test-Path $kit)) 'a zip with a path that leaves the folder is refused'
+
+    foreach ($m in 'ads', 'aux') {
+        $r = Run-Installer (New-Release $m '9.9.1' $m) '9.9.1' @()
+        Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'treats specially' -and -not (Test-Path $kit)) "a zip with a Windows-special name ($m) is refused (PACKAGING-832 item 18)"
+    }
+    $r = Run-Installer '\\evil.invalid\share' '9.9.1' @('-DryRun')
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'network share') 'a UNC -BaseUrl is refused (it would send the NTLM sign-in to that host; PACKAGING-832 item 9)'
 
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-DryRun')
     Check ($r.Code -eq 0 -and $r.Out -match 'would download' -and -not (Test-Path $kit) -and -not (Test-Path $bin) -and -not (Test-Path (Join-Path $root 'kit.part'))) '-DryRun prints the plan and installs nothing'
