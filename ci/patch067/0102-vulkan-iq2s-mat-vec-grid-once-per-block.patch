@@ -1,0 +1,62 @@
+From 612ea801e8ca8b0f14dcbac41d8a235f6bd9de75 Mon Sep 17 00:00:00 2001
+From: IbrahimSiddiqui007 <87603789+IbrahimSiddiqui007@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 18:46:28 +0400
+Subject: [PATCH 2/4] vulkan: iq2_s mat-vec: load grid once per block
+
+---
+ .../vulkan-shaders/mul_mat_vec_iq2_s.comp     | 27 ++++++++++++-------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq2_s.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq2_s.comp
+index b4f6d1d6b..2840ef3a1 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq2_s.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_iq2_s.comp
+@@ -21,18 +21,27 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint itid,
+         const uint qh = data_a[ibi].qh[ib32];
+         const u8vec2 qs16 = unpack8(uint32_t(data_a_packed16[ibi].qs[itid])).xy; // vec4 used due to #12147
+         const u8vec2 sign16 = unpack8(uint32_t(data_a_packed16[ibi].qs[QUANT_K / 16 + itid])).xy;
++
++        // Load grid and sign data once, reuse for all columns
++        vec4 grid0_vals[2], grid1_vals[2];
+         [[unroll]] for (uint l = 0; l < 2; ++l) {
+-            const uint8_t sign = sign16[l];
+             const uint qs = qs16[l] | ((qh << (8 - nibble_shift - 2 * l)) & 0x300);
+             const uvec2 grid = iq2s_grid[qs];
+-            const vec4 grid0 = vec4(unpack8(grid.x));
+-            const vec4 grid1 = vec4(unpack8(grid.y));
+-
+-            [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+-                vec4 b0 = vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y_idx) / 4 + 2*l + 0]);
+-                vec4 b4 = vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y_idx) / 4 + 2*l + 1]);
++            grid0_vals[l] = vec4(unpack8(grid.x));
++            grid1_vals[l] = vec4(unpack8(grid.y));
++        }
+ 
+-                FLOAT_TYPE sum =
++        [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
++            FLOAT_TYPE sum = FLOAT_TYPE(0.0);
++            [[unroll]] for (uint l = 0; l < 2; ++l) {
++                const uint sign = sign16[l];
++                const vec4 grid0 = grid0_vals[l];
++                const vec4 grid1 = grid1_vals[l];
++                const uint b_idx = (j * p.batch_stride_b + b_offset + y_idx) / 4 + 2 * l;
++                const vec4 b0 = vec4(data_b_v4[b_idx + 0]);
++                const vec4 b4 = vec4(data_b_v4[b_idx + 1]);
++
++                sum +=
+                       fma(FLOAT_TYPE(b0.x), FLOAT_TYPE((sign &   1) != 0 ? -grid0.x : grid0.x),
+                       fma(FLOAT_TYPE(b0.y), FLOAT_TYPE((sign &   2) != 0 ? -grid0.y : grid0.y),
+                       fma(FLOAT_TYPE(b0.z), FLOAT_TYPE((sign &   4) != 0 ? -grid0.z : grid0.z),
+@@ -42,8 +51,8 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint itid,
+                       fma(FLOAT_TYPE(b4.z), FLOAT_TYPE((sign &  64) != 0 ? -grid1.z : grid1.z),
+                       fma(FLOAT_TYPE(b4.w), FLOAT_TYPE((sign & 128) != 0 ? -grid1.w : grid1.w),
+                       FLOAT_TYPE(0.0)))))))));
+-                temp[j][n] = fma(db, sum, temp[j][n]);
+             }
++            temp[j][n] = fma(FLOAT_TYPE(db), sum, temp[j][n]);
+         }
+         ibi += num_blocks_per_row;
+     }
+-- 
+2.56.0
+

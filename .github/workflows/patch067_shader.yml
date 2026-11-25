@@ -1,0 +1,76 @@
+# PATCH-067 re-check kit (owner approved 2026-11-25): Windows Vulkan test-backend-ops + llama-bench at llama.cpp b12207,
+# variant plain = no patch, variant shader = only the four shader patches 0101-0104 (ci/patch067/). Not part of any release.
+# Runs on a push to claude/patch067-b12207 only. A CI runner has no GPU: the PC measures (handover/sessions/main32_2026-11-25/files/PATCH-067_pc_plan.md).
+name: patch067-shader
+on:
+  push:
+    branches: [claude/patch067-b12207]
+
+env:
+  LLAMA_COMMIT: 998200491327347eed85f007e4de7a1a7c871453   # b12207
+  VULKAN_VERSION: "1.4.357.0"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-vulkan:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [plain, shader]
+    timeout-minutes: 90
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_COMMIT }}
+          path: llama.cpp
+          fetch-depth: 0
+      - name: Apply the four shader patches (0101-0104 only)
+        if: matrix.variant == 'shader'
+        shell: bash
+        run: LLAMA_PATCH_DIR="$PWD/ci/patch067" LLAMA_BASE_COMMIT="$LLAMA_COMMIT" tools/apply_llama_patches.sh llama.cpp
+      - name: Cache restore (Vulkan SDK installer)
+        id: vksdk
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/vksdk
+          key: dl-vulkansdk-1.4.357.0-81f47471
+      - name: Vulkan SDK
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vksdk" | Out-Null
+          & tools\ci\fetch.ps1 -Url "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe" -Out "$env:RUNNER_TEMP\vksdk\VulkanSDK-Installer.exe" -Sha256 81F474711E9042F4CD22B31B2F7A8870DB2E428B21586FB43DD80150BE97310D
+          if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for the Vulkan SDK installer" }
+          Copy-Item "$env:RUNNER_TEMP\vksdk\VulkanSDK-Installer.exe" "$env:RUNNER_TEMP\VulkanSDK-Installer.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+      - name: Cache save (Vulkan SDK installer)
+        if: steps.vksdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/vksdk
+          key: dl-vulkansdk-1.4.357.0-81f47471
+      - run: choco install ninja
+      - name: Build (Vulkan linked in, no DL backends: one folder, runs as is)
+        working-directory: llama.cpp
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CONNECT=OFF -DLLAMA_BUILD_BORINGSSL=ON
+          cmake --build build --target test-backend-ops llama-bench
+      - name: Version and device list
+        run: |
+          llama.cpp\build\bin\llama-bench.exe --help | Select-Object -First 3
+          Get-ChildItem llama.cpp\build\bin | Select-Object Name, Length
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: patch067-${{ matrix.variant }}-win-vulkan-x64
+          path: |
+            llama.cpp/build/bin/*.exe
+            llama.cpp/build/bin/*.dll
