@@ -455,6 +455,12 @@ check(not [e for e in rr.validate({"hardware": envr["hardware"], "software": env
                                   {"type": "object", "properties": {k: schema["properties"][k] for k in ("software", "model")}, "$defs": schema["$defs"]}) if "required" in e and "plugin" not in e],
       "collect: the Software and Model sections have every required field (values may say not recorded)")
 
+# the record names the GPU the run used (--device), not the first listed one (the integrated GPU)
+_two = "Available devices:\n  Vulkan0: AMD Radeon(TM) Graphics (2048 MiB, 2000 MiB free)\n  Vulkan1: AMD Radeon RX 9070 XT (16304 MiB, 15890 MiB free)\n"
+check(rr.device_from_command("env A=1 llama-server -m x.gguf --device Vulkan1 -c 1") == "Vulkan1" and rr.device_from_command("llama-server -m x") is None, "device_from_command reads --device")
+check(rr.probe().gpu(_two, "Vulkan1")["gpu_model"] in ("AMD Radeon RX 9070 XT",) or rr.IS_WIN is False, "gpu(): the named device is the one recorded")
+check(rr.pick_device(rr.parse_list_devices(_two), "Vulkan1")[0]["name"] == "AMD Radeon RX 9070 XT" and rr.pick_device(rr.parse_list_devices(_two))[0]["name"] == "AMD Radeon(TM) Graphics", "pick_device: named device first, else unchanged")
+
 # CLEANUP-795: one rounding rule (half up on the 6-digit value) in the record and the board
 import moe_cache_claims as _mcc
 check(rr.round_half_up(68.675, 2) == 68.68 and round(68.675, 2) == 68.67, "CLEANUP-795: a mean of 68.675 prints 68.68 (Python round() gives 68.67)")

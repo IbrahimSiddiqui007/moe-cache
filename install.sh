@@ -7,7 +7,7 @@
 #     --no-apt   do not install packages (you already have cmake, g++, git, python3-venv)
 #     --own-llama  build llama.cpp even when this folder has the official one in llama/ (the -ggml0.26 release tarball does)
 #     --dry-run  print what it would do and stop
-# In a release tarball with llama/ (llama.cpp b12651: the official source plus moe-cache's patches, all off, since v0.3.8) it builds nothing: no compiler, no apt, about a minute. LLAMA_SHA=... or --own-llama builds instead.
+# In a release tarball with llama/ (llama.cpp b12651: the official source plus moe-cache's patches, all off, since v0.3.9) it builds nothing: no compiler, no apt, about a minute. LLAMA_SHA=... or --own-llama builds instead.
 # Takes about 10-20 minutes, almost all of it compiling llama.cpp. Needs about 3 GB of disk. Run it as a normal user (it asks for sudo only for apt).
 # Downloaded on its own (the release's install.sh, not inside a checkout or tarball) it installs the release instead of building: it fetches the
 # ggml0.26 tarball (official llama.cpp inside), checks it against SHA256SUMS (refuses on a mismatch; that catches a damaged download, not a tampered release: see the attestation below), unpacks it under --prefix (default
@@ -23,7 +23,7 @@ set -e
 LLAMA_SHA_GIVEN="${LLAMA_SHA:-}"                     # set by the user: build that commit, never the bundled build
 LLAMA_SHA="${LLAMA_SHA:-f5e6915c28f10330885fcb9243a93ae98d3115ab}"
 case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; f5e6915c2*) export GGML_API=4;; esac
-MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.9}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
+MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.9.1}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 GGUF_PY_SHA256=70bcd10edfe697fb2dad6e40af2234b9d8ece9a41a99761405121ebda1c3c1cd   # sha256 of gguf-$GGUF_PY_VERSION-py3-none-any.whl (RELEASE-008); pip is refused to install anything else
 UNVERIFIED_OK=0; [ "${MOE_CACHE_ALLOW_UNVERIFIED:-}" = 1 ] || [ "${MOE_CACHE_SKIP_ATTESTATION:-}" = 1 ] && UNVERIFIED_OK=1

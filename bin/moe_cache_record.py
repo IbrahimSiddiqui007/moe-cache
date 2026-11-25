@@ -153,6 +153,22 @@ def parse_list_devices(text):
     return out
 
 
+def pick_device(devs, device=None):
+    """The listed devices with the one the server ran on (`--device Vulkan1`) first; unchanged when no device is named or it is not listed. Without this the
+    record named the first listed device, which on a machine with an integrated GPU is the integrated one (Vulkan0), not the card the run used."""
+    if device:
+        want = [d for d in devs if d["dev"].lower() == str(device).split(",")[0].strip().lower()]
+        if want:
+            return want + [d for d in devs if d not in want]
+    return devs
+
+
+def device_from_command(cmd):
+    """The value of --device in a llama-server command line (None when absent)."""
+    m = re.search(r"(?:^|\s)(?:--device|-dev)(?:\s+|=)(\S+)", cmd or "")
+    return m.group(1) if m else None
+
+
 def parse_vulkaninfo(text):
     """driverInfo (Mesa / AMD driver version) of the first GPU from `vulkaninfo --summary`."""
     m = re.search(r"driverInfo\s*=\s*(.+)", text)
@@ -374,11 +390,11 @@ class LinuxProbe:
         g = READ("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").strip()
         return nr(", ".join(x for x in (p and "profile " + p, g and "governor " + g) if x))
 
-    def gpu(self, listing):
+    def gpu(self, listing, device=None):
         smi = parse_nvidia_smi(RUN(["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"], timeout=10))
         if smi:
             return {"gpu_model": smi[0]["name"], "vram_mib": smi[0]["vram_mib"], "gpu_driver": smi[0]["driver"]}
-        dev = parse_list_devices(listing or "")
+        dev = pick_device(parse_list_devices(listing or ""), device)
         drv = parse_vulkaninfo(RUN(["vulkaninfo", "--summary"], timeout=20))
         if dev:
             return {"gpu_model": dev[0]["name"], "vram_mib": dev[0]["total_mib"], "gpu_driver": nr(drv)}
@@ -557,8 +573,8 @@ class WindowsProbe:
         d = as_list(d)[0] if d else {}
         return {"model": nr(d.get("FriendlyName")), "interface": nr(d.get("BusType")), "drive": letter.upper() + ":"}
 
-    def gpu(self, listing):
-        dev = parse_list_devices(listing or "")
+    def gpu(self, listing, device=None):
+        dev = pick_device(parse_list_devices(listing or ""), device)
         vc = as_list(ps_json("Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion"))
         name = dev[0]["name"] if dev else NR
         drv = next((v.get("DriverVersion") for v in vc if dev and (v.get("Name") or "") and (v["Name"] in name or name in v["Name"])), None) \
@@ -1003,7 +1019,7 @@ def llama_build(version_line):
 
 
 def collect_environment(model=None, llama_server=None, listing=None, version_line=None, backend=None, pr=None, lib=None, hash_model=False, model_url=None, root=None,
-                        version=None, identity=None):
+                        version=None, identity=None, device=None):
     """Hardware, Software and Model sections for this machine. `listing` / `version_line` / `backend` are llama-server's `--list-devices` and `--version` text and
     the backend name (bench-report already has them); when they are None and llama_server is given they are read here."""
     pr = pr or probe()
@@ -1014,7 +1030,7 @@ def collect_environment(model=None, llama_server=None, listing=None, version_lin
         out = RUN([llama_server, "--version"], timeout=60, both=True)
         version_line = next((l for l in out.splitlines() if "version" in l), "")
     hw = pr.hardware(model)
-    hw.update(pr.gpu(listing))
+    hw.update(pr.gpu(listing, device))
     if version is None:
         m = re.search(r'^VERSION\s*=\s*"([^"]+)"', READ(os.path.join(HERE, "moe_cache.py")), re.M)
         version = m.group(1) if m else None

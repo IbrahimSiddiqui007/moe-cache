@@ -275,7 +275,7 @@
   "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
   "cpu_threads": 32,
   "gpu_driver": "32.0.21045.16010",
-  "gpu_model": "AMD Radeon(TM) Graphics",
+  "gpu_model": "AMD Radeon RX 9070 XT",
   "os": "Windows 11",
   "os_build": "10.0.26200",
   "power_plan": "Balanced",

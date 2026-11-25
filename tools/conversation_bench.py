@@ -652,8 +652,11 @@ def build_record(runs, a):
     # the plugin this record names is the one the moe-cache server ran (MOE_CACHE_LIB of its own command line), never a file search next to the launcher
     lib = next((r["settings"]["environment"]["MOE_CACHE_LIB"] for r in runs if isinstance(r.get("settings"), dict)
                 and isinstance(r["settings"].get("environment"), dict) and r["settings"]["environment"].get("MOE_CACHE_LIB")), None)
-    env = rr.collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url, lib=lib if lib and os.path.isfile(lib) else None) \
-        if (a.model or a.llama_server) else rr.collect_environment(None, None, listing="", version_line="", backend=a.backend, lib=lib if lib and os.path.isfile(lib) else None)
+    # the GPU this record names is the one the run used (--device of its command line), not the first listed device (the integrated GPU on a desktop with one)
+    dev = rr.device_from_command(getattr(a, "command_line", None) or getattr(a, "server_cmd", None)
+                                 or next((r["settings"]["command_line"] for r in runs if isinstance(r.get("settings"), dict) and isinstance(r["settings"].get("command_line"), str)), ""))
+    env = rr.collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url, lib=lib if lib and os.path.isfile(lib) else None, device=dev) \
+        if (a.model or a.llama_server) else rr.collect_environment(None, None, listing="", version_line="", backend=a.backend, lib=lib if lib and os.path.isfile(lib) else None, device=dev)
     if lib and not os.path.isfile(lib):
         env["software"].update(plugin_file=os.path.basename(lib.replace("\\", "/")), plugin_sha256_prefix=rr.NR)
     elif not lib:

@@ -1,0 +1,2400 @@
+{
+ "conditions": {
+  "baseline_check": "not recorded",
+  "cpu_temp_c": "not recorded",
+  "file_cache": "cold",
+  "gpu_temp_c": "not recorded",
+  "other_programs": "clean: yes (harness clean check before each run: programs with a window: none, programs over 0.5 GB RAM: none, VRAM over 0.3 GiB: none)",
+  "system_cpu_busy_before_pct": 4.9,
+  "system_ram_free_before_mib": 24601.0,
+  "uptime_h": 53.2,
+  "vram_in_use_before_mib": 1209.0
+ },
+ "created_utc": "2026-11-25 09:06",
+ "hardware": {
+  "cpu_cores": 16,
+  "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+  "cpu_threads": 32,
+  "gpu_driver": "32.0.21045.16010",
+  "gpu_model": "AMD Radeon RX 9070 XT",
+  "os": "Windows 11",
+  "os_build": "10.0.26200",
+  "power_plan": "Balanced",
+  "ram_gib": 31.1,
+  "ram_speed_mts": 6000,
+  "ram_type": "DDR5",
+  "storage": {
+   "drive": "D:",
+   "interface": "NVMe",
+   "model": "SanDisk Extreme 1TB X3N"
+  },
+  "vram_mib": 16204.0
+ },
+ "model": {
+  "file": "Qwen3.8-27B-UD-IQ4_XS.gguf",
+  "quant": "IQ4_XS",
+  "sha256_full": "not recorded",
+  "sha256_head16MiB": "not recorded",
+  "size_gb": "not recorded",
+  "source_url": "not recorded"
+ },
+ "notes": [
+  "A B B A comparison of the dense-spill rule (MOE_CACHE_DENSE_SPILL_RULE) on a 27B dense model that spills out of GPU memory at 128k context, assembled from the four per-run record files of the chain run of 2026-11-25 12:21-13:07 local (handover/sessions/chain28_2026-11-25/files/records/090_item_1220_1307/, run files 1_A, 2_B, 3_B, 4_A, created_utc 08:30-09:06 in the files); every number in runs[] is the one in those files",
+  "rule-on = rule line in the launcher output ('dense spill rule (default at 128k+ ...): the plan spills 3.9 GiB at 128k: -np 1 ... -ub 256'): -np 1 -ub 256, server log n_slots = 1, kv_unified = false; rule-off = MOE_CACHE_DENSE_SPILL_RULE=0: -ub 512, no -np, server log n_slots = 4, kv_unified = true (llama.cpp default). The arms differ in -ub and -np, which IS the rule: the comparison is the rule as a whole, not one flag",
+  "NOT the default launcher path: auto-tune was off in both arms (MOE_CACHE_NO_AUTOTUNE=1; the shipped launcher would tune -ub/-np on the rule-off path); the plugin was forced on by the test harness (plan line 'engine plugin: user: the plugin was asked for'; whether the default path loads the plugin for this plan is not checked, a PC dry-run is pending); the plugin DLL was the API 3 build (ggml-moe-cache-api3.dll, 'plugin v0.3.9 (ggml backend API 3) build 2e823d2d6') on the API 4 build b12651, forced through MOE_CACHE_LIB by the harness (the shipped launcher picks the api4 DLL); --ram 22.4 and the agent settings came from the harness; the plugin ran in cache mode (14.85 GiB, 866 tensors) with 0 hits",
+  "kit moe-cache-v0.0.0-ci-windows-x64 revision 2e823d2; llama-server 1.0.0-dev (build 12651, commit f5e6915c2), Clang 22.1.8; device Vulkan1 (AMD Radeon RX 9070 XT; Vulkan0 is the integrated GPU, left out); ngl not recorded, KV q8_0/q8_0, ctx 131072",
+  "apps closed (harness clean check before each run: clean); conditions, CPU, RAM and driver fields are copied from the 35B run of the same day on the same machine (the per-run files hold only the run monitors)",
+  "a second same-day run of the same item (2026-11-24 23:29 to 2026-11-25 00:14 local; records in handover/sessions/chain27_2026-11-25/files/records/dense27_*) gave prompt rule-on 371.8 against rule-off 263.3 tok/s (+41.2 %) and decode 9.48 against 7.71 (+22.9 %), clean, same commands; not in this record",
+  "forecast: n=2 per arm, one machine, one model"
+ ],
+ "outputs": {
+  "baseline_arm": "rule-on",
+  "identical_to_baseline": "not checked",
+  "text_sha256_by_arm": {
+   "rule-off": [
+    "ef1a5b27ae966ec4"
+   ],
+   "rule-on": [
+    "ef1a5b27ae966ec4"
+   ]
+  }
+ },
+ "protocol": {
+  "arms": [
+   "rule-on",
+   "rule-off"
+  ],
+  "n_predict": 1500,
+  "order": "ABBA",
+  "prompt_set": "conversation script, seed 42, filled to a 131072-token context",
+  "prompt_sha256": "ef1a5b27ae966ec4",
+  "prompt_tokens": 126261,
+  "runs_per_arm": 2,
+  "sampler": "greedy, cache_prompt on, chat template of the model, thinking off, answer hint on",
+  "seed": 42,
+  "temperature": 0
+ },
+ "record_schema": 1,
+ "reproduce": {
+  "commands": [
+   "python tools/conversation_bench.py run --ctx 131072 --max-tokens 1500 --seed 42 ... (per run: tools/conversation_bench_pair.ps1 with the plan keys of handover item dense27_128k_spill_rule_abba)"
+  ],
+  "kit": "not recorded",
+  "model_url": "not recorded"
+ },
+ "runs": [
+  {
+   "arm": "rule-on",
+   "bands": [
+    {
+     "band": "0k-32k",
+     "cache_reuse_pct": 0.0,
+     "decode_tps": 13.81,
+     "decode_turns": 1,
+     "hi": 32768,
+     "hit_rate_dec_pct": null,
+     "lo": 0,
+     "prompt_tps": 665.11,
+     "prompt_turns": 1,
+     "ttft_median_s": 26.23,
+     "turns": 1
+    },
+    {
+     "band": "32k-64k",
+     "cache_reuse_pct": 38.9,
+     "decode_tps": 11.65,
+     "decode_turns": 1,
+     "hi": 65536,
+     "hit_rate_dec_pct": null,
+     "lo": 32768,
+     "prompt_tps": 545.21,
+     "prompt_turns": 1,
+     "ttft_median_s": 50.6,
+     "turns": 1
+    },
+    {
+     "band": "64k-96k",
+     "cache_reuse_pct": 69.3,
+     "decode_tps": 9.58,
+     "decode_turns": 2,
+     "hi": 98304,
+     "hit_rate_dec_pct": null,
+     "lo": 65536,
+     "prompt_tps": 347.66,
+     "prompt_turns": 2,
+     "ttft_median_s": 72.37,
+     "turns": 2
+    },
+    {
+     "band": "96k-128k",
+     "cache_reuse_pct": 87.5,
+     "decode_tps": 8.18,
+     "decode_turns": 2,
+     "hi": 131072,
+     "hit_rate_dec_pct": null,
+     "lo": 98304,
+     "prompt_tps": 264.89,
+     "prompt_turns": 2,
+     "ttft_median_s": 56.62,
+     "turns": 2
+    }
+   ],
+   "cache_hit_pct": 73.2,
+   "cpu_avg_pct": 34.8,
+   "cpu_peak_pct": 50.5,
+   "decode_tps": 9.51,
+   "disk_read_gb": 0.0,
+   "disk_read_process_gb": 0.0,
+   "disk_read_process_source": "Windows ReadTransferCount of llama-server over the run (explicit reads only; memory-mapped page-ins are not counted: a lower bound with --load-mode mmap)",
+   "disk_read_source": "the plugin's own read_bytes counter, summed over the turns",
+   "environment": {
+    "basis": "the snapshot with the highest RAM in use during the run",
+    "commit_free_gb": 47.35,
+    "ram_moe_cache_gb": 16.9,
+    "ram_rest_of_system_gb": 7.52,
+    "ram_total_gb": 31.15,
+    "ram_used_total_gb": 24.42,
+    "sampled_at": {
+     "end": {
+      "commit_free_gb": 47.35,
+      "ram_moe_cache_gb": 16.9,
+      "ram_rest_of_system_gb": 7.52,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.42,
+      "source": "gputaskman --json",
+      "t_s": 447.7,
+      "top_programs": [
+       [
+        "powershell",
+        0.6
+       ],
+       [
+        "Memory Compression",
+        0.3
+       ],
+       [
+        "MsMpEng",
+        0.25
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.12,
+        2.46
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "peak": {
+      "commit_free_gb": 47.35,
+      "ram_moe_cache_gb": 16.9,
+      "ram_rest_of_system_gb": 7.52,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.42,
+      "source": "gputaskman --json",
+      "t_s": 447.7,
+      "top_programs": [
+       [
+        "powershell",
+        0.6
+       ],
+       [
+        "Memory Compression",
+        0.3
+       ],
+       [
+        "MsMpEng",
+        0.25
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.12,
+        2.46
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "start": {
+      "commit_free_gb": 49.28,
+      "ram_moe_cache_gb": 15.1,
+      "ram_rest_of_system_gb": 7.42,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 22.52,
+      "source": "gputaskman --json",
+      "t_s": 1.9,
+      "top_programs": [
+       [
+        "powershell",
+        0.5
+       ],
+       [
+        "Memory Compression",
+        0.3
+       ],
+       [
+        "MsMpEng",
+        0.24
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.05,
+        1.86
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     }
+    },
+    "samples": 15,
+    "source": "gputaskman --json",
+    "top_programs": [
+     [
+      "powershell",
+      0.6
+     ],
+     [
+      "Memory Compression",
+      0.3
+     ],
+     [
+      "MsMpEng",
+      0.25
+     ],
+     [
+      "Secure System",
+      0.13
+     ],
+     [
+      "explorer",
+      0.1
+     ]
+    ],
+    "vram_per_process": [
+     [
+      "moe-cache",
+      13.12,
+      2.46
+     ],
+     [
+      "dwm",
+      0.56,
+      0.02
+     ],
+     [
+      "explorer",
+      0.14,
+      0.0
+     ],
+     [
+      "AMDRSSrcExt",
+      0.13,
+      0.01
+     ],
+     [
+      "AMDRSServ",
+      0.07,
+      0.0
+     ],
+     [
+      "RadeonSoftware",
+      0.05,
+      0.01
+     ]
+    ],
+    "vram_total_gb": 15.81
+   },
+   "error": "",
+   "gpu_blocks": 0,
+   "gpu_up_saved_gb": 0.0,
+   "hit_rate_dec_pct": "not recorded",
+   "index": 1,
+   "load_s": 22.2,
+   "ok": true,
+   "process_private_peak_mib": 18703.0,
+   "process_ram_peak_mib": 17444.0,
+   "prompt_tokens": 126234,
+   "prompt_tps": 374.41,
+   "server_log_facts": {
+    "buffers": {},
+    "n_layer": null,
+    "offload_total": null,
+    "offloaded": null,
+    "plugin_cpu_expert_layers": 999,
+    "plugin_layers": null,
+    "threads": 16,
+    "vram_from_log_mib": null
+   },
+   "settings": {
+    "batch": 2048,
+    "command_line": "env MOE_CACHE_LIB=C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll MOE_CACHE_STATS_SIGNAL=1 llama-server -m D:\\models\\qwen38_27b\\Qwen3.8-27B-UD-IQ4_XS.gguf -c 131072 -fa on --load-mode mmap --no-warmup --port 8099 --alias spill128_ --device Vulkan1 --jinja --ctx-checkpoints 8 --chat-template-file C:/Users/Ibrrum/.cache/moe-cache/templates/midsystem-6c38ea1cdec5.jinja -ctk q8_0 -ctv q8_0 -ub 256 -b 2048 --cache-ram 2048 -fitt 256 -np 1",
+    "ctx": 131072,
+    "environment": {
+     "MOE_CACHE_LIB": "C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll",
+     "MOE_CACHE_NO_AUTOTUNE": "1",
+     "MOE_CACHE_SEG_TIMES": "1",
+     "MOE_CACHE_STATS_SIGNAL": "1",
+     "MOE_CACHE_VRAM_LINE": "1"
+    },
+    "fact_sources": {
+     "gpu_expert_layers": "n_layer - n_cpu_moe",
+     "n_cpu_moe": "plugin log line (experts of N layers stay on the CPU)",
+     "n_layer": "GGUF header block_count of Qwen3.8-27B-UD-IQ4_XS.gguf",
+     "threads": "server log (llama threadpool init, n_threads)"
+    },
+    "fast_flag": "no",
+    "flash_attn": "on",
+    "gpu_expert_layers": 0,
+    "kv_type_k": "q8_0",
+    "kv_type_v": "q8_0",
+    "mtp": "no",
+    "n_cpu_moe": 999,
+    "n_layer": 65,
+    "ngl": "not recorded",
+    "threads": 16,
+    "ubatch": 256
+   },
+   "ssd_wait_s": 0.0,
+   "stop_reason": "script ended",
+   "system_cpu_avg_pct": 40.1,
+   "system_cpu_peak_pct": 59.9,
+   "system_ram_free_min_mib": 6779.0,
+   "text_sha256": "ef1a5b27ae966ec4",
+   "ttft_s": 54.45,
+   "turns": [
+    {
+     "answer_chars": 677,
+     "answer_head": "The provided code snippets do not contain definitions for `check_cache` or `pack_buffer_frame`, making it impossible to explain their specific differences based on the text. Similarly, the function `flush_buffer_queue` is not present in the `trim_queue.py` file, so it cannot be renamed to `scan_router` while preserving behavior. The log file contains entries for various operations but does not pro",
+     "answer_sha256": "abe98a512eb54499",
+     "cache_n": 0,
+     "decode_tps": 13.7,
+     "depth_after": 17553,
+     "depth_before": 17433,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 8686.538,
+     "predicted_n": 120,
+     "prompt_ms": 26210.645,
+     "prompt_n": 17433,
+     "prompt_tps": 665.11,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 17433,
+     "ttft_s": 26.235,
+     "turn": 0,
+     "user_chars": 44000,
+     "wall_s": 34.92
+    },
+    {
+     "answer_chars": 579,
+     "answer_head": "The function `write_slot_shard` is not present in any of the provided code snippets, making it impossible to rename it to `load_layer_worker` while preserving its behavior. The code samples contain numerous other functions such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, but none of them are named `write_slot_shard`. Without the actual implementation of `write_slot_shar",
+     "answer_sha256": "b1742a384157f18a",
+     "cache_n": 17552,
+     "decode_tps": 11.55,
+     "depth_after": 45244,
+     "depth_before": 45124,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 10304.718,
+     "predicted_n": 120,
+     "prompt_ms": 50571.526,
+     "prompt_n": 27572,
+     "prompt_tps": 545.21,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27571,
+     "ttft_s": 50.596,
+     "turn": 1,
+     "user_chars": 64900,
+     "wall_s": 60.9
+    },
+    {
+     "answer_chars": 982,
+     "answer_head": "The provided code snippets do not contain definitions for `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Consequently, it is",
+     "answer_sha256": "8c32bd1bcce46c60",
+     "cache_n": 45243,
+     "decode_tps": 10.03,
+     "depth_after": 68333,
+     "depth_before": 68122,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 20944.297,
+     "predicted_n": 211,
+     "prompt_ms": 58268.786,
+     "prompt_n": 22879,
+     "prompt_tps": 392.65,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 22878,
+     "ttft_s": 58.307,
+     "turn": 2,
+     "user_chars": 62700,
+     "wall_s": 79.25
+    },
+    {
+     "answer_chars": 868,
+     "answer_head": "The function `write_slot_shard` is not present in any of the provided code snippets, making it impossible to rename it to `load_layer_worker` while preserving its behavior. The code samples contain numerous other functions such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, but none of them are named `write_slot_shard`. Without the actual implementation of `write_slot_shar",
+     "answer_sha256": "b8bf716bb07f8db1",
+     "cache_n": 68332,
+     "decode_tps": 8.97,
+     "depth_after": 95894,
+     "depth_before": 95724,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 18839.702,
+     "predicted_n": 170,
+     "prompt_ms": 86331.002,
+     "prompt_n": 27392,
+     "prompt_tps": 317.29,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27391,
+     "ttft_s": 86.425,
+     "turn": 3,
+     "user_chars": 64350,
+     "wall_s": 105.27
+    },
+    {
+     "answer_chars": 982,
+     "answer_head": "The provided code snippets do not contain definitions for `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Consequently, it is",
+     "answer_sha256": "8c32bd1bcce46c60",
+     "cache_n": 95893,
+     "decode_tps": 8.33,
+     "depth_after": 114783,
+     "depth_before": 114572,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 25223.467,
+     "predicted_n": 211,
+     "prompt_ms": 68193.635,
+     "prompt_n": 18679,
+     "prompt_tps": 273.91,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 18678,
+     "ttft_s": 68.259,
+     "turn": 4,
+     "user_chars": 50875,
+     "wall_s": 93.48
+    },
+    {
+     "answer_chars": 868,
+     "answer_head": "The function `write_slot_shard` is not present in any of the provided code snippets, making it impossible to rename it to `load_layer_worker` while preserving its behavior. The code samples contain numerous other functions such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, but none of them are named `write_slot_shard`. Without the actual implementation of `write_slot_shar",
+     "answer_sha256": "b8bf716bb07f8db1",
+     "cache_n": 114782,
+     "decode_tps": 7.92,
+     "depth_after": 126234,
+     "depth_before": 126064,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 21331.478,
+     "predicted_n": 170,
+     "prompt_ms": 44913.073,
+     "prompt_n": 11282,
+     "prompt_tps": 251.2,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 11281,
+     "ttft_s": 44.976,
+     "turn": 5,
+     "user_chars": 30800,
+     "wall_s": 66.31
+    }
+   ],
+   "vram_source": "typeperf GPU Process Memory (this server)",
+   "vram_system_peak_mib": 14856.0,
+   "vram_used_peak_mib": 13641.0,
+   "wall_s": 440.6
+  },
+  {
+   "arm": "rule-off",
+   "bands": [
+    {
+     "band": "0k-32k",
+     "cache_reuse_pct": 0.0,
+     "decode_tps": 10.73,
+     "decode_turns": 1,
+     "hi": 32768,
+     "hit_rate_dec_pct": null,
+     "lo": 0,
+     "prompt_tps": 355.87,
+     "prompt_turns": 1,
+     "ttft_median_s": 49.0,
+     "turns": 1
+    },
+    {
+     "band": "32k-64k",
+     "cache_reuse_pct": 38.9,
+     "decode_tps": 9.25,
+     "decode_turns": 1,
+     "hi": 65536,
+     "hit_rate_dec_pct": null,
+     "lo": 32768,
+     "prompt_tps": 323.96,
+     "prompt_turns": 1,
+     "ttft_median_s": 85.13,
+     "turns": 1
+    },
+    {
+     "band": "64k-96k",
+     "cache_reuse_pct": 69.3,
+     "decode_tps": 7.83,
+     "decode_turns": 2,
+     "hi": 98304,
+     "hit_rate_dec_pct": null,
+     "lo": 65536,
+     "prompt_tps": 252.76,
+     "prompt_turns": 2,
+     "ttft_median_s": 99.51,
+     "turns": 2
+    },
+    {
+     "band": "96k-128k",
+     "cache_reuse_pct": 87.6,
+     "decode_tps": 6.63,
+     "decode_turns": 2,
+     "hi": 131072,
+     "hit_rate_dec_pct": null,
+     "lo": 98304,
+     "prompt_tps": 212.88,
+     "prompt_turns": 2,
+     "ttft_median_s": 70.45,
+     "turns": 2
+    }
+   ],
+   "cache_hit_pct": 73.2,
+   "cpu_avg_pct": 29.6,
+   "cpu_peak_pct": 51.1,
+   "decode_tps": 7.71,
+   "disk_read_gb": 0.0,
+   "disk_read_process_gb": 0.0,
+   "disk_read_process_source": "Windows ReadTransferCount of llama-server over the run (explicit reads only; memory-mapped page-ins are not counted: a lower bound with --load-mode mmap)",
+   "disk_read_source": "the plugin's own read_bytes counter, summed over the turns",
+   "environment": {
+    "basis": "the snapshot with the highest RAM in use during the run",
+    "commit_free_gb": 47.0,
+    "ram_moe_cache_gb": 17.34,
+    "ram_rest_of_system_gb": 7.52,
+    "ram_total_gb": 31.15,
+    "ram_used_total_gb": 24.86,
+    "sampled_at": {
+     "end": {
+      "commit_free_gb": 47.15,
+      "ram_moe_cache_gb": 17.24,
+      "ram_rest_of_system_gb": 7.45,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.69,
+      "source": "gputaskman --json",
+      "t_s": 611.7,
+      "top_programs": [
+       [
+        "powershell",
+        0.47
+       ],
+       [
+        "Memory Compression",
+        0.3
+       ],
+       [
+        "MsMpEng",
+        0.24
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.09,
+        2.33
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "peak": {
+      "commit_free_gb": 47.0,
+      "ram_moe_cache_gb": 17.34,
+      "ram_rest_of_system_gb": 7.52,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.86,
+      "source": "gputaskman --json",
+      "t_s": 227.0,
+      "top_programs": [
+       [
+        "powershell",
+        0.49
+       ],
+       [
+        "Memory Compression",
+        0.29
+       ],
+       [
+        "MsMpEng",
+        0.24
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.07,
+        2.09
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "start": {
+      "commit_free_gb": 48.67,
+      "ram_moe_cache_gb": 15.72,
+      "ram_rest_of_system_gb": 7.43,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 23.16,
+      "source": "gputaskman --json",
+      "t_s": 2.1,
+      "top_programs": [
+       [
+        "powershell",
+        0.49
+       ],
+       [
+        "Memory Compression",
+        0.29
+       ],
+       [
+        "MsMpEng",
+        0.24
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.04,
+        1.85
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     }
+    },
+    "samples": 20,
+    "source": "gputaskman --json",
+    "top_programs": [
+     [
+      "powershell",
+      0.49
+     ],
+     [
+      "Memory Compression",
+      0.29
+     ],
+     [
+      "MsMpEng",
+      0.24
+     ],
+     [
+      "Secure System",
+      0.13
+     ],
+     [
+      "explorer",
+      0.1
+     ]
+    ],
+    "vram_per_process": [
+     [
+      "moe-cache",
+      13.07,
+      2.09
+     ],
+     [
+      "dwm",
+      0.56,
+      0.02
+     ],
+     [
+      "explorer",
+      0.14,
+      0.0
+     ],
+     [
+      "AMDRSSrcExt",
+      0.13,
+      0.01
+     ],
+     [
+      "AMDRSServ",
+      0.07,
+      0.0
+     ],
+     [
+      "RadeonSoftware",
+      0.05,
+      0.01
+     ]
+    ],
+    "vram_total_gb": 15.81
+   },
+   "error": "",
+   "gpu_blocks": 0,
+   "gpu_up_saved_gb": 0.0,
+   "hit_rate_dec_pct": "not recorded",
+   "index": 1,
+   "load_s": 22.2,
+   "ok": true,
+   "process_private_peak_mib": 18991.0,
+   "process_ram_peak_mib": 17782.0,
+   "prompt_tokens": 126261,
+   "prompt_tps": 264.36,
+   "server_log_facts": {
+    "buffers": {},
+    "n_layer": null,
+    "offload_total": null,
+    "offloaded": null,
+    "plugin_cpu_expert_layers": 999,
+    "plugin_layers": null,
+    "threads": 16,
+    "vram_from_log_mib": null
+   },
+   "settings": {
+    "batch": 2048,
+    "command_line": "env MOE_CACHE_LIB=C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll MOE_CACHE_STATS_SIGNAL=1 llama-server -m D:\\models\\qwen38_27b\\Qwen3.8-27B-UD-IQ4_XS.gguf -c 131072 -fa on --load-mode mmap --no-warmup --port 8099 --alias spill128_ --device Vulkan1 --jinja --ctx-checkpoints 8 --chat-template-file C:/Users/Ibrrum/.cache/moe-cache/templates/midsystem-6c38ea1cdec5.jinja -ctk q8_0 -ctv q8_0 -ub 512 -b 2048 --cache-ram 2048 -fitt 256",
+    "ctx": 131072,
+    "environment": {
+     "MOE_CACHE_DENSE_SPILL_RULE": "0",
+     "MOE_CACHE_LIB": "C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll",
+     "MOE_CACHE_NO_AUTOTUNE": "1",
+     "MOE_CACHE_SEG_TIMES": "1",
+     "MOE_CACHE_STATS_SIGNAL": "1",
+     "MOE_CACHE_VRAM_LINE": "1"
+    },
+    "fact_sources": {
+     "gpu_expert_layers": "n_layer - n_cpu_moe",
+     "n_cpu_moe": "plugin log line (experts of N layers stay on the CPU)",
+     "n_layer": "GGUF header block_count of Qwen3.8-27B-UD-IQ4_XS.gguf",
+     "threads": "server log (llama threadpool init, n_threads)"
+    },
+    "fast_flag": "no",
+    "flash_attn": "on",
+    "gpu_expert_layers": 0,
+    "kv_type_k": "q8_0",
+    "kv_type_v": "q8_0",
+    "mtp": "no",
+    "n_cpu_moe": 999,
+    "n_layer": 65,
+    "ngl": "not recorded",
+    "threads": 16,
+    "ubatch": 512
+   },
+   "ssd_wait_s": 0.0,
+   "stop_reason": "script ended",
+   "system_cpu_avg_pct": 34.5,
+   "system_cpu_peak_pct": 66.4,
+   "system_ram_free_min_mib": 6437.0,
+   "text_sha256": "ef1a5b27ae966ec4",
+   "ttft_s": 84.92,
+   "turns": [
+    {
+     "answer_chars": 677,
+     "answer_head": "The provided code snippets do not contain definitions for `check_cache` or `pack_buffer_frame`, making it impossible to explain their specific differences based on the text. Similarly, the function `flush_buffer_queue` is not present in the `trim_queue.py` file, so it cannot be renamed to `scan_router` while preserving behavior. The log file contains entries for various operations but does not pro",
+     "answer_sha256": "abe98a512eb54499",
+     "cache_n": 0,
+     "decode_tps": 10.64,
+     "depth_after": 17553,
+     "depth_before": 17433,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 11187.391,
+     "predicted_n": 120,
+     "prompt_ms": 48987.233,
+     "prompt_n": 17433,
+     "prompt_tps": 355.87,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 17433,
+     "ttft_s": 49.001,
+     "turn": 0,
+     "user_chars": 44000,
+     "wall_s": 60.19
+    },
+    {
+     "answer_chars": 673,
+     "answer_head": "The provided code snippets do not contain a function named `write_slot_shard`, making it impossible to rename it to `load_layer_worker` while preserving behavior. The functions present in the files, such as `match_token`, `load_slot`, `score_shard_shard`, `parse_window`, `pack_index_layer`, `load_index_layer`, and `pack_index_buffer`, do not match the name requested for renaming. Consequently, the",
+     "answer_sha256": "9e17df2a602524a0",
+     "cache_n": 17552,
+     "decode_tps": 9.18,
+     "depth_after": 45259,
+     "depth_before": 45124,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 14590.034,
+     "predicted_n": 135,
+     "prompt_ms": 85108.479,
+     "prompt_n": 27572,
+     "prompt_tps": 323.96,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27571,
+     "ttft_s": 85.13,
+     "turn": 1,
+     "user_chars": 64900,
+     "wall_s": 99.72
+    },
+    {
+     "answer_chars": 1223,
+     "answer_head": "The provided code snippets do not contain definitions for the functions `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Conse",
+     "answer_sha256": "d9cc0a18043c3184",
+     "cache_n": 45258,
+     "decode_tps": 8.01,
+     "depth_after": 68399,
+     "depth_before": 68137,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 32574.676,
+     "predicted_n": 262,
+     "prompt_ms": 84659.119,
+     "prompt_n": 22879,
+     "prompt_tps": 270.25,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 22878,
+     "ttft_s": 84.711,
+     "turn": 2,
+     "user_chars": 62700,
+     "wall_s": 117.29
+    },
+    {
+     "answer_chars": 652,
+     "answer_head": "The provided code snippets do not contain a function named `write_slot_shard`, making it impossible to rename it to `load_layer_worker` while preserving behavior. The functions present in the files, such as `match_token`, `load_slot`, `score_shard_shard`, `parse_window`, `pack_index_layer`, and `load_index_layer`, do not match the name requested for renaming. Consequently, the specific refactoring",
+     "answer_sha256": "f9fc206d9e4b7304",
+     "cache_n": 68398,
+     "decode_tps": 7.38,
+     "depth_after": 95920,
+     "depth_before": 95790,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 17475.145,
+     "predicted_n": 130,
+     "prompt_ms": 114230.827,
+     "prompt_n": 27392,
+     "prompt_tps": 239.8,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27391,
+     "ttft_s": 114.305,
+     "turn": 3,
+     "user_chars": 64350,
+     "wall_s": 131.78
+    },
+    {
+     "answer_chars": 1223,
+     "answer_head": "The provided code snippets do not contain definitions for the functions `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Conse",
+     "answer_sha256": "d9cc0a18043c3184",
+     "cache_n": 95919,
+     "decode_tps": 6.61,
+     "depth_after": 114860,
+     "depth_before": 114598,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 39508.255,
+     "predicted_n": 262,
+     "prompt_ms": 85710.595,
+     "prompt_n": 18679,
+     "prompt_tps": 217.93,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 18678,
+     "ttft_s": 85.784,
+     "turn": 4,
+     "user_chars": 50875,
+     "wall_s": 125.29
+    },
+    {
+     "answer_chars": 612,
+     "answer_head": "The provided code snippets do not contain a function named `write_slot_shard`, making it impossible to rename it to `load_layer_worker` while preserving behavior. The functions present in the files, such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, do not match the name requested for renaming. Consequently, the specific refactoring task cannot be executed because the tar",
+     "answer_sha256": "03f07abc68bef5d7",
+     "cache_n": 114859,
+     "decode_tps": 6.57,
+     "depth_after": 126261,
+     "depth_before": 126141,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 18105.772,
+     "predicted_n": 120,
+     "prompt_ms": 55033.859,
+     "prompt_n": 11282,
+     "prompt_tps": 205.0,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 11281,
+     "ttft_s": 55.118,
+     "turn": 5,
+     "user_chars": 30800,
+     "wall_s": 73.23
+    }
+   ],
+   "vram_source": "typeperf GPU Process Memory (this server)",
+   "vram_system_peak_mib": 14808.0,
+   "vram_used_peak_mib": 13595.0,
+   "wall_s": 607.9
+  },
+  {
+   "arm": "rule-off",
+   "bands": [
+    {
+     "band": "0k-32k",
+     "cache_reuse_pct": 0.0,
+     "decode_tps": 10.52,
+     "decode_turns": 1,
+     "hi": 32768,
+     "hit_rate_dec_pct": null,
+     "lo": 0,
+     "prompt_tps": 355.96,
+     "prompt_turns": 1,
+     "ttft_median_s": 49.01,
+     "turns": 1
+    },
+    {
+     "band": "32k-64k",
+     "cache_reuse_pct": 38.9,
+     "decode_tps": 9.11,
+     "decode_turns": 1,
+     "hi": 65536,
+     "hit_rate_dec_pct": null,
+     "lo": 32768,
+     "prompt_tps": 323.67,
+     "prompt_turns": 1,
+     "ttft_median_s": 85.2,
+     "turns": 1
+    },
+    {
+     "band": "64k-96k",
+     "cache_reuse_pct": 69.3,
+     "decode_tps": 7.76,
+     "decode_turns": 2,
+     "hi": 98304,
+     "hit_rate_dec_pct": null,
+     "lo": 65536,
+     "prompt_tps": 252.43,
+     "prompt_turns": 2,
+     "ttft_median_s": 99.62,
+     "turns": 2
+    },
+    {
+     "band": "96k-128k",
+     "cache_reuse_pct": 87.6,
+     "decode_tps": 6.7,
+     "decode_turns": 2,
+     "hi": 131072,
+     "hit_rate_dec_pct": null,
+     "lo": 98304,
+     "prompt_tps": 211.73,
+     "prompt_turns": 2,
+     "ttft_median_s": 70.83,
+     "turns": 2
+    }
+   ],
+   "cache_hit_pct": 73.2,
+   "cpu_avg_pct": 29.6,
+   "cpu_peak_pct": 51.1,
+   "decode_tps": 7.69,
+   "disk_read_gb": 0.0,
+   "disk_read_process_gb": 0.0,
+   "disk_read_process_source": "Windows ReadTransferCount of llama-server over the run (explicit reads only; memory-mapped page-ins are not counted: a lower bound with --load-mode mmap)",
+   "disk_read_source": "the plugin's own read_bytes counter, summed over the turns",
+   "environment": {
+    "basis": "the snapshot with the highest RAM in use during the run",
+    "commit_free_gb": 47.14,
+    "ram_moe_cache_gb": 17.34,
+    "ram_rest_of_system_gb": 7.41,
+    "ram_total_gb": 31.15,
+    "ram_used_total_gb": 24.75,
+    "sampled_at": {
+     "end": {
+      "commit_free_gb": 47.13,
+      "ram_moe_cache_gb": 17.25,
+      "ram_rest_of_system_gb": 7.48,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.73,
+      "source": "gputaskman --json",
+      "t_s": 611.6,
+      "top_programs": [
+       [
+        "powershell",
+        0.51
+       ],
+       [
+        "Memory Compression",
+        0.29
+       ],
+       [
+        "MsMpEng",
+        0.25
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.09,
+        2.33
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "peak": {
+      "commit_free_gb": 47.14,
+      "ram_moe_cache_gb": 17.34,
+      "ram_rest_of_system_gb": 7.41,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.75,
+      "source": "gputaskman --json",
+      "t_s": 227.0,
+      "top_programs": [
+       [
+        "powershell",
+        0.4
+       ],
+       [
+        "Memory Compression",
+        0.29
+       ],
+       [
+        "MsMpEng",
+        0.24
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.07,
+        2.09
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "start": {
+      "commit_free_gb": 48.72,
+      "ram_moe_cache_gb": 15.72,
+      "ram_rest_of_system_gb": 7.44,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 23.16,
+      "source": "gputaskman --json",
+      "t_s": 2.1,
+      "top_programs": [
+       [
+        "powershell",
+        0.4
+       ],
+       [
+        "Memory Compression",
+        0.29
+       ],
+       [
+        "MsMpEng",
+        0.25
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.04,
+        1.85
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     }
+    },
+    "samples": 20,
+    "source": "gputaskman --json",
+    "top_programs": [
+     [
+      "powershell",
+      0.4
+     ],
+     [
+      "Memory Compression",
+      0.29
+     ],
+     [
+      "MsMpEng",
+      0.24
+     ],
+     [
+      "Secure System",
+      0.13
+     ],
+     [
+      "explorer",
+      0.1
+     ]
+    ],
+    "vram_per_process": [
+     [
+      "moe-cache",
+      13.07,
+      2.09
+     ],
+     [
+      "dwm",
+      0.56,
+      0.02
+     ],
+     [
+      "explorer",
+      0.14,
+      0.0
+     ],
+     [
+      "AMDRSSrcExt",
+      0.13,
+      0.01
+     ],
+     [
+      "AMDRSServ",
+      0.07,
+      0.0
+     ],
+     [
+      "RadeonSoftware",
+      0.05,
+      0.01
+     ]
+    ],
+    "vram_total_gb": 15.81
+   },
+   "error": "",
+   "gpu_blocks": 0,
+   "gpu_up_saved_gb": 0.0,
+   "hit_rate_dec_pct": "not recorded",
+   "index": 2,
+   "load_s": 22.2,
+   "ok": true,
+   "process_private_peak_mib": 18989.0,
+   "process_ram_peak_mib": 17779.0,
+   "prompt_tokens": 126261,
+   "prompt_tps": 263.76,
+   "server_log_facts": {
+    "buffers": {},
+    "n_layer": null,
+    "offload_total": null,
+    "offloaded": null,
+    "plugin_cpu_expert_layers": 999,
+    "plugin_layers": null,
+    "threads": 16,
+    "vram_from_log_mib": null
+   },
+   "settings": {
+    "batch": 2048,
+    "command_line": "env MOE_CACHE_LIB=C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll MOE_CACHE_STATS_SIGNAL=1 llama-server -m D:\\models\\qwen38_27b\\Qwen3.8-27B-UD-IQ4_XS.gguf -c 131072 -fa on --load-mode mmap --no-warmup --port 8099 --alias spill128_ --device Vulkan1 --jinja --ctx-checkpoints 8 --chat-template-file C:/Users/Ibrrum/.cache/moe-cache/templates/midsystem-6c38ea1cdec5.jinja -ctk q8_0 -ctv q8_0 -ub 512 -b 2048 --cache-ram 2048 -fitt 256",
+    "ctx": 131072,
+    "environment": {
+     "MOE_CACHE_DENSE_SPILL_RULE": "0",
+     "MOE_CACHE_LIB": "C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll",
+     "MOE_CACHE_NO_AUTOTUNE": "1",
+     "MOE_CACHE_SEG_TIMES": "1",
+     "MOE_CACHE_STATS_SIGNAL": "1",
+     "MOE_CACHE_VRAM_LINE": "1"
+    },
+    "fact_sources": {
+     "gpu_expert_layers": "n_layer - n_cpu_moe",
+     "n_cpu_moe": "plugin log line (experts of N layers stay on the CPU)",
+     "n_layer": "GGUF header block_count of Qwen3.8-27B-UD-IQ4_XS.gguf",
+     "threads": "server log (llama threadpool init, n_threads)"
+    },
+    "fast_flag": "no",
+    "flash_attn": "on",
+    "gpu_expert_layers": 0,
+    "kv_type_k": "q8_0",
+    "kv_type_v": "q8_0",
+    "mtp": "no",
+    "n_cpu_moe": 999,
+    "n_layer": 65,
+    "ngl": "not recorded",
+    "threads": 16,
+    "ubatch": 512
+   },
+   "ssd_wait_s": 0.0,
+   "stop_reason": "script ended",
+   "system_cpu_avg_pct": 34.6,
+   "system_cpu_peak_pct": 61.3,
+   "system_ram_free_min_mib": 6562.0,
+   "text_sha256": "ef1a5b27ae966ec4",
+   "ttft_s": 84.72,
+   "turns": [
+    {
+     "answer_chars": 677,
+     "answer_head": "The provided code snippets do not contain definitions for `check_cache` or `pack_buffer_frame`, making it impossible to explain their specific differences based on the text. Similarly, the function `flush_buffer_queue` is not present in the `trim_queue.py` file, so it cannot be renamed to `scan_router` while preserving behavior. The log file contains entries for various operations but does not pro",
+     "answer_sha256": "abe98a512eb54499",
+     "cache_n": 0,
+     "decode_tps": 10.43,
+     "depth_after": 17553,
+     "depth_before": 17433,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 11410.328,
+     "predicted_n": 120,
+     "prompt_ms": 48974.045,
+     "prompt_n": 17433,
+     "prompt_tps": 355.96,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 17433,
+     "ttft_s": 49.01,
+     "turn": 0,
+     "user_chars": 44000,
+     "wall_s": 60.42
+    },
+    {
+     "answer_chars": 673,
+     "answer_head": "The provided code snippets do not contain a function named `write_slot_shard`, making it impossible to rename it to `load_layer_worker` while preserving behavior. The functions present in the files, such as `match_token`, `load_slot`, `score_shard_shard`, `parse_window`, `pack_index_layer`, `load_index_layer`, and `pack_index_buffer`, do not match the name requested for renaming. Consequently, the",
+     "answer_sha256": "9e17df2a602524a0",
+     "cache_n": 17552,
+     "decode_tps": 9.04,
+     "depth_after": 45259,
+     "depth_before": 45124,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 14815.827,
+     "predicted_n": 135,
+     "prompt_ms": 85184.453,
+     "prompt_n": 27572,
+     "prompt_tps": 323.67,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27571,
+     "ttft_s": 85.204,
+     "turn": 1,
+     "user_chars": 64900,
+     "wall_s": 100.02
+    },
+    {
+     "answer_chars": 1223,
+     "answer_head": "The provided code snippets do not contain definitions for the functions `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Conse",
+     "answer_sha256": "d9cc0a18043c3184",
+     "cache_n": 45258,
+     "decode_tps": 8.01,
+     "depth_after": 68399,
+     "depth_before": 68137,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 32574.569,
+     "predicted_n": 262,
+     "prompt_ms": 84196.859,
+     "prompt_n": 22879,
+     "prompt_tps": 271.73,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 22878,
+     "ttft_s": 84.245,
+     "turn": 2,
+     "user_chars": 62700,
+     "wall_s": 116.82
+    },
+    {
+     "answer_chars": 652,
+     "answer_head": "The provided code snippets do not contain a function named `write_slot_shard`, making it impossible to rename it to `load_layer_worker` while preserving behavior. The functions present in the files, such as `match_token`, `load_slot`, `score_shard_shard`, `parse_window`, `pack_index_layer`, and `load_index_layer`, do not match the name requested for renaming. Consequently, the specific refactoring",
+     "answer_sha256": "f9fc206d9e4b7304",
+     "cache_n": 68398,
+     "decode_tps": 7.2,
+     "depth_after": 95920,
+     "depth_before": 95790,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 17928.094,
+     "predicted_n": 130,
+     "prompt_ms": 114947.485,
+     "prompt_n": 27392,
+     "prompt_tps": 238.3,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27391,
+     "ttft_s": 114.997,
+     "turn": 3,
+     "user_chars": 64350,
+     "wall_s": 132.93
+    },
+    {
+     "answer_chars": 1223,
+     "answer_head": "The provided code snippets do not contain definitions for the functions `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Conse",
+     "answer_sha256": "d9cc0a18043c3184",
+     "cache_n": 95919,
+     "decode_tps": 6.71,
+     "depth_after": 114860,
+     "depth_before": 114598,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 38914.117,
+     "predicted_n": 262,
+     "prompt_ms": 86332.584,
+     "prompt_n": 18679,
+     "prompt_tps": 216.36,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 18678,
+     "ttft_s": 86.403,
+     "turn": 4,
+     "user_chars": 50875,
+     "wall_s": 125.32
+    },
+    {
+     "answer_chars": 612,
+     "answer_head": "The provided code snippets do not contain a function named `write_slot_shard`, making it impossible to rename it to `load_layer_worker` while preserving behavior. The functions present in the files, such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, do not match the name requested for renaming. Consequently, the specific refactoring task cannot be executed because the tar",
+     "answer_sha256": "03f07abc68bef5d7",
+     "cache_n": 114859,
+     "decode_tps": 6.57,
+     "depth_after": 126261,
+     "depth_before": 126141,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 18113.573,
+     "predicted_n": 120,
+     "prompt_ms": 55172.81,
+     "prompt_n": 11282,
+     "prompt_tps": 204.48,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 11281,
+     "ttft_s": 55.251,
+     "turn": 5,
+     "user_chars": 30800,
+     "wall_s": 73.37
+    }
+   ],
+   "vram_source": "typeperf GPU Process Memory (this server)",
+   "vram_system_peak_mib": 14808.0,
+   "vram_used_peak_mib": 13599.0,
+   "wall_s": 609.2
+  },
+  {
+   "arm": "rule-on",
+   "bands": [
+    {
+     "band": "0k-32k",
+     "cache_reuse_pct": 0.0,
+     "decode_tps": 13.77,
+     "decode_turns": 1,
+     "hi": 32768,
+     "hit_rate_dec_pct": null,
+     "lo": 0,
+     "prompt_tps": 659.93,
+     "prompt_turns": 1,
+     "ttft_median_s": 26.43,
+     "turns": 1
+    },
+    {
+     "band": "32k-64k",
+     "cache_reuse_pct": 38.9,
+     "decode_tps": 11.61,
+     "decode_turns": 1,
+     "hi": 65536,
+     "hit_rate_dec_pct": null,
+     "lo": 32768,
+     "prompt_tps": 541.44,
+     "prompt_turns": 1,
+     "ttft_median_s": 50.94,
+     "turns": 1
+    },
+    {
+     "band": "64k-96k",
+     "cache_reuse_pct": 69.3,
+     "decode_tps": 9.55,
+     "decode_turns": 2,
+     "hi": 98304,
+     "hit_rate_dec_pct": null,
+     "lo": 65536,
+     "prompt_tps": 347.57,
+     "prompt_turns": 2,
+     "ttft_median_s": 72.39,
+     "turns": 2
+    },
+    {
+     "band": "96k-128k",
+     "cache_reuse_pct": 87.5,
+     "decode_tps": 8.18,
+     "decode_turns": 2,
+     "hi": 131072,
+     "hit_rate_dec_pct": null,
+     "lo": 98304,
+     "prompt_tps": 265.2,
+     "prompt_turns": 2,
+     "ttft_median_s": 56.55,
+     "turns": 2
+    }
+   ],
+   "cache_hit_pct": 73.2,
+   "cpu_avg_pct": 35.1,
+   "cpu_peak_pct": 50.5,
+   "decode_tps": 9.5,
+   "disk_read_gb": 0.0,
+   "disk_read_process_gb": 0.0,
+   "disk_read_process_source": "Windows ReadTransferCount of llama-server over the run (explicit reads only; memory-mapped page-ins are not counted: a lower bound with --load-mode mmap)",
+   "disk_read_source": "the plugin's own read_bytes counter, summed over the turns",
+   "environment": {
+    "basis": "the snapshot with the highest RAM in use during the run",
+    "commit_free_gb": 47.53,
+    "ram_moe_cache_gb": 16.92,
+    "ram_rest_of_system_gb": 7.38,
+    "ram_total_gb": 31.15,
+    "ram_used_total_gb": 24.31,
+    "sampled_at": {
+     "end": {
+      "commit_free_gb": 47.53,
+      "ram_moe_cache_gb": 16.92,
+      "ram_rest_of_system_gb": 7.38,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.31,
+      "source": "gputaskman --json",
+      "t_s": 443.8,
+      "top_programs": [
+       [
+        "powershell",
+        0.39
+       ],
+       [
+        "Memory Compression",
+        0.29
+       ],
+       [
+        "MsMpEng",
+        0.2
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.12
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.12,
+        2.46
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "peak": {
+      "commit_free_gb": 47.53,
+      "ram_moe_cache_gb": 16.92,
+      "ram_rest_of_system_gb": 7.38,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 24.31,
+      "source": "gputaskman --json",
+      "t_s": 443.8,
+      "top_programs": [
+       [
+        "powershell",
+        0.39
+       ],
+       [
+        "Memory Compression",
+        0.29
+       ],
+       [
+        "MsMpEng",
+        0.2
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.12
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.12,
+        2.46
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     },
+     "start": {
+      "commit_free_gb": 49.03,
+      "ram_moe_cache_gb": 15.4,
+      "ram_rest_of_system_gb": 7.37,
+      "ram_total_gb": 31.15,
+      "ram_used_total_gb": 22.76,
+      "source": "gputaskman --json",
+      "t_s": 2.1,
+      "top_programs": [
+       [
+        "powershell",
+        0.39
+       ],
+       [
+        "Memory Compression",
+        0.28
+       ],
+       [
+        "MsMpEng",
+        0.22
+       ],
+       [
+        "Secure System",
+        0.13
+       ],
+       [
+        "explorer",
+        0.1
+       ]
+      ],
+      "vram_per_process": [
+       [
+        "moe-cache",
+        13.12,
+        1.98
+       ],
+       [
+        "dwm",
+        0.56,
+        0.02
+       ],
+       [
+        "explorer",
+        0.14,
+        0.0
+       ],
+       [
+        "AMDRSSrcExt",
+        0.13,
+        0.01
+       ],
+       [
+        "AMDRSServ",
+        0.07,
+        0.0
+       ],
+       [
+        "RadeonSoftware",
+        0.05,
+        0.01
+       ]
+      ],
+      "vram_total_gb": 15.81
+     }
+    },
+    "samples": 15,
+    "source": "gputaskman --json",
+    "top_programs": [
+     [
+      "powershell",
+      0.39
+     ],
+     [
+      "Memory Compression",
+      0.29
+     ],
+     [
+      "MsMpEng",
+      0.2
+     ],
+     [
+      "Secure System",
+      0.13
+     ],
+     [
+      "explorer",
+      0.12
+     ]
+    ],
+    "vram_per_process": [
+     [
+      "moe-cache",
+      13.12,
+      2.46
+     ],
+     [
+      "dwm",
+      0.56,
+      0.02
+     ],
+     [
+      "explorer",
+      0.14,
+      0.0
+     ],
+     [
+      "AMDRSSrcExt",
+      0.13,
+      0.01
+     ],
+     [
+      "AMDRSServ",
+      0.07,
+      0.0
+     ],
+     [
+      "RadeonSoftware",
+      0.05,
+      0.01
+     ]
+    ],
+    "vram_total_gb": 15.81
+   },
+   "error": "",
+   "gpu_blocks": 0,
+   "gpu_up_saved_gb": 0.0,
+   "hit_rate_dec_pct": "not recorded",
+   "index": 2,
+   "load_s": 22.2,
+   "ok": true,
+   "process_private_peak_mib": 18703.0,
+   "process_ram_peak_mib": 17443.0,
+   "prompt_tokens": 126234,
+   "prompt_tps": 373.9,
+   "server_log_facts": {
+    "buffers": {},
+    "n_layer": null,
+    "offload_total": null,
+    "offloaded": null,
+    "plugin_cpu_expert_layers": 999,
+    "plugin_layers": null,
+    "threads": 16,
+    "vram_from_log_mib": null
+   },
+   "settings": {
+    "batch": 2048,
+    "command_line": "env MOE_CACHE_LIB=C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll MOE_CACHE_STATS_SIGNAL=1 llama-server -m D:\\models\\qwen38_27b\\Qwen3.8-27B-UD-IQ4_XS.gguf -c 131072 -fa on --load-mode mmap --no-warmup --port 8099 --alias spill128_ --device Vulkan1 --jinja --ctx-checkpoints 8 --chat-template-file C:/Users/Ibrrum/.cache/moe-cache/templates/midsystem-6c38ea1cdec5.jinja -ctk q8_0 -ctv q8_0 -ub 256 -b 2048 --cache-ram 2048 -fitt 256 -np 1",
+    "ctx": 131072,
+    "environment": {
+     "MOE_CACHE_LIB": "C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll",
+     "MOE_CACHE_NO_AUTOTUNE": "1",
+     "MOE_CACHE_SEG_TIMES": "1",
+     "MOE_CACHE_STATS_SIGNAL": "1",
+     "MOE_CACHE_VRAM_LINE": "1"
+    },
+    "fact_sources": {
+     "gpu_expert_layers": "n_layer - n_cpu_moe",
+     "n_cpu_moe": "plugin log line (experts of N layers stay on the CPU)",
+     "n_layer": "GGUF header block_count of Qwen3.8-27B-UD-IQ4_XS.gguf",
+     "threads": "server log (llama threadpool init, n_threads)"
+    },
+    "fast_flag": "no",
+    "flash_attn": "on",
+    "gpu_expert_layers": 0,
+    "kv_type_k": "q8_0",
+    "kv_type_v": "q8_0",
+    "mtp": "no",
+    "n_cpu_moe": 999,
+    "n_layer": 65,
+    "ngl": "not recorded",
+    "threads": 16,
+    "ubatch": 256
+   },
+   "ssd_wait_s": 0.0,
+   "stop_reason": "script ended",
+   "system_cpu_avg_pct": 40.4,
+   "system_cpu_peak_pct": 63.5,
+   "system_ram_free_min_mib": 6931.0,
+   "text_sha256": "ef1a5b27ae966ec4",
+   "ttft_s": 54.75,
+   "turns": [
+    {
+     "answer_chars": 677,
+     "answer_head": "The provided code snippets do not contain definitions for `check_cache` or `pack_buffer_frame`, making it impossible to explain their specific differences based on the text. Similarly, the function `flush_buffer_queue` is not present in the `trim_queue.py` file, so it cannot be renamed to `scan_router` while preserving behavior. The log file contains entries for various operations but does not pro",
+     "answer_sha256": "abe98a512eb54499",
+     "cache_n": 0,
+     "decode_tps": 13.65,
+     "depth_after": 17553,
+     "depth_before": 17433,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 8717.135,
+     "predicted_n": 120,
+     "prompt_ms": 26416.269,
+     "prompt_n": 17433,
+     "prompt_tps": 659.93,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 17433,
+     "ttft_s": 26.426,
+     "turn": 0,
+     "user_chars": 44000,
+     "wall_s": 35.14
+    },
+    {
+     "answer_chars": 579,
+     "answer_head": "The function `write_slot_shard` is not present in any of the provided code snippets, making it impossible to rename it to `load_layer_worker` while preserving its behavior. The code samples contain numerous other functions such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, but none of them are named `write_slot_shard`. Without the actual implementation of `write_slot_shar",
+     "answer_sha256": "b1742a384157f18a",
+     "cache_n": 17552,
+     "decode_tps": 11.51,
+     "depth_after": 45244,
+     "depth_before": 45124,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 10339.549,
+     "predicted_n": 120,
+     "prompt_ms": 50923.651,
+     "prompt_n": 27572,
+     "prompt_tps": 541.44,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27571,
+     "ttft_s": 50.944,
+     "turn": 1,
+     "user_chars": 64900,
+     "wall_s": 61.28
+    },
+    {
+     "answer_chars": 982,
+     "answer_head": "The provided code snippets do not contain definitions for `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Consequently, it is",
+     "answer_sha256": "8c32bd1bcce46c60",
+     "cache_n": 45243,
+     "decode_tps": 10.03,
+     "depth_after": 68333,
+     "depth_before": 68122,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 20945.262,
+     "predicted_n": 211,
+     "prompt_ms": 58495.15,
+     "prompt_n": 22879,
+     "prompt_tps": 391.13,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 22878,
+     "ttft_s": 58.551,
+     "turn": 2,
+     "user_chars": 62700,
+     "wall_s": 79.5
+    },
+    {
+     "answer_chars": 868,
+     "answer_head": "The function `write_slot_shard` is not present in any of the provided code snippets, making it impossible to rename it to `load_layer_worker` while preserving its behavior. The code samples contain numerous other functions such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, but none of them are named `write_slot_shard`. Without the actual implementation of `write_slot_shar",
+     "answer_sha256": "b8bf716bb07f8db1",
+     "cache_n": 68332,
+     "decode_tps": 8.92,
+     "depth_after": 95894,
+     "depth_before": 95724,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 18953.811,
+     "predicted_n": 170,
+     "prompt_ms": 86142.503,
+     "prompt_n": 27392,
+     "prompt_tps": 317.98,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 27391,
+     "ttft_s": 86.237,
+     "turn": 3,
+     "user_chars": 64350,
+     "wall_s": 105.19
+    },
+    {
+     "answer_chars": 982,
+     "answer_head": "The provided code snippets do not contain definitions for `split_worker`, `merge_expert`, `pack_window`, `pack_index_cache`, `match_ledger_router`, `write_worker`, `write_slot`, `load_worker_worker`, `route_slot_slot`, `fetch_ledger`, `match_block_queue`, `load_buffer_slot`, `pack_queue`, `check_shard`, `split_shard`, `check_cache`, `pack_buffer_frame`, or `flush_buffer_queue`. Consequently, it is",
+     "answer_sha256": "8c32bd1bcce46c60",
+     "cache_n": 95893,
+     "decode_tps": 8.28,
+     "depth_after": 114783,
+     "depth_before": 114572,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 25365.181,
+     "predicted_n": 211,
+     "prompt_ms": 68297.773,
+     "prompt_n": 18679,
+     "prompt_tps": 273.49,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 18678,
+     "ttft_s": 68.356,
+     "turn": 4,
+     "user_chars": 50875,
+     "wall_s": 93.72
+    },
+    {
+     "answer_chars": 868,
+     "answer_head": "The function `write_slot_shard` is not present in any of the provided code snippets, making it impossible to rename it to `load_layer_worker` while preserving its behavior. The code samples contain numerous other functions such as `match_token`, `load_slot`, `score_shard_shard`, and `parse_window`, but none of them are named `write_slot_shard`. Without the actual implementation of `write_slot_shar",
+     "answer_sha256": "b8bf716bb07f8db1",
+     "cache_n": 114782,
+     "decode_tps": 7.97,
+     "depth_after": 126234,
+     "depth_before": 126064,
+     "error": null,
+     "finish_reason": "stop",
+     "gpu_blocks": 0,
+     "gpu_up_saved_gb": 0.0,
+     "hits_dec": 0,
+     "kind": "script",
+     "misses_dec": 0,
+     "predicted_ms": 21206.219,
+     "predicted_n": 170,
+     "prompt_ms": 44676.548,
+     "prompt_n": 11282,
+     "prompt_tps": 252.53,
+     "read_gb": 0.0,
+     "reasoning_chars": 0,
+     "ssd_wait_s": 0.0,
+     "tokens_added": 11281,
+     "ttft_s": 44.754,
+     "turn": 5,
+     "user_chars": 30800,
+     "wall_s": 65.96
+    }
+   ],
+   "vram_source": "typeperf GPU Process Memory (this server)",
+   "vram_system_peak_mib": 14855.0,
+   "vram_used_peak_mib": 13648.0,
+   "wall_s": 441.4
+  }
+ ],
+ "settings": {
+  "batch": 2048,
+  "command_line": "env MOE_CACHE_LIB=C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll MOE_CACHE_STATS_SIGNAL=1 llama-server -m D:\\models\\qwen38_27b\\Qwen3.8-27B-UD-IQ4_XS.gguf -c 131072 -fa on --load-mode mmap --no-warmup --port 8099 --alias spill128_ --device Vulkan1 --jinja --ctx-checkpoints 8 --chat-template-file C:/Users/Ibrrum/.cache/moe-cache/templates/midsystem-6c38ea1cdec5.jinja -ctk q8_0 -ctv q8_0 -ub 256 -b 2048 --cache-ram 2048 -fitt 256 -np 1",
+  "ctx": 131072,
+  "environment": {
+   "MOE_CACHE_DENSE_SPILL_RULE": "0 on rule-off runs, unset on rule-on runs",
+   "MOE_CACHE_LIB": "C:\\dl\\kit039_fixed\\moe-cache-v0.0.0-ci-windows-x64\\ggml-moe-cache-api3.dll",
+   "MOE_CACHE_NO_AUTOTUNE": "1",
+   "MOE_CACHE_SEG_TIMES": "1",
+   "MOE_CACHE_STATS_SIGNAL": "1",
+   "MOE_CACHE_VRAM_LINE": "1"
+  },
+  "fact_sources": {
+   "gpu_expert_layers": "n_layer - n_cpu_moe",
+   "n_cpu_moe": "plugin log line (experts of N layers stay on the CPU)",
+   "n_layer": "GGUF header block_count of Qwen3.8-27B-UD-IQ4_XS.gguf",
+   "threads": "server log (llama threadpool init, n_threads)",
+   "ubatch": "rule-on arm (-ub 256, -np 1); the rule-off arm ran -ub 512 and no -np (server log: n_slots = 4, kv_unified = true); each run holds its own command_line"
+  },
+  "fast_flag": "no",
+  "flash_attn": "on",
+  "gpu_expert_layers": 0,
+  "kv_type_k": "q8_0",
+  "kv_type_v": "q8_0",
+  "mtp": "no",
+  "n_cpu_moe": 999,
+  "n_layer": 65,
+  "ngl": "not recorded",
+  "threads": 16,
+  "ubatch": 256
+ },
+ "software": {
+  "llama_backend": "Vulkan",
+  "llama_build": 12651,
+  "llama_commit": "f5e6915c2",
+  "moe_cache_commit": "2e823d2",
+  "moe_cache_version": "0.3.9",
+  "plugin_file": "not recorded",
+  "plugin_sha256_prefix": "not recorded",
+  "python": "not recorded"
+ },
+ "summary": {
+  "rule-off": {
+   "cache_hit_pct": 73.2,
+   "cpu_avg_pct": 29.6,
+   "cpu_peak_pct": 51.1,
+   "decode_tps": 7.7,
+   "process_ram_peak_mib": 17780.5,
+   "prompt_tps": 264.06,
+   "runs": 2,
+   "system_ram_free_min_mib": 6499.5,
+   "ttft_s": 84.82,
+   "vram_used_peak_mib": 13597.0
+  },
+  "rule-on": {
+   "cache_hit_pct": 73.2,
+   "cpu_avg_pct": 34.95,
+   "cpu_peak_pct": 50.5,
+   "decode_tps": 9.51,
+   "process_ram_peak_mib": 17443.5,
+   "prompt_tps": 374.16,
+   "runs": 2,
+   "system_ram_free_min_mib": 6855.0,
+   "ttft_s": 54.6,
+   "vram_used_peak_mib": 13644.5
+  }
+ }
+}
