@@ -91,5 +91,7 @@ check(r.returncode == 2 and "REFUSED: no payload hash" in r.stdout,
       f"zeroed hash flag: exit 2 (exit {r.returncode}, out {r.stdout.strip()!r})")
 
 import shutil; shutil.rmtree(d, ignore_errors=True)
+# TEST-1296: the plugin runs the SAME record loop as this test's helper (mcpack::verify_records); a private copy in the plugin would let them drift
+check("mcpack::verify_records(" in open(os.path.join(ROOT, "src", "mc_state_pack.inl")).read(), "the plugin's MOE_CACHE_PACK_VERIFY branch calls mcpack::verify_records")
 print(f"pack_verify_joint_test: {len(fails)} failed")
 sys.exit(1 if fails else 0)

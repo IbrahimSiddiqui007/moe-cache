@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <string>
+#include <cstring>
 #include <functional>
 
 namespace mcpack {
@@ -78,6 +79,24 @@ inline bool payload_crc_ok(const std::function<size_t(uint64_t, void *, size_t)>
     if (crc != want) {
         why = "payload bytes differ from the hash stored in the pack";
         return false;
+    }
+    return true;
+}
+
+// The whole MOE_CACHE_PACK_VERIFY=1 record loop (CACHE-695, TEST-1296): the plugin (src/mc_state_pack.inl) and tests/pack_verify_joint.cpp both call this one function,
+// so the joint test cannot drift from the plugin. `rec` = the layer table, 512 bytes per record: layer u32 at 0, n_expert u32 at 4, payload CRC-32 at 12,
+// base u64 at 16, stride u64 at 24. Returns true when every layer's payload matches; false with the failing layer number in `layer_no` and `why`.
+inline bool verify_records(const std::function<size_t(uint64_t, void *, size_t)> & read, const unsigned char * rec, uint32_t n_rec,
+                           void * buf, size_t buf_size, uint32_t & layer_no, std::string & why) {
+    for (uint32_t r = 0; r < n_rec; r++) {
+        const unsigned char * b = rec + (size_t) r * 512;
+        uint32_t n_exp, want;
+        uint64_t base, stride;
+        memcpy(&layer_no, b, 4); memcpy(&n_exp, b + 4, 4); memcpy(&want, b + 12, 4);
+        memcpy(&base, b + 16, 8); memcpy(&stride, b + 24, 8);
+        if (!payload_crc_ok(read, base, stride * (uint64_t) n_exp, want, buf, buf_size, why)) {
+            return false;
+        }
     }
     return true;
 }

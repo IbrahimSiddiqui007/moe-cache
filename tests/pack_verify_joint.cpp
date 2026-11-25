@@ -1,6 +1,6 @@
-// Joint check (pack_test writer x plugin payload-CRC code): a pack written by `moe_cache.py pack --hash` passes the payload check of MOE_CACHE_PACK_VERIFY=1, a corrupted one is refused. NOTE: the record loop below is a COPY of the one in src/mc_state_pack.inl (shared: mcpack::payload_crc_ok, crc32_bytes, HASH_FLAG); the inl's earlier checks (sampled model CRC, sizes) are not run. Linux only (plain fseek).
+// Joint check (pack_test writer x plugin payload-CRC code): a pack written by `moe_cache.py pack --hash` passes the payload check of MOE_CACHE_PACK_VERIFY=1, a corrupted one is refused. NOTE: the record loop is mcpack::verify_records, the SAME function src/mc_state_pack.inl calls (TEST-1296); the inl's earlier checks (sampled model CRC, sizes) are not run. Linux only (plain fseek).
 //   g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/pack_verify_joint.cpp -o /tmp/pack_verify_joint && /tmp/pack_verify_joint MODEL.moepack
-// argv[1] = path to a .moepack. Replicates the verify loop of src/mc_state_pack.inl (pack_try_open, MOE_CACHE_PACK_VERIFY branch):
+// argv[1] = path to a .moepack. Runs the verify loop (mcpack::verify_records) of src/mc_state_pack.inl (pack_try_open, MOE_CACHE_PACK_VERIFY branch):
 // header u32 at 28 must hold mcpack::HASH_FLAG, then for every layer record the payload CRC-32 is re-read and compared with the stored one.
 // Prints "ok: N layers" (exit 0), "REFUSED: no payload hash" (exit 2) or "REFUSED: layer N: <why>" (exit 3).
 #include "mc_pack_check.h"
@@ -51,18 +51,12 @@ int main(int argc, char ** argv) {
     };
     const std::function<size_t(uint64_t, void *, size_t)> vfn = vread;
     std::vector<char> buf(4096 + 100);       // small and not a divisor of a layer payload: every layer needs several reads (multi-chunk CRC path)
-    for (uint32_t r = 0; r < n_rec; r++) {
-        const unsigned char * b = rec.data() + (size_t) r * 512;
-        uint32_t layer, n_exp, want;
-        uint64_t base, stride;
-        memcpy(&layer, b, 4); memcpy(&n_exp, b + 4, 4); memcpy(&want, b + 12, 4);
-        memcpy(&base, b + 16, 8); memcpy(&stride, b + 24, 8);
-        std::string why;
-        if (!mcpack::payload_crc_ok(vfn, base, stride * (uint64_t) n_exp, want, buf.data(), buf.size(), why)) {
-            fclose(f);
-            printf("REFUSED: layer %u: %s\n", layer, why.c_str());
-            return 3;
-        }
+    uint32_t layer = 0;
+    std::string why;
+    if (!mcpack::verify_records(vfn, rec.data(), n_rec, buf.data(), buf.size(), layer, why)) {
+        fclose(f);
+        printf("REFUSED: layer %u: %s\n", layer, why.c_str());
+        return 3;
     }
     fclose(f);
     printf("ok: %u layers\n", n_rec);

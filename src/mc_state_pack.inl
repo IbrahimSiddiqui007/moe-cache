@@ -168,18 +168,12 @@
                 return fread(b, 1, n, vf);
             };
             const std::function<size_t(uint64_t, void *, size_t)> vfn = vread;
-            for (uint32_t r = 0; r < n_rec; r++) {
-                uint32_t want;
-                memcpy(&want, rec.data() + (size_t) r * 512 + 12, 4);
-                const pack_layer_t & L = layers[r];
-                std::string why;
-                if (!mcpack::payload_crc_ok(vfn, L.base, L.stride * (uint64_t) L.n_expert, want, vbuf.data(), vbuf.size(), why)) {
-                    fclose(vf);
-                    uint32_t layer_no;
-                    memcpy(&layer_no, rec.data() + (size_t) r * 512, 4);
-                    refuse("layer " + std::to_string(layer_no) + ": " + why + " (the pack file is damaged; make it again with moe_cache.py pack --hash --force)");
-                    return;
-                }
+            uint32_t bad_layer = 0;
+            std::string why;
+            if (!mcpack::verify_records(vfn, (const unsigned char *) rec.data(), n_rec, vbuf.data(), vbuf.size(), bad_layer, why)) {
+                fclose(vf);
+                refuse("layer " + std::to_string(bad_layer) + ": " + why + " (the pack file is damaged; make it again with moe_cache.py pack --hash --force)");
+                return;
             }
             fclose(vf);
             fprintf(stderr, "moe-cache: pack %s: payload hash checked for %u layers: ok\n", path.c_str(), n_rec);
