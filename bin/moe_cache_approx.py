@@ -60,7 +60,7 @@ TIERS = {
 # default and nothing else; tests/token_modes_test.py proves the default enables exactly the "won" rows and that --exact enables none.
 TOKEN_MODES = [
     {"id": "kv8", "what": "q8_0 KV cache from 128k context on a GPU machine", "switch": "--fast=kv (default from 128k)", "status": "won",
-     "reason": "16 GB card at 256k (speed figure follows in v0.3.9.1); gate level kv passed (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
+     "reason": "speed at 256k on a 16 GB card: no run record (not measured at 128k or above); gate level kv passed at 4k (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
     {"id": "long-prompt", "what": "long-prompt mode from 32k context: -ub 4096 with the q8_0 KV cache, where the memory plan has room", "switch": "--long-prompt (default from 32k)", "status": "won",
      "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: speed figures follow in v0.3.9.1 (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
     {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",

@@ -4362,7 +4362,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
         kv128_default = True
-        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; approximate: its quality was "
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: half the KV memory; prompt speed at 128k and above is not measured; approximate: its quality was "
             "measured at 4k-60k context, not at 128k or above (4k gate run: KL 0.0079, same top token 96.7 %; Flash-Next IQ3_XXS at 32k / 60k: KL 0.009 / 0.011), "
             "docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     if (dense and ax.default_on("kv8") and not a.fast and not a.exact and not a.stock and not getattr(a, "approx_kv", False)
