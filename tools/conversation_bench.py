@@ -334,9 +334,10 @@ def delta(s0, s1, key):
 
 def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="conversation-bench", timeout=1800, stats=None, max_turns=None,
                      script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None, drive=None, answer_hint=False, min_median=MIN_MEDIAN_ANSWER,
-                     system=None, temperature=0.0, empty_marker="(no visible answer)", hint_text=None, keep_answers=True):
+                     system=None, temperature=0.0, empty_marker="(no visible answer)", hint_text=None, keep_answers=True, ignore_eos_from_depth=None):
     """Play the conversation; returns the run dict (turns, bands, stop reason). monitor_pid: llama-server's pid, sampled during the whole run for VRAM, process
-    RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py)."""
+    RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py). ignore_eos_from_depth: from this many tokens of depth on every
+    answer is forced to max_tokens with ignore_eos, so the deep bands have decode turns (TEST-1184)."""
     smp = None
     if monitor_pid:
         try:
@@ -379,6 +380,8 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             body["chat_template_kwargs"] = {"enable_thinking": False}
         if ignore_eos:
             body["ignore_eos"] = True
+        if ignore_eos_from_depth is not None and prev_total >= ignore_eos_from_depth:   # TEST-1184: deep turns get full-length answers even with the global ignore_eos off
+            body["ignore_eos"] = True
         s0 = stats.snapshot() if stats else None
         r = chat(url, body, api_key, timeout)
         if is_context_error(r["error"]) and turns:         # safety net: the size estimate was a little low; this is the end of the context, not a failure of the run (a refusal of the very first turn stays an error: the context is too small)
@@ -408,7 +411,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
                "evict_dec_s": (lambda d: round(d / 1e9, 4) if d is not None else None)(delta(s0, s1, "ns_evict_dec")),   # DECODE-123: seconds inside evict() during this turn's decode steps
                "evict_s": (lambda d: round(d / 1e9, 4) if d is not None else None)(delta(s0, s1, "ns_evict")),
                "answer_chars": len(r["text"]), "answer_sha256": hashlib.sha256(r["text"].encode("utf-8")).hexdigest()[:16],
-               "finish_reason": r.get("finish_reason"), "reasoning_chars": r.get("reasoning_chars", 0)}
+               "finish_reason": r.get("finish_reason"), "reasoning_chars": r.get("reasoning_chars", 0), "ignore_eos": bool(body.get("ignore_eos"))}
         if keep_answers:
             row["answer_head"] = r["text"][:400]          # the first 400 characters of the visible answer: what the 1-2 token answers actually say
         turns.append(row)
@@ -430,6 +433,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
     run["thinking"] = not no_think
     run["answer_hint"] = bool(answer_hint)
     run["answer_stats"] = answer_stats(turns, min_median)
+    run["answer_stats"]["warnings"] += empty_decode_band_warnings(run["bands"])    # TEST-1184: a band whose answers are all too short has no decode number
     for w in run["answer_stats"]["warnings"]:
         log("WARNING: " + w)
     if smp is not None:
@@ -550,6 +554,13 @@ def bands(turns, ctx):
         d["hit_rate_dec_pct"] = round(100 * hs / (hs + ms), 1) if h and hs + ms else None
         out.append(d)
     return out
+
+
+def empty_decode_band_warnings(bands_list):
+    """TEST-1184: one warning per depth band that has turns but no decode turns (none of its answers reached MIN_PREDICTED_N tokens, so its decode tok/s is empty)."""
+    return [f"band {b['band']}: {b['turns']} turns but none generated >= {MIN_PREDICTED_N} tokens, so its decode tok/s is empty (answers too short; "
+            f"use --ignore-eos-from-depth {b['lo']} to force full-length answers from that depth on, the same on every arm)"
+            for b in bands_list if b["turns"] > 0 and b["decode_turns"] == 0]
 
 
 def overall(run):
@@ -741,6 +752,8 @@ def _run_args(p):
     p.add_argument("--no-keep-answers", action="store_true", help="do not save the first 400 characters of every answer in the run")
     p.add_argument("--min-median-answer", type=int, default=MIN_MEDIAN_ANSWER, help="warn when the median answer is under this many tokens (default %d)" % MIN_MEDIAN_ANSWER)
     p.add_argument("--ignore-eos", action="store_true", help="make every answer exactly --max-tokens long (the model may ramble)")
+    p.add_argument("--ignore-eos-from-depth", type=int, default=None, help="depth in tokens from which every answer is forced to --max-tokens long with ignore_eos, "
+                   "so deep bands have decode turns; set it the same on every arm")
     p.add_argument("--stats-pid", type=int, help="llama-server's pid, to read the plugin's counters (needs --stats-log and MOE_CACHE_STATS_SIGNAL=1)")
     p.add_argument("--stats-log", help="the server's stderr log file")
     p.add_argument("--monitor-pid", type=int, help="llama-server's pid: VRAM, process RAM, free RAM and CPU peaks are sampled during the run (the bench-report sampler)")
@@ -790,7 +803,7 @@ def _one(a, url, arm, log=print):
         cmd = ""
     run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, no_think, a.ignore_eos, log, a.monitor_pid,
                            model_drive(cmd) if os.name == "nt" else None, hint, a.min_median_answer,
-                           NEUTRAL_SYSTEM if a.system == "neutral" else a.system, a.temperature, a.empty_marker, a.hint, not a.no_keep_answers)
+                           NEUTRAL_SYSTEM if a.system == "neutral" else a.system, a.temperature, a.empty_marker, a.hint, not a.no_keep_answers, a.ignore_eos_from_depth)
     try:
         import moe_cache_record as rr
         lines = []
