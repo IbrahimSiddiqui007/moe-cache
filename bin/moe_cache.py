@@ -574,6 +574,22 @@ def default_lib():
     return os.path.join(HERE, "build", "win", "ggml-moe-cache.dll") if WINDOWS else os.path.join(HERE, "build", "libggml-moe-cache.so")
 
 
+_BLOCK_CAP_CACHE = {}
+
+
+def lib_has_block_cap(lib):
+    """LAUNCHER-1303 (c): True when this plugin library reads MOE_CACHE_GPU_BLOCK_CAP_MIB (the name is a plain string inside the binary); False when it is missing,
+    unreadable or older. Read once per file."""
+    key = (lib, _file_id(lib))
+    if key not in _BLOCK_CAP_CACHE:
+        try:
+            with open(lib, "rb") as f:
+                _BLOCK_CAP_CACHE[key] = b"MOE_CACHE_GPU_BLOCK_CAP_MIB" in f.read()
+        except (OSError, TypeError):
+            _BLOCK_CAP_CACHE[key] = False
+    return _BLOCK_CAP_CACHE[key]
+
+
 def pick_lib(ls):
     """The plugin build in build*/ that matches the server's ggml, else the default build."""
     want = ls_api(ls)
@@ -2828,6 +2844,7 @@ class Machine:
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
     def planner_answer(self, model, ctx, ram_gib, vram_gib): return planner_answer(model, ctx, ram_gib, vram_gib)
     def lib_exists(self, lib): return os.path.isfile(lib)
+    def lib_has_block_cap(self, lib): return lib_has_block_cap(lib)
     def llama_candidates(self): return llama_candidates()
 
     def other_llama_servers(self): return other_llama_servers()
@@ -5070,8 +5087,24 @@ def gpu_chunks_off(env=()):
 
 def block_cut_on(a, env=()):
     """LAUNCHER-1303/1236: whether the planner may cut the long-prompt block's room below 32k (gguf_plan.tune cut_block). Off with --exact (R19: no new default)
-    and with MOE_CACHE_GPU_CHUNKS=0 (no split, so a cut block never fits)."""
-    return not getattr(a, "exact", False) and not gpu_chunks_off(env)
+    and with MOE_CACHE_GPU_CHUNKS=0 (no split, so a cut block never fits), and (LAUNCHER-1303 c) when the plugin library the plan will load does not read the cap
+    (a.plan_lib_nocap, set by block_cap_lib_stage): an older build would keep the full block in room the plan gave to layers."""
+    return not getattr(a, "exact", False) and not gpu_chunks_off(env) and not getattr(a, "plan_lib_nocap", False)
+
+
+def block_cap_lib_stage(a, lib, stock, machine):
+    """LAUNCHER-1303 (c): after plugin_lib_stage. A plugin library that has no block cap (older build, MOE_CACHE_LIB at an old file, unreadable or missing) cannot be told
+    the smaller room, so the plan keeps the full room (no cut) and says so once. Sets a.plan_lib_nocap."""
+    a.plan_lib_nocap = False
+    if stock or getattr(a, "exact", False) or gpu_chunks_off() or not lib:
+        return
+    try:
+        ok = machine.lib_has_block_cap(lib)
+    except AttributeError:
+        ok = True                 # a machine object without the check (older test doubles): nothing is assumed
+    if not ok:
+        a.plan_lib_nocap = True
+        say(f"moe-cache: block-room cut off: plugin {lib} has no block cap (an older build; the plan keeps the full long-prompt block room)")
 
 
 def block_cap_stage(env, tuned, stock, ncmoe_user, ncmoe=None, exact=False):
@@ -6218,6 +6251,7 @@ def _launch_plan(a, extra, argv, machine):
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
     except Exception:
+    block_cap_lib_stage(a, lib, stock, machine)
         ag = None
     if ag:
         extra += ["--device", ag[0]]

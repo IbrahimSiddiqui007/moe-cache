@@ -200,7 +200,7 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None)
     calls, _ = fake_machine(m, tmp)
     ls = os.path.join(tmp, "llama-server")
     lib = os.path.join(tmp, "libggml-moe-cache.so")
-    open(ls, "w").close(); open(lib, "w").close()
+    open(ls, "w").close(); open(lib, "w").write("MOE_CACHE_GPU_BLOCK_CAP_MIB")   # a current build: the plugin reads the block cap (LAUNCHER-1303 c)
     mc.pick_lib = lambda ls_: lib
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -237,6 +237,7 @@ class FakeMachine(mc.Machine):
     def list_devices(self, ls): return f"Available devices:\n  CUDA0: Fake GPU ({self.vram_mib} MiB, {self.free_mib} MiB free)\n"
     def nvidia_reports(self): return True
     def pick_lib(self, ls): return os.path.join(self.tmp, "libggml-moe-cache.so")
+    def lib_has_block_cap(self, lib): return True
     def ls_found_line(self, ls): return None
     def ls_looked(self): return "(fake)"
     def ls_api(self, ls): return "3"

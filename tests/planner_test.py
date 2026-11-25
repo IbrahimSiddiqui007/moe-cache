@@ -26,7 +26,7 @@ else:
     with open(_fake_ls, "w") as f:
         f.write("#!/bin/sh\ncase \"$*\" in\n *--list-devices*) echo 'Available devices:' ;;\n *--version*) echo 'version: 11966 (ff0d396)' ;;\n *) printf 'usage: llama-server\\n  --cache-ram N\\n' ;;\nesac\nexit 0\n")
     os.chmod(_fake_ls, os.stat(_fake_ls).st_mode | stat.S_IXUSR)
-    open(os.path.join(_TMP, "libggml-moe-cache.so"), "w").close()
+    open(os.path.join(_TMP, "libggml-moe-cache.so"), "w").write("MOE_CACHE_GPU_BLOCK_CAP_MIB")   # a current build (LAUNCHER-1303 c)
     os.environ["LLAMA_SERVER"] = _fake_ls
     os.environ["MOE_CACHE_LIB"] = os.path.join(_TMP, "libggml-moe-cache.so")
 fails = []

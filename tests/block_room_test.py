@@ -203,6 +203,22 @@ check(mc.block_cut_on(types.SimpleNamespace(exact=False)) and not mc.block_cut_o
 src = open(os.path.join(HERE, "src", "mc_backend.inl"), encoding="utf-8").read()
 check('getenv("MOE_CACHE_GPU_BLOCK_CAP_MIB")' in src and "gpu_free = mcshared::free_for_block(gpu_free, held, (size_t) block_cap_mib * 1048576);" in src
       and src.index("MOE_CACHE_GPU_BLOCK_CAP_MIB") < src.index("auto fits = [&](size_t need)"), "plugin: the block's free figure is capped before fits() decides whole / split")
+# LAUNCHER-1303 (c): the cut only when the plugin library that will load reads the cap
+import tempfile
+_d = tempfile.mkdtemp()
+_new, _old = os.path.join(_d, "new.so"), os.path.join(_d, "old.so")
+open(_new, "wb").write(b"\0abc MOE_CACHE_GPU_BLOCK_CAP_MIB \0")
+open(_old, "wb").write(b"\0abc moe-cache-api=3 \0")
+check(mc.lib_has_block_cap(_new) and not mc.lib_has_block_cap(_old) and not mc.lib_has_block_cap(os.path.join(_d, "none.so")), "lib_has_block_cap: string present / absent / file missing")
+class _M:
+    def lib_has_block_cap(self, lib): return mc.lib_has_block_cap(lib)
+for lib, want, tag in ((_new, True, "new plugin"), (_old, False, "old plugin"), (os.path.join(_d, "none.so"), False, "missing lib")):
+    _a = types.SimpleNamespace(exact=False)
+    mc.block_cap_lib_stage(_a, lib, False, _M())
+    check(mc.block_cut_on(_a) == want, f"{tag}: block_cut_on is {want}")
+_a = types.SimpleNamespace(exact=False)
+mc.block_cap_lib_stage(_a, _old, True, _M())
+check(mc.block_cut_on(_a), "stock path: the lib is not used, nothing is switched off")
 doc = open(os.path.join(HERE, "docs", "reference", "configuration.md"), encoding="utf-8").read()
 check("`MOE_CACHE_GPU_BLOCK_CAP_MIB`" in doc, "configuration.md documents MOE_CACHE_GPU_BLOCK_CAP_MIB")
 
