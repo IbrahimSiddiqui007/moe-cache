@@ -280,11 +280,63 @@ check("base_url: http://127.0.0.1:8099/v1" in snip and '"baseURL": "http://127.0
 import glob as _glob, re  # noqa: E402
 k = gguf_plan.model_key(model)
 check(k is not None and re.fullmatch(r"[A-Za-z0-9_.-]+-\d+x\d+", k or "") is not None, f"model_key: '{k}' has the form arch-LAYERSxEXPERTS")
-for sp in _glob.glob(os.path.join(HERE, "profiles", "*-*x*.usage")):
+# a synthetic .agent.usage file (none shipped yet): the same XUSE check and expert-count parse must hold for the name
+_agent_sp = os.path.join(_TMP, "profiles", "qwen35moe-41x256.agent.usage")
+os.makedirs(os.path.dirname(_agent_sp), exist_ok=True)
+open(_agent_sp, "wb").write(b"XUSE" + struct.pack("<ii", 41, 256) + b"\0" * (4 * 41 * 256))
+check("qwen35moe-41x256.agent.usage".rsplit("x", 1)[1].split(".")[0] == "256",
+      "agent profile name: the expert count parse survives the .agent.usage suffix")
+for sp in _glob.glob(os.path.join(HERE, "profiles", "*-*x*.usage")) + [_agent_sp]:
     d = open(sp, "rb").read()
     n_l, n_e = struct.unpack("<ii", d[4:12])
     check(d[:4] == b"XUSE" and len(d) == 12 + 4 * n_l * n_e and str(n_e) == sp.rsplit("x", 1)[1].split(".")[0],
           f"starter profile {os.path.basename(sp)}: XUSE, {n_l} x {n_e}, no fingerprint")
+
+# starter profiles, agent mode (CACHE-146): the merged <key>.agent.usage starter, and the export of the replay prompts.
+# A --agent run on a real GGUF is not needed here: merge_usage is pure and export-prompts only reads recordings.
+sys.path.insert(0, os.path.join(HERE, "tools"))
+import make_starter_profile as _msp  # noqa: E402  (import-safe: everything runs under __main__)
+check(not _glob.glob(os.path.join(HERE, "profiles", "*.agent.usage")), "agent starter profiles: none shipped yet (the glob loop above covers the naming via a synthetic file)")
+check(_msp.merge_usage([[4, 0, 0, 0], [0, 0, 2, 2]]) == [2, 0, 1, 1], "merge_usage: two sessions of equal sum -> each counts half, merged sum = mean of the sums")
+check(_msp.merge_usage([[9, 0, 0, 0], [0, 0, 1, 1]]) == [3, 0, 1, 1], "merge_usage: a 4.5x longer session does not dominate (each scales to weight 1 first)")
+check(_msp.merge_usage([[0, 0, 0, 0], [2, 2, 0, 0]]) == [2, 2, 0, 0], "merge_usage: a zero-sum session contributes nothing, does not divide by zero, and does not pull the merged weight down")
+check(_msp.merge_usage([[5, 0, 3, 0]]) == [5, 0, 3, 0], "merge_usage: a single profile comes back unchanged (sum scaled to itself)")
+_oc = os.path.join(_TMP, "opencode_stats.json"); _hm = os.path.join(_TMP, "hermes_stats.json")
+shutil.copyfile(os.path.join(HERE, "tests", "agent_sessions", "opencode_stats.json"), _oc)
+shutil.copyfile(os.path.join(HERE, "tests", "agent_sessions", "hermes_stats.json"), _hm)
+_pout = os.path.join(_TMP, "starter_prompts.json")
+_r = subprocess.run([sys.executable, os.path.join(HERE, "tools", "make_starter_profile.py"), "--export-prompts", _pout, _oc, _hm],
+                    capture_output=True, text=True, timeout=120)
+check(_r.returncode == 0 and os.path.isfile(_pout), f"export-prompts: runs clean on copies of the two recordings ({_r.stderr.strip()[-120:]})")
+_pl = json.load(open(_pout))
+_want = sum(1 for f in (_oc, _hm) for q in json.load(open(f)).get("requests", [])
+            if q.get("method") == "POST" and q.get("path") == "/v1/chat/completions")
+check(_pl.get("format") == "moe-cache starter prompts 1", "export-prompts: output names its format")
+check(len(_pl.get("requests", [])) == _want, f"export-prompts: {_want} POST /v1/chat/completions in -> {_want} replay bodies out")
+check(_pl.get("requests") and all(q.get("stream") is False for q in _pl["requests"]), "export-prompts: every replay body has stream forced false")
+
+# CACHE-146 wiring: profile_stage copies <key>.agent.usage with --agent when it is shipped, else <key>.usage; --no-starter turns both off
+_k = gguf_plan.model_key(model)
+_fake_here, _fake_cache = os.path.join(_TMP, "ps_here"), os.path.join(_TMP, "ps_cache")
+os.makedirs(os.path.join(_fake_here, "profiles"), exist_ok=True)
+_n_l, _n_e = (int(x) for x in _k.rsplit("-", 1)[1].split("x"))
+def _xuse(v): return b"XUSE" + struct.pack("<ii", _n_l, _n_e) + struct.pack("<i", v) * (_n_l * _n_e)
+open(os.path.join(_fake_here, "profiles", _k + ".usage"), "wb").write(_xuse(1))
+def _stage(agent, no_starter=False, with_agent_file=True):
+    af = os.path.join(_fake_here, "profiles", _k + ".agent.usage")
+    if with_agent_file: open(af, "wb").write(_xuse(2))
+    elif os.path.exists(af): os.remove(af)
+    shutil.rmtree(_fake_cache, True)
+    _old = (L.HERE, L.CACHE_DIR); L.HERE, L.CACHE_DIR = _fake_here, _fake_cache
+    try:
+        prof = L.profile_stage(types.SimpleNamespace(agent=agent, no_starter=no_starter), model, "m", False)
+    finally:
+        L.HERE, L.CACHE_DIR = _old
+    return open(prof, "rb").read() if os.path.isfile(prof) else None
+check(_stage(True) == _xuse(2), "profile_stage --agent: the shipped agent starter is copied")
+check(_stage(False) == _xuse(1), "profile_stage without --agent: the plain shipped starter is copied")
+check(_stage(True, with_agent_file=False) == _xuse(1), "profile_stage --agent with no agent starter shipped: falls back to the plain one")
+check(_stage(True, no_starter=True) is None, "profile_stage --no-starter: nothing is copied, agent or not")
 
 # MTP head (I43): header reader on synthetic GGUFs, the decision table, and the launcher's argparse defaults
 def _gguf(path, declared, tensors):

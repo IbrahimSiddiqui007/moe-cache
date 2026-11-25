@@ -2686,7 +2686,7 @@ SERVER_HELP = """\
 --cpu-gpu-split [auto|FRACTION]  dense model with FFN weights in RAM (see --no-ffn-ram), CUDA, patched llama.cpp with patch 0091: the GPU computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM); auto follows the measured wait, a number (0.05-0.6) fixes the GPU's share. Opt-in until the PC run decides. Loads the model without mmap and without repacking (needed to page-lock it); laptop RTX 4060 + Qwen3-14B: no clear gain when the machine is quiet, a gain only with a busy CPU core (speed figures follow in a later release)
 --no-commit-check  Windows: do not refuse a start whose estimated commit (GPU memory counts as commit on some drivers) leaves under max(6 GB, 12.5 % of the commit limit) free, and do not shrink the layout for it. The run-time guard stays (MOE_CACHE_COMMIT_GUARD=warn|off changes that)
 --no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
---no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
+--no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (the shipped agent one profiles/<arch>-<layers>x<experts>.agent.usage if shipped, else profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
            Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: faster decode, slower prompt processing (speed figures follow in a later release). On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
@@ -4178,10 +4178,15 @@ def profile_stage(a, model, pname, dry):
             from gguf_plan import model_key
             key = model_key(model)
             starter = os.path.join(HERE, "profiles", key + ".usage") if key else None
+            agent_starter = os.path.join(HERE, "profiles", key + ".agent.usage") if key else None
+            if getattr(a, "agent", False) and agent_starter and os.path.isfile(agent_starter):
+                starter, which = agent_starter, "the shipped agent one"       # merged per-agent sessions (CACHE-146)
+            else:
+                which = "the shipped one"
             if starter and os.path.isfile(starter):
                 os.makedirs(CACHE_DIR, exist_ok=True)
                 shutil.copyfile(starter, profile)
-                say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
+                say(f"moe-cache: no usage profile yet: starting from {which} for {key} (it learns from your prompts from now on)")
         except Exception as e:
             say(f"moe-cache: could not use a starter profile ({e})", err=True)
     return profile
