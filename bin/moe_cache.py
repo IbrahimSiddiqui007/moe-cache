@@ -5661,8 +5661,8 @@ def dense_spill_stage(a, cmd, ub, user_argv, ctx, ls, machine, dense):
     a.dense_spill_after_gib = after
     say(f"moe-cache: dense spill rule ({why}): the plan spills {fit['over_gib']:.1f} GiB at {ctx // 1024}k (estimate with 4 slots and -ub 512): "
         f"-np 1 (frees {fit.get('np1_saves_gib', 0.0):.1f} GiB of per-slot state, from the GGUF header) and -ub {DENSE_SPILL_UB} (frees about {DENSE_SPILL_UB_SAVES_GIB:.2f} GiB, measured once on the 27B) "
-        f"leave about {after:.1f} GiB spilled; GPU weights {fit['model_gib']:.1f} GiB = file minus token embedding {fit['host_side_gib']:.1f} GiB (kept on the CPU) "
-        f"minus MTP {fit['mtp_skipped_gib']:.1f} GiB (not loaded while MTP is off); rule tried on our test PC (27B UD-IQ4_XS, 128k); no speed figure is claimed")
+        f"leave about {after:.1f} GiB spilled (planner estimate, not measured on this run); GPU weights {fit['model_gib']:.1f} GiB = file minus token embedding {fit['host_side_gib']:.1f} GiB (kept on the CPU)"
+        + (f" minus MTP {fit['mtp_skipped_gib']:.1f} GiB (not loaded while MTP is off)" if fit['mtp_skipped_gib'] > 0 else "") + f"; rule tried on our test PC (27B UD-IQ4_XS, 128k); no speed figure is claimed")
     return new, str(DENSE_SPILL_UB)
 
 

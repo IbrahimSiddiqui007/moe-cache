@@ -236,7 +236,7 @@ with tempfile.TemporaryDirectory() as tmp:
         o128 = out(d128)
         import re as _re
         m = _re.search(r"spills ([0-9.]+) GiB at 128k \(estimate with 4 slots and -ub 512\).*?frees ([0-9.]+) GiB of per-slot state.*?leave about ([0-9.]+) GiB spilled; GPU weights ([0-9.]+) GiB = file minus token embedding ([0-9.]+) GiB", o128)
-        check(bool(m) and "minus MTP" in o128 and "from the GGUF header" in o128, "spill rule line: before / after figures and the weights' source (token embedding, MTP) are printed")
+        check(bool(m) and "minus MTP" not in o128 and "planner estimate" in o128 and "from the GGUF header" in o128, "spill rule line: before / after figures and the weights' source (token embedding, MTP) are printed")
         if m:
             before, np1, after_, = float(m.group(1)), float(m.group(2)), float(m.group(3))
             check(after_ <= before and abs(max(before - np1 - mc.DENSE_SPILL_UB_SAVES_GIB, 0.0) - after_) < 0.12, f"spill rule line: 'after' ({after_}) = before ({before}) - np1 saving ({np1}) - ub saving ({mc.DENSE_SPILL_UB_SAVES_GIB}), floored at 0, within print rounding")
