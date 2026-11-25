@@ -4389,7 +4389,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
         kv128_default = True
-        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; approximate: its quality was "
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: half the KV memory; prompt speed at 128k and above is not measured; approximate: its quality was "
             "measured at 4k-60k context, not at 128k or above (4k gate run: KL 0.0079, same top token 96.7 %; Flash-Next IQ3_XXS at 32k / 60k: KL 0.009 / 0.011), "
             "docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     if (dense and ax.default_on("kv8") and not a.fast and not a.exact and not a.stock and not getattr(a, "approx_kv", False)
@@ -5995,7 +5995,7 @@ def _launch_plan(a, extra, argv, machine):
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
     # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock; not measured at 128k+,
-    # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (prompts about 2x). Not with --stock (that compares
+    # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (an unrecorded run said prompts about 2x: no record, so not quoted to users). Not with --stock (that compares
     # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
     # -ctk/-ctv after --) keeps llama.cpp's f16 KV
     kv_q8 = kv_stage(a, extra, ctx, ls, listing, machine, stock, dense)

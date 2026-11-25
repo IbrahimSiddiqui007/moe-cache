@@ -97,7 +97,7 @@ The `--fast` levels (all optional; each one changes the output a little on purpo
 
 | Flag | What it does | Measured (from `--help` and RESULTS) |
 |---|---|---|
-| (none) | the default: long-prompt mode from 32k context when the card has room, q8_0 KV cache from 128k, MTP in agent mode where the (MoE) model has it (dense models: only with `--mtp`); not byte-identical to plain llama.cpp | the default (the control page's **Default** mode passes no flag); `--exact` gives plain llama.cpp's tokens (f16 KV, no long-prompt mode, no MTP) |
+| (none) | the default: long-prompt mode from 32k context when the card has room and the model is bigger than RAM (a model that fits in RAM is left off), q8_0 KV cache from 128k, MTP in agent mode where the (MoE) model has it (dense models: only with `--mtp`); not byte-identical to plain llama.cpp | the default (the control page's **Default** mode passes no flag); `--exact` gives plain llama.cpp's tokens (f16 KV, no long-prompt mode, no MTP) |
 | `--fast=kv` | only the q8_0 KV cache (half the KV memory), every expert is computed | KL 0.005-0.012 against stock |
 | `--fast` | also skips a low-ranked expert that is not in RAM instead of reading it from the SSD | meant for models much bigger than RAM; speed figures follow in a later release; about 1 top token in 40-50 differs from stock |
 | `--fast=fewer` | `--fast`, and the 2 lowest-ranked experts of every token are never computed on the CPU-held layers | opt-in, new |
