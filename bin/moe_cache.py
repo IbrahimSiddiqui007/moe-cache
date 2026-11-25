@@ -4179,7 +4179,11 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine, gpu=None, mm_bytes=0)
         ncmoe = min(int(t["n_cpu_moe"]), int(lay_n))
         if ncmoe > 0:
             # LAUNCHER-1236: the plugin keeps room free for its long-prompt GPU block, which moves expert layers to the CPU. Same inputs, plugin on, f16 KV, usual micro-batch:
-            tp = tune(model, ctx, free=inp["free"], want_cache=False, plugin=True, fit_params=plan_fit_params(ls), **inp["kw"],
+            # LAUNCHER-1303 critic (pick-3): the same block-room cut the plan will use: none under --exact, MOE_CACHE_GPU_CHUNKS=0 or a plugin build without the block cap
+            # (this check runs before block_cap_lib_stage, so it reads the library itself)
+            has_cap = getattr(machine, "lib_has_block_cap", None)
+            cut = block_cut_on(a) and (has_cap(lib) if has_cap else True)
+            tp = tune(model, ctx, free=inp["free"], want_cache=False, plugin=True, fit_params=plan_fit_params(ls), cut_block=cut, **inp["kw"],
                       measured=measured_loads(a, ls, model, ctx, False, machine, True, False, None, inp["kw"]["free_source"]))
             ncmoe_p = min(int(tp["n_cpu_moe"]), int(lay_n))
     except Exception as e:
