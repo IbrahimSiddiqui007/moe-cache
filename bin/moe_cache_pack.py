@@ -1,4 +1,4 @@
-"""moe_cache.py pack MODEL.gguf [--out PATH] [--verify] [--force]
+"""moe_cache.py pack MODEL.gguf [--out PATH] [--verify] [--force] [--hash]
 
 Writes MODEL.moepack next to the model: for every (layer, expert) ONE contiguous, 4 KiB-aligned block that holds that expert's gate, up and down slices
 (every 3-D `blk.N.*` tensor of the layer, in GGUF order). The plugin then reads a missing expert with one large unbuffered read instead of three
@@ -12,11 +12,11 @@ File layout (little endian; format version 1; src/mc_state_pack.inl reads it):
   16    u32      number of model files (shards)
   20    u32      header_bytes (header + layer records, rounded up to 4096; the first block starts at or after it)
   24    u32      CRC-32 of the sampled source bytes (see below)
-  28    u32      reserved
+  28    u32      hash flag: 1 = each layer record holds the CRC-32 of that layer's payload bytes (--hash, opt-in; the plugin checks it only when MOE_CACHE_PACK_VERIFY=1), 0 = no payload hash
   32    u64[8]   size of each model file (0 for unused)
   96    char[160] base name of the first model file (informational)
   256   layer records, 512 bytes each, sorted by layer:
-          u32 layer, u32 n_expert, u32 n_tensors (1..4), u32 reserved, u64 base (4096-aligned), u64 stride (4096-aligned, one block),
+          u32 layer, u32 n_expert, u32 n_tensors (1..4), u32 layer CRC-32 of the payload bytes [base, base + stride*n_expert) (0 without --hash), u64 base (4096-aligned), u64 stride (4096-aligned, one block),
           4 x { char name[96]; u64 nb2 (bytes of one expert slice); u64 in_off (offset of the slice inside the block); u64 src_off (offset in its model file) }
   block e of a layer starts at base + e * stride; the slice of tensor k is at block + in_off[k], nb2[k] bytes, the same bytes as the GGUF's expert e of that tensor.
 Source check: the plugin compares every tensor's name, file offset and size with the model it loaded, the file sizes, and a CRC-32 over 16 samples of 4096
@@ -37,6 +37,8 @@ REC = 512
 MAX_T = 4
 NAME_LEN = 96
 SAMPLES = 16
+HASH_FLAG = 1
+CRC_CHUNK = 64 << 20
 
 # type id -> (values per block, bytes per block): ggml 0.25 - 0.28, checked against ggml-common.h static asserts
 TYPES = {0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20), 6: (32, 22), 7: (32, 24), 8: (32, 34), 9: (32, 36), 10: (256, 84), 11: (256, 110), 12: (256, 144),
@@ -157,17 +159,45 @@ def layout(layers, header_bytes):
     return out, pos
 
 
-def build_header(files, layers, lay, total, crc, model):
+def strip_hash(header_bytes):
+    """copy of a pack header with the hash fields (offset 28 and each layer record's reserved u32) zeroed, so hashed and unhashed headers compare equal"""
+    h = bytearray(header_bytes)
+    struct.pack_into("<I", h, 28, 0)
+    for r in range(struct.unpack_from("<I", h, 12)[0]):
+        struct.pack_into("<I", h, 256 + r * REC + 12, 0)
+    return bytes(h)
+
+
+def layer_payload_crcs(path, layers, lay):
+    """-> {layer: CRC-32} over each layer's payload bytes [base, base + stride*n_expert) of a finished pack file, read in chunks of at most 64 MiB"""
+    out = {}
+    with open(path, "rb") as f:
+        for l in sorted(layers):
+            base, stride, _ = lay[l]
+            left = stride * layers[l]["n_expert"]
+            f.seek(base)
+            crc = 0
+            while left:
+                buf = f.read(min(left, CRC_CHUNK))
+                if not buf:
+                    raise SystemExit(f"moe-cache pack: {path}: short read while hashing layer {l}")
+                crc = zlib.crc32(buf, crc)
+                left -= len(buf)
+            out[l] = crc & 0xffffffff
+    return out
+
+
+def build_header(files, layers, lay, total, crc, model, layer_crcs=None):
     hb = round_up(256 + REC * len(layers))
     h = bytearray(hb)
     sizes = [os.path.getsize(p) for p in files] + [0] * (8 - len(files))
-    struct.pack_into("<8sIIIIII8Q", h, 0, MAGIC, VERSION, len(layers), len(files), hb, crc, 0, *sizes)
+    struct.pack_into("<8sIIIIII8Q", h, 0, MAGIC, VERSION, len(layers), len(files), hb, crc, HASH_FLAG if layer_crcs is not None else 0, *sizes)
     h[96:96 + 160] = os.path.basename(model).encode()[:159].ljust(160, b"\0")
     for i, l in enumerate(sorted(layers)):
         L = layers[l]
         base, stride, offs = lay[l]
         o = 256 + i * REC
-        struct.pack_into("<IIIIQQ", h, o, l, L["n_expert"], len(L["tensors"]), 0, base, stride)
+        struct.pack_into("<IIIIQQ", h, o, l, L["n_expert"], len(L["tensors"]), layer_crcs[l] if layer_crcs is not None else 0, base, stride)
         for k, t in enumerate(L["tensors"]):
             struct.pack_into("<96sQQQ", h, o + 32 + k * 120, t[0].encode().ljust(NAME_LEN, b"\0"), t[3], offs[k], t[2])
     return bytes(h)
@@ -183,6 +213,7 @@ def pack_main(argv):
     ap.add_argument("--out", help="pack file (default: next to the model, MODEL.moepack)")
     ap.add_argument("--verify", action="store_true", help="do not write; compare an existing pack with the model byte by byte")
     ap.add_argument("--force", action="store_true", help="rewrite a finished pack, ignore a partial one")
+    ap.add_argument("--hash", action="store_true", help="also store one CRC-32 per layer over that layer's payload bytes (offset 28 flag = 1; the plugin checks it only when MOE_CACHE_PACK_VERIFY=1)")
     ap.add_argument("--chunk-mib", type=int, default=256, help="read this much of one tensor at a time (default 256)")
     a = ap.parse_args(argv)
     model = a.model
@@ -200,7 +231,10 @@ def pack_main(argv):
         return verify(files, layers, lay, header, out)
     if os.path.exists(out) and not a.force:
         with open(out, "rb") as f:
-            same = f.read(len(header)) == header and os.path.getsize(out) == total
+            got = f.read(len(header))
+            same = strip_hash(got) == strip_hash(header) and os.path.getsize(out) == total
+        if same and a.hash and struct.unpack_from("<I", got, 28)[0] != HASH_FLAG:
+            raise SystemExit(f"moe-cache pack: {out} is complete but has no payload hash; run again with --hash --force to rewrite it with one")
         if same:
             print(f"moe-cache pack: {out} is already complete for this model ({gib:.1f} GiB); --verify checks every byte, --force rewrites")
             return 0
@@ -256,6 +290,8 @@ def pack_main(argv):
                 frac = (n_done + 1) / len(layers)
                 print(f"moe-cache pack: layer {l} done ({100 * frac:.0f} %), {written / 2 ** 30:.1f} GiB written, {written / max(el, 1e-9) / 1e6:.0f} MB/s, "
                       f"about {el * (1 - frac) / max(frac, 1e-9):.0f} s left", flush=True)
+            if a.hash:                        # over all layers, resume or not: the partial file now holds every layer's payload
+                header = build_header(files, layers, lay, total, crc, model, layer_crcs=layer_payload_crcs(part, layers, lay))
             dst.seek(0)
             dst.write(header)
             dst.truncate(total)
@@ -280,8 +316,15 @@ def verify(files, layers, lay, header, out):
     srcs = [open(p, "rb") for p in files]
     bad = 0
     with open(out, "rb") as f:
-        if f.read(len(header)) != header:
+        got = f.read(len(header))
+        if strip_hash(got) != strip_hash(header):
             raise SystemExit(f"{out}: header differs from the one this model gives")
+        flag = struct.unpack_from("<I", got, 28)[0]
+        stored = {}
+        if flag == HASH_FLAG:
+            for r in range(struct.unpack_from("<I", got, 12)[0]):
+                o = 256 + r * REC
+                stored[struct.unpack_from("<I", got, o)[0]] = struct.unpack_from("<I", got, o + 12)[0]
         for l in sorted(layers):
             L = layers[l]
             base, stride, offs = lay[l]
@@ -297,6 +340,14 @@ def verify(files, layers, lay, header, out):
             print(f"moe-cache pack: verified layer {l}", flush=True)
     if bad:
         raise SystemExit(f"moe-cache pack: {bad} slices differ")
+    if flag == HASH_FLAG:
+        crcs = layer_payload_crcs(out, layers, lay)
+        for l in sorted(layers):
+            if crcs[l] != stored.get(l):
+                raise SystemExit(f"moe-cache pack: layer {l}: payload hash differs (stored {stored.get(l)}, file has {crcs[l]})")
+        print("moe-cache pack: every layer's payload hash matches")
+    else:
+        print("moe-cache pack: no payload hash stored")
     print("moe-cache pack: every slice equals the model's bytes")
     return 0
 
