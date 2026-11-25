@@ -355,8 +355,9 @@ check(last9["decode_turns"] == 0 and any("--ignore-eos-from-depth" in w for w in
       f"TEST-1184: the deepest band's answers are 4 tokens, its decode tok/s is empty and a warning names --ignore-eos-from-depth (band {last9['band']}, {last9['turns']} turns)")
 S10, us10 = shorty("S10", 8192)
 r10 = cb.run_conversation(us10, "stock", 8192, 32, 42, "", "m", 30, None, None, None, False, False, quiet, None, None, True, 24, None, 0.0, "(no visible answer)", None, True, 2048)
-deep10 = [t for t in r10["turns"] if t["depth_before"] >= 2000]
-shallow10 = [t for t in r10["turns"] if t["depth_before"] < 2000]
+prev10 = [0] + [t["depth_after"] for t in r10["turns"]][:-1]      # the option compares the depth the conversation had BEFORE the new user message
+deep10 = [t for t, pv in zip(r10["turns"], prev10) if pv >= 2048]
+shallow10 = [t for t, pv in zip(r10["turns"], prev10) if pv < 2048]
 check(deep10 and all(t["ignore_eos"] for t in deep10) and shallow10 and all(not t["ignore_eos"] for t in shallow10),
       f"ignore_eos_from_depth: every turn from the depth on asks ignore_eos, every turn below does not ({sum(t['ignore_eos'] for t in r10['turns'])} of {len(r10['turns'])} turns deep)")
 check(all(b["decode_turns"] > 0 for b in r10["bands"] if b["turns"]) and not any("none generated" in w for w in r10["answer_stats"]["warnings"]),
