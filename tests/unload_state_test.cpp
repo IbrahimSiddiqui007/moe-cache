@@ -25,7 +25,7 @@ static ggml_tensor make_tensor(const char * name, int n_exp, char * data) {
 }
 
 int main() {
-    const std::string path = "/tmp/claude-1000/c694/unload_state_model.bin";
+    const std::string path = std::string("/tmp/unload_state_model.") + std::to_string((long) getpid()) + ".bin";
     std::vector<char> file(NB2 * 64, 0);
     for (size_t i = 0; i < file.size(); i++) { file[i] = (char) (i * 7 + 3); }
     { FILE * f = fopen(path.c_str(), "wb"); if (!f) { fprintf(stderr, "cannot write %s\n", path.c_str()); return 2; } fwrite(file.data(), 1, file.size(), f); fclose(f); }
@@ -67,7 +67,7 @@ int main() {
     // part 2: nothing of A is left, so the next model starts from a clean state
     CHECK(s.max_budget == 0);
     CHECK(!s.preload_done);
-    CHECK(s.session.empty());
+    CHECK(s.session.size() == 2);                    // kept: finish() still saves the picks at exit
 
     // reload: model B (a different size) registers afresh and the tuner sees B's size, not A's
     s.file_tensors["blk.0.ffn_up_exps.weight"] = { NB2 * 32, NB2 * 24 };
@@ -82,8 +82,9 @@ int main() {
     s.forget_range(bufA.data(), 1);                  // a range that holds none of B's tensors: B is still registered
     CHECK(s.max_budget == 12345 && s.preload_done);
 
-    if (fails) { fprintf(stderr, "%d checks failed\n", fails); return 1; }
+    if (fails) { fprintf(stderr, "%d checks failed\n", fails); remove(path.c_str()); return 1; }
     printf("unload-state checks passed\n");
     fflush(stdout);
+    remove(path.c_str());
     _exit(0);                                       // skip the state's destructor (threads, files): the checks are done
 }
