@@ -595,6 +595,19 @@ _trap2.shutdown()
 ui.PEEK_PORTS = [port, closed]
 sv = json.loads(req("/api/servers")[1])["servers"]
 check(len(sv) == 1 and sv[0]["port"] == port and sv[0]["started_here"], f"servers: the one this page started is marked, closed ports left out ({sv})")
+# LAUNCHER-1217: the Agents card lists every server the launcher tracks (mock runners), and /api/status carries the list next to the old main-server fields
+class _R:
+    def __init__(self, state, model, port=None):
+        self.state, self.settings = state, ({"model": model, "port": port} if model else {})
+_rows = ui.server_rows(_R("ready", "/m/Main-Q4_K_M.gguf", 8080), {8082: _R("starting", "C:\\m\\Drafter-Q8.gguf"), 8081: _R("exited", "/m/Second.gguf")}, 8090)
+check([(r["role"], r["model"], r["port"], r["status"]) for r in _rows] == [("main", "Main-Q4_K_M.gguf", 8080, "running"), ("second server", "Second.gguf", 8081, "stopped"),
+      ("third server", "Drafter-Q8.gguf", 8082, "starting"), ("on-demand listener", "", 8090, "running")], f"LAUNCHER-1217: server_rows lists main, extras (sorted by port, Windows path ok) and the on-demand listener ({_rows})")
+check(_rows[0]["url"] == "http://127.0.0.1:8080", "LAUNCHER-1217: each row carries its base URL")
+check(ui.server_rows(_R("idle", None), {}, None) == [] and [r["port"] for r in ui.server_rows(_R("waiting", "/m/A.gguf", 8085), {}, 8085)] == [8085],
+      "LAUNCHER-1217: a fresh launcher lists nothing; the on-demand listener is not listed twice when it is the main server")
+_stj = json.loads(req("/api/status")[1])
+check(isinstance(_stj.get("servers"), list) and "state" in _stj and "url" in _stj, "LAUNCHER-1217: /api/status keeps the main-server fields and adds servers")
+check("function agentServers" in _html and "el.innerHTML = agentServers(st) + " in _html and "el.innerHTML = agentServers(st) + `<div class=\"small\">Start a model" in _html, "LAUNCHER-1217: the page paints the servers list in the Agents card, running or not")
 st, body = req("/api/sessions")
 ss = json.loads(body)
 byname = {f["name"]: f for f in ss["files"]}

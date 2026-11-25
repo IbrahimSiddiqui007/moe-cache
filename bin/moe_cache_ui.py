@@ -436,6 +436,27 @@ def peek_server(port, api_key=None, trusted=False):
     return out
 
 
+def server_rows(main, extra, od_port=None):
+    """LAUNCHER-1217: every server this launcher tracks, one row each, for the Agents card: [{role, model, port, url, state, status}]. `main` = the main Runner,
+    `extra` = {port: Runner} (second and third servers, group starts), `od_port` = the on-demand listener's port when it is not the main server already.
+    status: running (ready / waiting for the first request) | starting | stopped (anything else: idle, stopping, exited, failed). The main server is listed once
+    it has had a model; the extra ones until the launcher drops them."""
+    def row(role, r, port):
+        st = r.state
+        mf = os.path.basename(str((r.settings or {}).get("model") or "").replace("\\", "/"))
+        return {"role": role, "model": mf, "port": port, "url": f"http://127.0.0.1:{port}", "state": st,
+                "status": "running" if st in ("ready", "waiting") else "starting" if st == "starting" else "stopped"}
+    rows = []
+    if main.state != "idle" or (main.settings or {}).get("model"):
+        rows.append(row("main", main, int((main.settings or {}).get("port") or 8080)))
+    ords = ("second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth")
+    for i, port in enumerate(sorted(extra)):
+        rows.append(row((ords[i] if i < len(ords) else f"server {i + 2}") + (" server" if i < len(ords) else ""), extra[port], int(port)))
+    if od_port and od_port not in {r["port"] for r in rows}:
+        rows.append({"role": "on-demand listener", "model": "", "port": od_port, "url": f"http://127.0.0.1:{od_port}", "state": "waiting", "status": "running"})
+    return rows
+
+
 def peek_servers(ports=None, own=None, extra=()):
     """peek_server() for the usual ports at once (closed ports answer at once); `own` = the port of the server this page started, `extra` = the ports of the
     further servers it started (GUI-013)."""
@@ -2592,7 +2613,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, agents_state(self.runner.status()["url"] if self.runner.state in ("ready", "waiting") else None))
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
-                return self.send(200, self.runner.status())
+                return self.send(200, dict(self.runner.status(), servers=server_rows(self.runner, self.extra, on_demand_port())))     # LAUNCHER-1217: "servers" is new; the main server's own fields stay
             if u.path == "/api/results":                    # the Results view: which records exist, and one of them
                 if q.get("id"):
                     return self.send(200, {"id": q["id"], "record": read_result(q["id"])})

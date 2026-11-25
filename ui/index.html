@@ -1355,11 +1355,17 @@ async function loadAgentsCfg() {                // what OpenCode's and Hermes' c
     if (JSON.stringify(m) != JSON.stringify(S.agentsCfg)) { S.agentsCfg = m; paintAgents(S.status); }
   } catch (e) { /* the card keeps what it had */ }
 }
+function agentServers(st) {                     // LAUNCHER-1217: every server the launcher tracks, one row each (name/role, model file, base URL, status)
+  const rows = st.servers || [];
+  if (!rows.length) return "";
+  return `<div class="small">Servers started by this launcher</div>` + rows.map(r => `<div class="line"><span class="dot ${r.status == "running" ? "ok" : ""}"></span><span class="n"><b>${esc(r.role)}</b> ${esc(r.model || "(model not loaded yet)")}
+    <br><span class="small"><code>${esc(r.url)}/v1</code> · port ${esc(r.port)} · ${esc(r.status)}</span></span></div>`).join("");
+}
 function paintAgents(st) {
   const el = $("agentsmain");
-  const key = [st.state, st.url, st.agent, JSON.stringify(st.api_key || {}), JSON.stringify(S.connected), JSON.stringify(S.agentsCfg)].join("|");
+  const key = [JSON.stringify(st.servers || []), st.state, st.url, st.agent, JSON.stringify(st.api_key || {}), JSON.stringify(S.connected), JSON.stringify(S.agentsCfg)].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
-  if (st.state != "ready" && st.state != "waiting") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on (Settings): this card then shows what to give OpenCode, Hermes or any OpenAI-compatible client, and connects them.</div>`; return; }
+  if (st.state != "ready" && st.state != "waiting") { el.innerHTML = agentServers(st) + `<div class="small">Start a model with <b>Agent mode</b> on (Settings): this card then shows what to give OpenCode, Hermes or any OpenAI-compatible client, and connects them.</div>`; return; }
   const k = st.api_key || {};
   const line = (a, label, hint) => { const cfg = S.agentsCfg[a] || {}, c = cfg.connected || S.connected[a];
     const why = cfg.connected ? "connected: its config file points at this server" + (S.connected[a] ? " (connected from this page at " + S.connected[a] + ")" : "")
@@ -1367,7 +1373,7 @@ function paintAgents(st) {
       : cfg.found ? "set up for another server (" + esc(cfg.url || "") + "): Connect points it at this one" : hint;
     return `<div class="line"><span class="dot ${c ? "ok" : ""}"></span><span class="n"><b>${label}</b><br><span class="small">${why}</span></span>
       <button class="ghost small" data-a="${a}">Preview</button><button data-a="${a}" data-w="1" class="${c ? "" : "primary"}">${c ? "Again" : "Connect"}</button></div>`; };
-  el.innerHTML = `<div class="kv"><span>Base URL</span><span><code>${esc(st.url)}/v1</code></span><span>Model</span><span><code>${esc(shortName(st.model))}</code></span>
+  el.innerHTML = agentServers(st) + `<div class="kv"><span>Base URL</span><span><code>${esc(st.url)}/v1</code></span><span>Model</span><span><code>${esc(shortName(st.model))}</code></span>
     <span>Context</span><span>${esc(st.ctx || (st.agent ? 65536 : 8192))}</span>${k.in_use ? `<span>API key</span><span><code>••••${esc(k.ends)}</code> <a href="#" id="copykey2">Copy</a></span>` : ""}</div>` +
     (st.agent ? "" : `<div class="hint">Agent mode is off for this server: tool calls may not work, and Hermes needs a 64k context. Stop, tick Agent mode in Settings and start again.</div>`) +
     `<div style="margin-top:6px">${line("opencode", "OpenCode", "merges a \"moe-cache\" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)" + (k.in_use ? "; includes the API key" : ""))}

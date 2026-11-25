@@ -18,6 +18,7 @@
   moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
   moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
+  moe_cache.py room    [--reset]                                           show (or forget) what was learned about this GPU's real memory room (MOE_CACHE_LEARN_ROOM=0 turns it off)
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
   moe_cache.py --version                                                   print the moe-cache version
 
@@ -2557,6 +2558,8 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
+            if b"buffer size" in line or b"offloaded " in line:           # LAUNCHER-1131: the load's own buffer lines (a measurement of this plan)
+                seen.setdefault("buf", []).append(line.decode(errors="replace").strip()) if len(seen.get("buf", ())) < 400 else None
             cpn = None if EXPECT_CPU_WORK[0] else cpu_placement_note(line, cpu_run=("--device none" in " ".join(cmd) or " -ngl 0 " in " ".join(cmd) + " "))
             if cpn and cpn[0] not in seen.setdefault("cpuplace", set()):
                 seen["cpuplace"].add(cpn[0])
@@ -2574,6 +2577,21 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     seen["disabled"] = line.decode(errors="replace").strip()
     pump_t = threading.Thread(target=pump, daemon=True)
     pump_t.start()
+    if WINDOWS and REAL_ROOM.get("device") and "--device none" not in " ".join(cmd):      # LAUNCHER-1131: paging detector, learned ceiling, load measurement (planner/real_room.py)
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            import real_room as rr
+            dev, done = REAL_ROOM["device"], []
+            def first_reading(ded, sha):
+                if not done:                  # the first reading after the load: store the buffers and the counters as this plan's measurement
+                    done.append(1)
+                    b = rr.parse_load_buffers(seen.get("buf", []))
+                    if b:
+                        rr.measure_save(CACHE_DIR, cmd, dev, b, ded, sha)
+            threading.Thread(target=rr.watch_room, args=(p.pid, dev, CACHE_DIR, lambda m: say(m, err=True), lambda: p.poll() is None, lambda: seen["ready"]),
+                             kwargs={"room_mib": REAL_ROOM.get("room_mib"), "others_mib": REAL_ROOM.get("others_mib"), "on_reading": first_reading}, daemon=True).start()
+        except Exception:
+            pass
     if port:
         def check():       # seen["ready"] for every engine (LAUNCHER-1045 needs it for stock runs too); the plugin warnings only when the plugin was meant to load
             while True:    # no cap: a model that loads in 20 minutes is ready then, and a crash hours later must not look like "never came up"
@@ -3695,6 +3713,30 @@ def win_gpu_process_text():
     return text
 
 
+REAL_ROOM = {}        # LAUNCHER-1131: {"device": GPU name, "room_mib": pre-load room} while the planner plans against the room the card really gives; the watcher of _run_child learns for it
+
+
+DENSE_COMPUTE_BASE_GIB, DENSE_COMPUTE_PER_512_GIB = 0.20, 0.15      # the table's compute buffer of a dense plan (planner/commit_guard.py): 0.20 GiB at -ub 512, +0.15 GiB per further 512
+
+
+def measured_need(model, ctx, rung, ub=512):
+    """LAUNCHER-1131 (every load is a measurement): GiB an earlier load of this model at this context with this KV type needed on the GPU (llama-server's own buffer lines), or None. Only on the
+    Windows AMD / Intel path that knows the GPU (REAL_ROOM); never raises."""
+    try:
+        dev = REAL_ROOM.get("device")
+        if not dev:
+            return None
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from real_room import measure_load, measured_need_gib, enabled
+        if not enabled():
+            return None
+        m = measure_load(CACHE_DIR, model, ctx, rung[0], rung[1], dev, exe=REAL_ROOM.get("ls"))
+        ub = int(ub or 512)           # critic F1: the stored compute buffer belongs to the -ub it was measured with; another -ub takes the table's figure for THIS -ub
+        return measured_need_gib(m, ub, DENSE_COMPUTE_BASE_GIB + DENSE_COMPUTE_PER_512_GIB * max(0, ub - 512) / 512)[0] if m else None
+    except Exception:
+        return None
+
+
 def real_room_stage(a, g, machine):
     """LAUNCHER-1133 (Windows AMD / Intel, --vram not given; build's LAUNCHER-1131 WIP, pre-load half only): llama-server's free figure is the Vulkan budget; with the desktop on the card the
     process keeps only its dedicated share and the rest is paged silently (PC 2026-11-11, RX 9070 XT: 15.4 GiB "free", 13.1-13.5 GiB kept; q8_0 KV at 64k ran 18.5 tok/s against 27.8 with q4_0).
@@ -3703,21 +3745,55 @@ def real_room_stage(a, g, machine):
     try:
         planner_path()
         from gguf_plan import others_dedicated_mib, real_room_mib, ROOM_RESERVE_MIB
+        from real_room import _age_text
+        from real_room import room_ceiling_info, room_forget, enabled, NEAR_ROOM_MIB, OTHERS_MOVED_MIB, others_moved, const_label
         total, driver = float(g[3]), float(g[2])
+        REAL_ROOM.clear(); REAL_ROOM["device"] = g[1]
         others = others_dedicated_mib(machine.gpu_process_text())
+        learn = enabled()                                  # MOE_CACHE_LEARN_ROOM=0: no learned ceiling, no stored measurements (the pre-load room below stays)
+        if not learn:
+            REAL_ROOM.pop("device")
+        ci = room_ceiling_info(CACHE_DIR, g[1]) if learn else None
+        ceil_ = ci[0] if ci else None                      # LAUNCHER-1131: what an earlier start of this GPU kept in dedicated memory when it paged
+        if ceil_ and others is not None:
+            by_card0 = total - others
+            pre = real_room_mib(min(by_card0, driver - others if driver >= by_card0 else driver), 0.0)      # the same room as below (critic N1-N3)
+            mv = others_moved(CACHE_DIR, g[1], others)     # LAUNCHER-1154: the other programs' use moved since the ceiling was stored: measure again, do not wait for 30 days
+            if mv:
+                room_forget(CACHE_DIR, g[1])
+                say(f"moe-cache: GPU room: the other programs held {mv[0] / 1024:.1f} GiB of the card when the {ceil_ / 1024:.1f} GiB ceiling was learned ({_age_text(ci[1])} ago), they hold {mv[1] / 1024:.1f} GiB now (a move of more than {OTHERS_MOVED_MIB} MiB: "
+                    f"{const_label('OTHERS_MOVED_MIB')}): that ceiling is dropped and the room is measured again (MOE_CACHE_LEARN_ROOM=0 turns the learning off)")
+                ceil_ = None
+            elif pre and pre > ceil_ + NEAR_ROOM_MIB:      # critic F2: the desktop gave the room back (the counters show it now): do not plan against the stale ceiling, and forget it
+                room_forget(CACHE_DIR, g[1])
+                say(f"moe-cache: GPU room: the card has {pre / 1024:.1f} GiB of room now, more than the {ceil_ / 1024:.1f} GiB learned {_age_text(ci[1])} ago: that ceiling is dropped ({const_label('NEAR_ROOM_MIB')}; MOE_CACHE_LEARN_ROOM=0 turns the learning off)")
+                ceil_ = None
         if others is None:
             say("moe-cache: GPU room: the other programs' GPU memory use could not be read (Windows counters): planning with llama-server's free figure as before")
+            if ceil_ and ceil_ < driver - 256:
+                a.room_gib = ceil_ / 1024
+                say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, the most an earlier start kept in dedicated memory before the card paged, learned {_age_text(ci[1])} ago (trusted for {const_label('ROOM_KEEP_S')} unless the room changes; `moe_cache.py room --reset` forgets it)")
             return
         a.room_used_gib = others / 1024
+        REAL_ROOM["others_mib"] = others
         # critic N1-N3: the room is the smaller of (a) the card's size minus the others and (b) llama-server's free figure minus the others, then the growth reserve comes off the result.
         # (b) only when that figure does not already count the others (driver >= card - others); otherwise the driver's figure is taken as it is.
         by_card = total - others
         by_driver = driver - others if driver >= by_card else driver
         which = "the card's size minus that" if by_card <= by_driver else "llama-server's own free figure minus that"
         room = real_room_mib(min(by_card, by_driver), 0.0)     # the reserve off the smaller term; None when implausible (< 1 GiB)
-        if room is None or room >= driver:
+        if room:
+            REAL_ROOM["room_mib"] = room
+        why_ceil = bool(ceil_ and (room is None or ceil_ < room))
+        if why_ceil:
+            room = ceil_
+        if room is None or room >= (driver - 256 if why_ceil else driver):
             return
         a.room_gib = room / 1024
+        if why_ceil:
+            say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, the most an earlier start kept in dedicated memory before the card paged, learned {_age_text(ci[1])} ago (the desktop and other programs hold {others / 1024:.1f} GiB now; "
+                f"trusted for {const_label('ROOM_KEEP_S')} unless the room changes; `moe_cache.py room` shows what was learned, `moe_cache.py room --reset` forgets it, MOE_CACHE_LEARN_ROOM=0 turns it off)")
+            return
         if others >= 1024:                         # a card nearly empty of other programs: planned with the room, nothing worth saying
             say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB (the desktop and other programs hold {others / 1024:.1f} GiB of the card's "
                 f"{total / 1024:.1f} GiB: {which}, minus a {ROOM_RESERVE_MIB} MiB reserve for their growth); --vram GiB sets it by hand")
@@ -3745,6 +3821,7 @@ def gpu_stage(a, ls, win, machine):
     """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
     vram_user = a.vram
     said_gpu = False
+    REAL_ROOM.clear()               # LAUNCHER-1131: no state of an earlier plan in this process (the control page plans many times)
     listing = machine.list_devices(ls) if win else None
     gpu = machine.pick_gpu_full(listing) if win else None
     if win and not a.vram and not machine.nvidia_reports():
@@ -3763,6 +3840,8 @@ def gpu_stage(a, ls, win, machine):
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
             said_gpu = True
             real_room_stage(a, g, machine)
+            if REAL_ROOM.get("device"):
+                REAL_ROOM["ls"] = ls          # the llama-server binary a measurement belongs to (planner/real_room.py exe_ident)
             # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
             # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
     if not said_gpu and not getattr(a, "cpu_only", False):
@@ -3810,10 +3889,12 @@ def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False, skip_mtp=False):
             fixed, m = 0.20, (a.gpu_margin if a.gpu_margin is not None else 0.0)
         else:
             fixed, m = None, (a.gpu_margin if a.gpu_margin is not None else 0.25)
-        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed, skip_mtp)
-        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed, skip_mtp)
-        kq8vq4 = dense_gpu_fit(model, ctx, free, KV_K8V4, m, gap, fixed, skip_mtp) if with_q4 else True
-        q4 = dense_gpu_fit(model, ctx, free, "q4_0", m, gap, fixed, skip_mtp) if with_q4 else True
+        pub = getattr(a, "plan_ub", None) or (int(a.ub) if str(getattr(a, "ub", "")).isdigit() else 512)       # the -ub this dense plan will run with (the user's, else llama.cpp's 512)
+        ms = [measured_need(model, ctx, rung, pub) for rung in (("f16", "f16"), ("q8_0", "q8_0"), KV_K8V4, ("q4_0", "q4_0"))]      # LAUNCHER-1131: what an earlier load of this exact plan needed
+        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed, skip_mtp, ms[0])
+        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed, skip_mtp, ms[1])
+        kq8vq4 = dense_gpu_fit(model, ctx, free, KV_K8V4, m, gap, fixed, skip_mtp, ms[2]) if with_q4 else True
+        q4 = dense_gpu_fit(model, ctx, free, "q4_0", m, gap, fixed, skip_mtp, ms[3]) if with_q4 else True
     except Exception:
         return None
     if not (f16 and q8 and kq8vq4 and q4):
@@ -4260,6 +4341,102 @@ def live_keep_decision(total, *, stock=False, exact=False, env_keep=None, off=No
     return ram_keep_bytes(total) / 2**30
 
 
+WEIGHTS_PLUGIN_MIN_GIB = 4.0       # LAUNCHER-1165: the RAM the plugin's expert cache takes at the least (ram_cap_decision never plans it under 4 GiB)
+WEIGHTS_CTX_STEPS = (32768, 16384, 8192)     # the shorter contexts weights_ram_check may name (it never applies one: "never a shorter context", R19 + the user's --ctx wins)
+
+
+def weights_ram_check(need, avail, total, *, ctx, ctx_user=False, stock_path=True, cpu_expert_bytes=0.0, kv_at=None, table_bytes=0.0):
+    """LAUNCHER-1165: will the model's weights that stay in RAM (need, bytes: the plan's CPU-side part) fit beside the programs already open? avail = the RAM available at
+    start (Windows ullAvailPhys, Linux MemAvailable), total = physical RAM; the room is avail minus what the machine keeps free (ram_keep_bytes: max(4 GiB, 12.5 %)).
+    Returns None when it fits (or a figure is missing), else a dict: need, room, avail, lines (plain text for the plan and the control page's log), ctx_hint (a shorter
+    context that would fit by the estimate, or None). A shorter context only helps on the stock path with a GPU: the KV memory it frees takes expert layers off the CPU
+    (kv_at(c) = KV bytes at c tokens; the freed bytes are counted 1:1 against the CPU-side experts: an estimate, the tuner places whole layers). Nothing is applied here:
+    the launcher never shortens a context by itself, and --load-mode none would make the same bytes private memory, so it is not offered. table_bytes: tables read from
+    the file as needed (Flash-Next's n-gram table, 28.8 GB in the 75.8 GB IQ3_XXS): NOT counted in need (how much of it stays in RAM is not measured; counting all of it warned on
+    every 32 and 64 GB PC, self-critic), only named in a note when it is bigger than what is left. Pure: no probes."""
+    if not need or not avail or not total:
+        return None
+    keep = ram_keep_bytes(total)
+    room = max(avail - keep, 0.0)
+    g = lambda b: f"{b / 1e9:.1f}"
+    table_note = (f"moe-cache: note: this model also reads a {g(table_bytes)} GB table from the file as it runs; the pages it reads stay in RAM while there is room and can take "
+                  f"what is left beside your apps (how much is not measured, so it is not in the launcher's RAM estimate)") if table_bytes and table_bytes > max(room - need, 0.0) else None
+    if need <= room:
+        return {"need": need, "room": room, "avail": avail, "keep": keep, "lines": [table_note], "ctx_hint": None, "warn": False} if table_note else None
+    hint = None
+    if stock_path and kv_at and cpu_expert_bytes > 0 and not ctx_user:
+        try:
+            kv_now = kv_at(ctx)
+            for c in WEIGHTS_CTX_STEPS:
+                if c >= ctx:
+                    continue
+                kv_c = kv_at(c)
+                if kv_now is None or kv_c is None:
+                    break
+                if need - min(max(kv_now - kv_c, 0.0), cpu_expert_bytes) <= room:
+                    hint = c
+                    break
+        except Exception:
+            hint = None
+    lines = [f"moe-cache: warning: this model needs about {g(need)} GB of RAM beside your open apps; {g(room)} GB is free. Close apps or use a smaller context/model."]
+    detail = (f"moe-cache: RAM for the weights: {g(need)} GB of the model stays in RAM with this plan "
+              + ("(the experts not on the GPU and the input embedding; memory-mapped pages, counted as all read in over a conversation)" if stock_path else
+                 f"(the least the plugin's RAM plan ever takes, {WEIGHTS_PLUGIN_MIN_GIB:.0f} GiB, plus {RAM_STREAM_GIB:.0f} GiB for a model file bigger than the room, read through "
+                 "memory-mapped pages: both assumed, not measured)")
+              + f"; {avail / 1e9:.1f} GB available now minus {keep / 1e9:.1f} GB kept free for your programs = {g(room)} GB (an estimate from the file, not measured)")
+    lines.append(detail)
+    if hint:
+        lines.append(f"moe-cache: a context of {hint} instead of {ctx} would fit by this estimate (the freed GPU memory takes expert layers off the RAM): --ctx {hint}. "
+                     "The launcher does not shorten the context by itself.")
+    elif ctx_user and stock_path and cpu_expert_bytes > 0:
+        lines.append(f"moe-cache: your --ctx {ctx} is kept; a shorter context leaves more of the model on the GPU and less in RAM")
+    if table_note:
+        lines.append(table_note)
+    return {"need": need, "room": room, "avail": avail, "keep": keep, "lines": lines, "ctx_hint": hint, "warn": True}
+
+
+def weights_ram_stage(a, model, ctx, cmd, machine, stock_path):
+    """LAUNCHER-1165, plan stage: the weights_ram_check() figures from this plan and machine (Windows and Linux alike) and its lines said (to the terminal and the control
+    page's log). Read-only: it changes nothing in the command. MoE models only (a dense model's RAM spill is load_mode_low_ram's job). The CPU-side part: stock path, the
+    expert layers under --n-cpu-moe (all of them and every other weight with -ngl 0) + token_embd when the model has its own output layer; plugin path, the plugin's RAM floor
+    + the streamed-file term of ram_cap_decision (its own budget already follows the available RAM, LAUNCHER-1145). Tables read from the file (Flash-Next's n-gram table) are only
+    named in a note. Linux inside a cgroup limit: the system's MemAvailable is used, not the limit (not handled). Returns the check's dict or None."""
+    try:
+        planner_path()
+        from gguf_plan import model_layout, gpu_expert_bytes, kv_bytes
+        lay = model_layout(model)
+        if not lay.get("n_layers") or not lay.get("expert_bytes_per_layer"):
+            return None
+        experts = float(sum((lay.get("expert_bytes_by_layer") or {}).values()) or lay["n_layers"] * lay["expert_bytes_per_layer"])
+        ngl = arg_after(cmd, "-ngl", "--n-gpu-layers", "--gpu-layers")
+        n = arg_after(cmd, "--n-cpu-moe", "-ncmoe")
+        if str(ngl) == "0" or (n is None and ("--cpu-moe" in cmd or "-cmoe" in cmd)):
+            cpu_exp = experts
+        else:
+            cpu_exp = max(experts - gpu_expert_bytes(lay, int(n)), 0.0) if n is not None else 0.0
+        table = float(lay.get("table_bytes", 0) or 0)
+        side = float(lay.get("cpu_only_bytes", 0) or 0)
+        if str(ngl) == "0":
+            side = float(lay.get("total_bytes", 0)) - experts - table
+        avail = getattr(machine, "mem_available", lambda: machine.mem_for_server(None))()
+        total = machine.mem_total()
+        if stock_path:
+            need = side + cpu_exp
+        else:              # the plugin sizes its own RAM from the available RAM (LAUNCHER-1145): only its floor (cache + the rest of the server) and the streamed-file term can fail to fit
+            room0 = (avail or 0) - ram_keep_bytes(total or 0)
+            need = WEIGHTS_PLUGIN_MIN_GIB * 2**30 + (RAM_STREAM_GIB * 2**30 if float(lay.get("total_bytes", 0)) > room0 else 0.0)
+        kvq = kv_quantized(cmd)
+        d = weights_ram_check(need, avail, total, ctx=int(ctx), ctx_user=bool(getattr(a, "ctx", None)) and not getattr(a, "ctx_from_pick", False), stock_path=stock_path, cpu_expert_bytes=cpu_exp,
+                              kv_at=(lambda c: kv_bytes(model, c, kv_q8=kvq)) if str(ngl) != "0" else None, table_bytes=table)
+    except Exception as e:
+        say(f"moe-cache: could not estimate the RAM the weights need ({type(e).__name__}: {e})", err=True)
+        return None
+    if d:
+        for line in d["lines"]:
+            say(line, err=True)
+    return d
+
+
 def avail_reserve_gib(a, machine, stock=False, model=None):
     """GiB the plugin's cache may plan with: ram_cap_decision() with this machine's figures: (gib, avail, keep, decision) or None when it does not apply. Windows and Linux; --exact
     behaves as before (Windows keeps the reserve, Linux has none). Chain's Flash-Next probe 2026-11-13 and the 2026-11-17 daily-use run: without it the cache left 1.3 GB, then 0, available beside the open programs."""
@@ -4287,6 +4464,24 @@ def avail_reserve_gib(a, machine, stock=False, model=None):
     return (d["gib"], d["avail"], d["keep"], d) if d else None
 
 
+LIMIT_FLOOR_GIB = 4.0       # LAUNCHER-1249: the whole-server limit is never under this (nor under the announced cache size)
+
+
+def avail_limit_gb(decision, cap):
+    """LAUNCHER-1249 (default ON, owner 2026-11-25): the whole-server memory limit (decimal GB) a ram_cap_decision() implies: available RAM at the start minus the reserve kept for the
+    user's programs, never under max(4 GiB, the cache size the plan announced via MOE_CACHE_RAM_GIB = decision["gib"]). None when that limit is not below the plugin's own default cap
+    `cap` (bytes, or None = no cap): then nothing is passed and the plugin keeps its cap. When it IS below, a start on a busy machine gets this lower limit (a change from before the
+    release: the plugin used to cap at physical RAM minus 12.5 %). Pure."""
+    if not decision:
+        return None
+    lim = decision["avail"] - decision["keep"]
+    floor = max(LIMIT_FLOOR_GIB, float(decision.get("gib") or 0.0)) * 2**30
+    lim = max(lim, floor)
+    if cap and lim >= cap:
+        return None
+    return lim / 1e9
+
+
 def live_follow_off_path(machine, stock=False):
     """LAUNCHER-1277: True when the plugin will NOT follow the system's RAM while running because it keeps its experts as file mappings: Linux's default path (MOE_CACHE_LINUX_VIEW
     not 0; the plugin's mclive::follows(file_view, is_windows) is the same rule). The plugin's own start-up line is the final word (a pack or a failed mapping uses private memory)."""
@@ -4303,6 +4498,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
             "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
         gcache = "off"
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
+    limit_env = [None]            # LAUNCHER-1249: the limit passed as MOE_CACHE_MAX_RAM_GB by this plan (decimal GB), shown by the cap line below
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
     elif (ar := avail_reserve_gib(a, machine, stock, model)):
@@ -4315,6 +4511,12 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
             f"{gib:.1f} GiB, about {max(expect, 0.5):.1f} GiB of expert cache after the margin and the rest of the server; fixed at the start (--ram GB sets it by hand)")
         if expect < 2.0:
             say("moe-cache: warning: very little RAM is available for the expert cache (under 2 GiB): the server will be slow; close programs, or pass --ram GB to give it more", err=True)
+        # LAUNCHER-1249: the whole-server limit this plan computed (available RAM at the start minus the reserve) goes to the plugin too, so its own cap (physical RAM minus
+        # 12.5 %, above this limit on a busy machine) can never exceed the launcher's. The user's own --max-ram / MOE_CACHE_MAX_RAM_GB wins (the lines below).
+        lim_gb = avail_limit_gb(dec, machine.mem_cap())
+        if lim_gb is not None and not a.max_ram and not os.environ.get("MOE_CACHE_MAX_RAM_GB"):
+            env.append(("MOE_CACHE_MAX_RAM_GB", f"{lim_gb:.3f}"))
+            limit_env[0] = lim_gb
     try:
         lk = live_keep_decision(machine.mem_total(), stock=stock, exact=getattr(a, "exact", False), env_keep=os.environ.get("MOE_CACHE_AVAIL_KEEP_GIB"),
                                 off=os.environ.get("MOE_CACHE_LIVE_FOLLOW"), windows=bool(getattr(machine, "windows", False)))
@@ -4334,6 +4536,8 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    elif limit_env[0] is not None:
+        cap = limit_env[0] * 1e9
     if a.peers and not stock:
         # N2/MM2 (PROTOTYPE): the plugin writes its memory use into this folder once a second and reads the other servers' files; a quiet server gives memory to a busy
         # one. --ram stays this server's own share. A stock llama-server (no plugin) is not in the folder: --share-ram counts it at start.
@@ -4344,6 +4548,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
         say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/reference/platforms.md)")
     if cap:
         say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
+            else "RAM available now minus the reserve for your programs, at least max(4 GiB, the cache size); LAUNCHER-1249, passed to the plugin" if limit_env[0] is not None
             else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
         if a.ram and float(a.ram) * 1e9 > cap:
             say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
@@ -5898,6 +6103,7 @@ def _launch_plan(a, extra, argv, machine):
             raise SystemExit("usage: moe-cache-server MODEL.gguf [options]  (no model given: " +
                              (pick_missing() or "none picked: `moe_cache.py pick` recommends one for this machine") + ")")
         a.model = p[0]
+        a.ctx_from_pick = not a.ctx          # LAUNCHER-1165: a context the picker filled is not the user's own --ctx (the shorter-context hint still shows)
         a.ctx = a.ctx or p[1]
         a.agent = a.agent or p[2]
         say(f"moe-cache: no model given: using the picked one, {a.model} (context {a.ctx}" + (", agent mode" if a.agent else "") + "; moe_cache.py pick)")
@@ -5919,6 +6125,8 @@ def _launch_plan(a, extra, argv, machine):
     if a.share_ram:
         share_ram_start(a, machine)
     user_flags, extra = adopt_user_flags(extra)
+    _ub = a.ub if str(a.ub).isdigit() else arg_after(extra, "-ub", "--ubatch-size")
+    a.plan_ub = int(_ub) if _ub and str(_ub).isdigit() else None          # LAUNCHER-1131 F1: the user's own -ub (None: the dense plan runs at llama.cpp's default 512)
     user_extra = list(extra)             # LAUNCHER-994: what the user gave after `--` (the stages below add their own flags to extra); the auto-tune leaves those settings alone
     if "port" in user_flags and user_flags["port"] != a.port:
         say(f"moe-cache: port {user_flags['port']} from the flags after '--' (the health checks, warm sessions and agent snippets use it)")
@@ -5926,6 +6134,7 @@ def _launch_plan(a, extra, argv, machine):
     if "ctx" in user_flags and user_flags["ctx"] != a.ctx:
         say(f"moe-cache: context {user_flags['ctx']} from the flags after '--' (the GPU plan uses it)")
         a.ctx = user_flags["ctx"]
+        a.ctx_from_pick = False
     if "ncmoe" in user_flags and a.n_cpu_moe is None:
         a.n_cpu_moe = user_flags["ncmoe"]
     ls, model, port = a.llama_server, a.model, a.port
@@ -6093,6 +6302,8 @@ def _launch_plan(a, extra, argv, machine):
     if new_cram is not None and cram is not None and re.fullmatch(r"[0-9]+", str(new_cram)) and str(new_cram) != str(cram):
         cram = new_cram                     # the stage shrank the prompt cache: the plan and the plugin's host reserve follow
         env[:] = [(k, str(host_reserve_mib(new_cram, a.agent)) if k == "MOE_CACHE_HOST_RESERVE_MIB" else v) for k, v in env]
+    if not dense:
+        weights_ram_stage(a, model, ctx, cmd, machine, method == "none (stock)")      # LAUNCHER-1165: warns (never changes the plan) when the weights left in RAM will not fit beside the open apps
     if commit_refusal:
         say(commit_refusal, err=True)       # the plan still describes the launch (--dry-run, the control page); run_launch_plan refuses to start it
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
@@ -8286,8 +8497,23 @@ def key_cmd(argv):
     return 0
 
 
+def room_cmd(argv):
+    """moe_cache.py room [--reset]: what this PC has learned about the GPU's real room (planner/real_room.py): the planning ceiling after the card paged and the stored load measurements."""
+    ap = argparse.ArgumentParser(prog="moe_cache.py room", description="show (or with --reset forget) what moe-cache learned about this GPU's real memory room; MOE_CACHE_LEARN_ROOM=0 turns the learning off")
+    ap.add_argument("--reset", action="store_true", help="delete the learned ceilings and the stored load measurements")
+    a = ap.parse_args(argv)
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import real_room as rr
+    if a.reset:
+        print(f"forgot {rr.reset_learned(CACHE_DIR)} file(s) in {CACHE_DIR}")
+        return 0
+    print("learning is OFF (opt-in: MOE_CACHE_REAL_ROOM=1 turns it on; MOE_CACHE_LEARN_ROOM=0 turns it off again)" if not rr.enabled() else "learning is on (opt-in MOE_CACHE_REAL_ROOM=1; MOE_CACHE_LEARN_ROOM=0 turns it off)")
+    print("\n".join(rr.learned_text(CACHE_DIR)))
+    return 0
+
+
 def main():
-    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion, "pack": pack_cmd, "update": update_cmd}
+    cmds = {"room": room_cmd, "server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion, "pack": pack_cmd, "update": update_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
