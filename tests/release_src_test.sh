@@ -29,7 +29,7 @@ chk "make_release.sh calls tools/release_copy_src.sh" 'grep -q "tools/release_co
 chk "make_release.sh has no bare 'cp src/*'" '! grep -q "cp src/\*" tools/make_release.sh'
 chk "the helper is not shipped inside the tarball's tools/" 'grep -q "dist/\$N/tools/release_copy_src.sh" tools/make_release.sh'
 # 5 the whole tarball step on a copy of this tree with the compile stubbed (build.sh makes a dummy plugin): both tarballs are built, and what must not be in them is not
-#   (src/top: experimental native top; docs/internal: design notes; the release scripts themselves)
+#   (src/top: experimental native top; docs/internal: design notes (moved out of the public repo); the release scripts themselves)
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
   mkdir -p "$T/tree"; git ls-files -z | while IFS= read -r -d '' f; do [ -e "$f" ] && mkdir -p "$T/tree/$(dirname "$f")" && cp -p "$f" "$T/tree/$f"; done
   printf '#!/bin/bash\no=${BUILD_DIR:-build}; mkdir -p $o && echo stub > $o/libggml-moe-cache.so\n' > "$T/tree/build.sh"; chmod +x "$T/tree/build.sh"

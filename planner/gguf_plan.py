@@ -1097,7 +1097,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
 
     Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use, a list of reasons and "inputs": every size the plan used with its
     value, source (measured / probe / constant) and why, for the plan file. Rules come from measurements
-    (docs/internal/PERFORMANCE_ANALYSIS.md): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
+    (the maintainers' private note PERFORMANCE_ANALYSIS): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
     compute buffer that grows with the context; the disk lookup table never counts as GPU weight. ub: a micro-batch the user chose (the rest is
     planned around it; without this a chosen -ub left no room for the long-prompt block and long prompts ran on the CPU, RESULTS 61). long_prompt: the opt-in
     long-prompt mode (--long-prompt): -ub 4096 is tried first and taken only when the memory plan leaves room for it (no GPU cache wanted, no -ub chosen); else the usual ladder.

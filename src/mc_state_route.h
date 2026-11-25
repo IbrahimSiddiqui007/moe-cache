@@ -3,7 +3,7 @@
 #pragma once
 
 struct state_route_t {
-    // approximate routing (MOE_CACHE_ROUTE=skip, decode and small batches, executor only; off by default; quality-gated, see docs/internal/EXPERIMENTS.md):
+    // approximate routing (MOE_CACHE_ROUTE=skip, decode and small batches, executor only; off by default; quality-gated, see the maintainers' private note EXPERIMENTS):
     // the lowest-ranked picks of a token that are NOT in RAM are dropped. (The "subst" mode, a different resident expert in their place, was removed on 2026-11-20.)
     // Ranked picks are in order of the router's weights, so the experts given up are the ones that contribute least.
     int  route_mode = 0;                                // 0 off, 1 skip

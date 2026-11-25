@@ -178,7 +178,6 @@ Step by step for each agent, the desktop apps and the context limit to set: [doc
 | [Configuration](docs/reference/configuration.md) | environment variables |
 | [FAQ](docs/guides/faq.md) | questions and answers |
 | [Troubleshooting](docs/guides/troubleshooting.md) | wrong-looking answers, slow runs, start problems |
-| [Internal notes](docs/internal/) | design notes, coding standards, release checklist: for people building or testing moe-cache |
 | [Compatibility](docs/reference/platforms.md), [Roadmap](docs/reference/roadmap.md), [Security and privacy](docs/reference/security.md) | |
 
 ## Support

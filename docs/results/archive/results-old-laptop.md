@@ -1488,7 +1488,7 @@ Token identity against stock: 4/4 for every configuration listed.
 | Configuration | tok/s | Note |
 |---|---|---|
 | plugin 0.1.4 (llama.cpp's scalar Q2_0 kernel) | 6.9 | before |
-| fast Q2_0 kernel | 10.3 | paired run, see docs/internal/EXPERIMENTS.md |
+| fast Q2_0 kernel | 10.3 | paired run, see the maintainers' private note EXPERIMENTS |
 | fast kernel, executor off | 8.2 | second session |
 | fast kernel + executor, 6 threads | 10.9 | +33 % over the row above |
 | fast kernel + executor, 6 threads + 4 efficiency cores | 12.4 | +52 % over the row above |

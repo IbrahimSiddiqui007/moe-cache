@@ -692,7 +692,7 @@ def server_args(s):
     if s.get("no_long_prompt"):
         a.append("--no-long-prompt")       # the long-prompt mode (-ub 4096 + the q8_0 KV cache when the memory plan allows) is the default since 2026-11-08; unticking it opts out
     if s.get("peers"):
-        a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (docs/internal/TWO_MODELS_DESIGN.md)
+        a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (the maintainers' private note TWO_MODELS_DESIGN)
     if s.get("share_ram"):
         a.append("--share-ram")            # a second server next to a running one: count the RAM the other llama-servers hold
     if s.get("llama_server"):
@@ -2403,7 +2403,7 @@ def open_page(url):
     t.start()
 
 
-# ---- MULTIMODEL-010: two models at once, one memory cap (docs/internal/TWO_MODELS_DESIGN.md) ----
+# ---- MULTIMODEL-010: two models at once, one memory cap (the maintainers' private note TWO_MODELS_DESIGN) ----
 _KIND = {}
 
 

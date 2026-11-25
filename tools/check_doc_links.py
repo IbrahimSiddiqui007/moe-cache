@@ -24,7 +24,7 @@ def md_files():
 
 
 SPAN = re.compile(r"`((?:docs|tools|bin|tests|src|benchmarks|patches|\.github)/[^`\s]*)`")
-CODESPAN_SKIP = ("archive/", "patches/", "docs/releases/", "CHANGELOG.md", "docs/results/archive/", "docs/internal/", "benchmarks/claims/")
+CODESPAN_SKIP = ("archive/", "patches/", "docs/releases/", "CHANGELOG.md", "docs/results/archive/", "benchmarks/claims/")
 
 
 SPAN_OK = {"docs/build.md"}      # llama.cpp's own file (named in backends.md), not ours
