@@ -183,7 +183,12 @@ check("Measured on a working desktop (at peak): 31 GB RAM" in sh and "Environmen
 bt = cc.board_text(cc.load_claims(bd), cc.load_runs(bd), "0.3.8", 12207)
 check("| Working desktop |" in bt and "working desktop (at peak): 31 GB RAM" in bt, "board: the 'Working desktop' column appears once a run has the block, with the line on that row")
 shutil.rmtree(os.path.dirname(bd), ignore_errors=True)
-bt0 = cc.board_text(cc.load_claims(os.path.join(HERE, "..", "benchmarks")), cc.load_runs(os.path.join(HERE, "..", "benchmarks")), "0.3.8", 12207)
+_runs0 = cc.load_runs(os.path.join(HERE, "..", "benchmarks"))
+for _r in _runs0.values():      # real runs recorded since 2026-11-25 carry the block: strip it, this check is about runs without one
+    _r.get("conditions", {}).pop("environment", None)
+    for _x in _r.get("runs", []):
+        _x.pop("environment", None)
+bt0 = cc.board_text(cc.load_claims(os.path.join(HERE, "..", "benchmarks")), _runs0, "0.3.8", 12207)
 check("Working desktop" not in bt0, "board without any block: no new column")
 
 # ---- 8. the real machine
