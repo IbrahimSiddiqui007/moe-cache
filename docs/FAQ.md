@@ -37,7 +37,7 @@ Less than before, but a long prompt is still a wait. Prompt reading runs on the 
 
 ### Is there a gain when my model already fits in RAM?
 
-Because there is nothing to fix: stock llama.cpp then runs from the page cache with the same kernels. On Qwen3.6-35B at 24 GB, decode needs about 0.5 GB of expert weights per token (8 experts x 32 CPU layers x 1.9 MB), which the memory bus delivers at about 35 GB/s, close to this laptop's measured maximum (40 GB/s), so it is bandwidth-bound for everyone. moe-cache is aimed at memory that is short (the same model at 12 GB), models larger than RAM, and models with slow kernels (Q2_0 and the IQ types); speed numbers follow in a later release.
+Because there is nothing to fix: stock llama.cpp then runs from the page cache with the same kernels. On Qwen3.6-35B at 24 GB, decode needs about 0.5 GB of expert weights per token (8 experts x 32 CPU layers x 1.9 MB), which the memory bus delivers at about 35 GB/s, close to the measured maximum of our test laptop (40 GB/s; one machine, one run, a forecast), so it is bandwidth-bound for everyone. moe-cache is aimed at memory that is short (the same model at 12 GB), models larger than RAM, and models with slow kernels (Q2_0 and the IQ types); speed numbers follow in a later release.
 
 ### Does it use my GPU?
 
