@@ -43,9 +43,11 @@ jobs:
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/file_view_load_test.cpp -o /tmp/fvl_test && /tmp/fvl_test    # CACHE-685: a file cut short under the view is a false return, not a SIGBUS
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -DMOE_CACHE_TEST_NO_POPULATE -Isrc tests/file_view_load_test.cpp -o /tmp/fvl_test2 && /tmp/fvl_test2    # the same through the guarded page touch (kernels without MADV_POPULATE_READ)
           # 2026-11-03 audit fixes: each is a standalone program (no ggml, no model)
-          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check profile_path evict_timer; do
+          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check profile_path evict_timer stable_vec; do
             g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
           done
+          # CACHE-694: a whole state_t driven with hand-made tensors (unload keeps no old state, node addresses stable); the ggml calls are never reached
+          g++ -std=c++17 -Wall -Werror -Wno-unused-function -Wno-unused-parameter -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src -Isrc tests/unload_state_test.cpp -o /tmp/unload_state_test -lpthread -ldl -no-pie -Wl,--unresolved-symbols=ignore-all && /tmp/unload_state_test
           for t in wake_pipe reserve_msg; do      # these two include platform.h without -Wextra
             g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
           done

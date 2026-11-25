@@ -33,6 +33,17 @@
             ti.n_expert = 0;          // the entry stays (indices are stable) but owns nothing
             ti.data = nullptr;
         }
+        // CACHE-694: when nothing registered is left (the whole model is unloaded) the next model starts clean: the tuner's ceiling and floor were sized from
+        // the old tensors, the warm start had run for the old model, and the per-layer pick counts were the old model's
+        for (const auto & tp : tensors) {
+            if (tp->n_expert > 0) {
+                return;
+            }
+        }
+        max_budget = 0;
+        min_budget = 0;
+        preload_done = false;
+        session.clear();
     }
 
     // data: the bytes llama.cpp is loading for this tensor (its own copy of the model). Name and size alone do not prove that MOE_CACHE_GGUF is the

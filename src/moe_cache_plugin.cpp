@@ -64,6 +64,7 @@
 #include "mc_cat.h"
 #include <cstdarg>
 #include "mc_shared_gpu.h"
+#include "mc_stable_vec.h"
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
