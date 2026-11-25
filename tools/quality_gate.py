@@ -24,6 +24,27 @@ SMOKE = {"exact": (1e-5, 100.0, 0), "kv": (0.25, 70.0, 10), "fast": (0.25, 70.0,
 LOOP_EXTRA = 2
 
 
+MEMORY_ENV = ("MOE_CACHE_RAM_GIB", "MOE_CACHE_MAX_RAM_GB")     # the plugin's memory settings: a given value is used by every plugin run of the gate
+
+
+def machine_limit_gb():
+    """LAUNCHER-1249: the launcher's whole-server memory limit for this machine (decimal GB), so the plugin's own cap (physical RAM minus 12.5 %) can never be above it:
+    the smaller of its hard cap and (RAM available now minus the reserve for the user's programs), as the launcher's start computes it. None when the launcher
+    module cannot be read or the figures are unknown (the plugin then keeps its default cap). Same code on Linux and Windows."""
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "bin"))
+        try:
+            import moe_cache as mc
+        finally:
+            sys.path.pop(0)
+        total, avail, cap = mc.mem_total(), mc._mem_for_server(None), mc.mem_cap()
+        lim = (avail - mc.ram_keep_bytes(total)) if avail and total else None
+        lims = [x for x in (cap, lim) if x and x > 0]
+        return min(lims) / 1e9 if lims else None
+    except Exception:
+        return None
+
+
 def plugin_env(server, lib):
     """Environment that makes this llama-server load the plugin (bin/_moe_cache_env.sh in Python)."""
     if os.name == "nt":
@@ -153,6 +174,7 @@ def main():
     if a.smoke:
         kld_max, top_min, tol = SMOKE[a.level]
     cand_env = dict(lenv); cand_env.update(kv.split("=", 1) for kv in a.env)
+    mem_env = {k: cand_env[k] for k in MEMORY_ENV if k in cand_env}    # LAUNCHER-1249: --env RAM settings belong to EVERY plugin run (floor arm too), not the candidate alone
     cand_args = ([] if a.no_kv else list(largs)) + a.args.split()
     both_env = dict(kv.split("=", 1) for kv in a.ram_env)
     if a.no_plugin:          # R2-7: a llama.cpp option alone against stock; nothing of moe-cache is loaded
@@ -160,7 +182,13 @@ def main():
     else:
         load = plugin_env(a.llama_server, a.lib)
         plug = dict(load, MOE_CACHE_GGUF=a.model, MOE_CACHE_SIZE_GIB=both_env.pop("MOE_CACHE_SIZE_GIB", "auto"), MOE_CACHE_STATS="1")
+        plug.update(mem_env)
         plug.update(both_env)
+        if "MOE_CACHE_MAX_RAM_GB" not in plug and "MOE_CACHE_MAX_RAM_GB" not in os.environ:
+            lim = machine_limit_gb()
+            if lim is not None:
+                plug["MOE_CACHE_MAX_RAM_GB"] = f"{lim:.3f}"
+                print(f"memory: whole-server cap {lim:.1f} GB for the plugin runs (the launcher's limit; MOE_CACHE_MAX_RAM_GB or --ram-env changes it)")
     print(f"quality gate, level {a.level}{' (smoke limits)' if a.smoke else ''}: KLD <= {kld_max}, top-1 >= {top_min} %, tasks >= stock - {tol}; out {a.out}")
     print(f"candidate: env {cand_env}, args {cand_args}")
     res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args, "no_plugin": a.no_plugin, "window": a.window, "chunks": a.chunks}, []

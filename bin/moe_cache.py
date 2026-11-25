@@ -4282,6 +4282,17 @@ def avail_reserve_gib(a, machine, stock=False, model=None):
     return (d["gib"], d["avail"], d["keep"], d) if d else None
 
 
+def avail_limit_gb(decision, cap):
+    """LAUNCHER-1249: the whole-server memory limit (decimal GB) a ram_cap_decision() implies: available RAM at the start minus the reserve kept for the user's programs.
+    None when that is not below the plugin's own default cap `cap` (bytes, or None = no cap), so a normal start is not changed. Pure."""
+    if not decision:
+        return None
+    lim = decision["avail"] - decision["keep"]
+    if lim <= 0 or (cap and lim >= cap):
+        return None
+    return lim / 1e9
+
+
 def live_follow_off_path(machine, stock=False):
     """LAUNCHER-1277: True when the plugin will NOT follow the system's RAM while running because it keeps its experts as file mappings: Linux's default path (MOE_CACHE_LINUX_VIEW
     not 0; the plugin's mclive::follows(file_view, is_windows) is the same rule). The plugin's own start-up line is the final word (a pack or a failed mapping uses private memory)."""
@@ -4310,6 +4321,12 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
             f"{gib:.1f} GiB, about {max(expect, 0.5):.1f} GiB of expert cache after the margin and the rest of the server; fixed at the start (--ram GB sets it by hand)")
         if expect < 2.0:
             say("moe-cache: warning: very little RAM is available for the expert cache (under 2 GiB): the server will be slow; close programs, or pass --ram GB to give it more", err=True)
+        # LAUNCHER-1249: the whole-server limit this plan computed (available RAM at the start minus the reserve) goes to the plugin too, so its own cap (physical RAM minus
+        # 12.5 %, above this limit on a busy machine) can never exceed the launcher's. The user's own --max-ram / MOE_CACHE_MAX_RAM_GB wins (the lines below).
+        lim_gb = avail_limit_gb(dec, machine.mem_cap())
+        if lim_gb is not None and not a.max_ram and not os.environ.get("MOE_CACHE_MAX_RAM_GB"):
+            env.append(("MOE_CACHE_MAX_RAM_GB", f"{lim_gb:.3f}"))
+            say(f"moe-cache: whole-server memory limit {lim_gb:.1f} GB passed to the plugin (RAM available now minus the reserve; the plugin's own cap is higher); --max-ram GB changes it")
     try:
         lk = live_keep_decision(machine.mem_total(), stock=stock, exact=getattr(a, "exact", False), env_keep=os.environ.get("MOE_CACHE_AVAIL_KEEP_GIB"),
                                 off=os.environ.get("MOE_CACHE_LIVE_FOLLOW"), windows=bool(getattr(machine, "windows", False)))
