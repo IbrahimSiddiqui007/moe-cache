@@ -45,7 +45,7 @@ if [ -z "$IDENT_ALLOW_INACTIVE" ] && { grep -q "moe-cache: .*plugin disabled" "$
   echo "FAIL: the plugin was not active in the second run (no 'moe-cache: cache mode' line in the server log), so this comparison proves nothing."
   grep "moe-cache:" "$TMP/plugin.log" | tail -5; exit 2
 fi
-[ -n "$MOE_CACHE_STATS" ] && grep "moe-cache:" "$TMP/plugin.log" | tail -6
+[ -n "$MOE_CACHE_STATS" ] && { grep "moe-cache: executor ran" "$TMP/plugin.log"; grep "moe-cache:" "$TMP/plugin.log" | tail -6; }      # the executor line first: later stats lines (DECODE-123 time evict) pushed it out of the tail and identity.yml greps it
 python3 - "$TMP/stock.json" "$TMP/plugin.json" "$N" <<'PY'
 import json, sys
 a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
