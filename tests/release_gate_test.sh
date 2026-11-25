@@ -65,7 +65,33 @@ out="$( cd "$S" && FAKE_DATA="$T/data" PATH="$T/bin:$PATH" tools/release_gate.sh
 chk "no origin/experimental (shallow CI checkout): the lost-work step is skipped with a reason, the gate still passes" "[ $rc = 0 ] && echo '$out' | grep -q 'lost-work check: skipped here' && ! echo '$out' | grep -q FAILED"
 out="$(run $A owner/repo)"
 chk "GATE_SKIP_LOST_WORK=1 (tests only) says it skipped, never 'ok'" "echo '$out' | grep -q 'lost-work check: SKIPPED' && ! echo '$out' | grep -q 'lost-work check: ok'"
-chk "release.yml and the gate run the same lost_work_check command line" "[ \"\$(grep -o 'lost_work_check.py --repo .*accepted.tsv' .github/workflows/release.yml | head -1)\" = \"\$(grep -o 'lost_work_check.py --repo .*accepted.tsv' tools/release_gate.sh | head -1)\" ]"
+chk "release.yml no longer runs the lost-work check (TOOLS-1305: it stays in the gate, before the tag)" "! grep -q 'python3 tools/lost_work_check' .github/workflows/release.yml && ! grep -q 'lost-work-gate:' .github/workflows/release.yml"
+
+# TOOLS-1305: a commit that changes only text files reuses the parent's identity and windows runs; quick must still have run on the commit itself.
+# Real throw-away repo: C1 (code) <- T1 (docs/x.md) <- T2 (README.md + tools/lost_work_accepted.tsv); C2 (code) on top of T2; a merge M of C2 and a side commit.
+R="$T/txt"; mkdir -p "$R/tools" "$R/docs"; cp tools/release_gate.sh "$R/tools/"
+( cd "$R" && git init -q -b experimental . && git config user.email t@t && git config user.name t \
+  && echo code1 > src.c && git add -A && git commit -qm C1 && git rev-parse HEAD > ../C1 \
+  && echo t > docs/x.md && git add -A && git commit -qm T1 && git rev-parse HEAD > ../T1 \
+  && echo r > README.md && echo b > tools/lost_work_accepted.tsv && git add -A && git commit -qm T2 && git rev-parse HEAD > ../T2 \
+  && echo code2 > src.c && git add -A && git commit -qm C2 && git rev-parse HEAD > ../C2 ) >/dev/null 2>&1
+C1="$(cat "$T/C1")"; T1="$(cat "$T/T1")"; T2="$(cat "$T/T2")"; C2="$(cat "$T/C2")"
+tx() { ( cd "$R" && GATE_SKIP_LOST_WORK=1 FAKE_DATA="$T/data" PATH="$T/bin:$PATH" tools/release_gate.sh "$@" 2>&1 ); }
+setup; echo 1 > "$T/data/identity.yml.runs"; echo 2 > "$T/data/windows.yml.runs"; echo 3 > "$T/data/quick.yml.runs"; echo $C1 > "$T/data/1.sha"; echo $C1 > "$T/data/2.sha"; echo $T2 > "$T/data/3.sha"
+out="$(tx $T2 owner/repo)"; rc=$?
+chk "text-only commits (docs, README, accept file) after C1: identity and windows of C1 count, quick ran on the commit itself" "[ $rc = 0 ] && echo '$out' | grep -q '^identity.yml: run 1 tested $C1, an ancestor' && echo '$out' | grep -q '^windows.yml: run 2 tested $C1' && echo '$out' | grep -q '^quick.yml: run 3 tested $T2'"
+echo $C1 > "$T/data/3.sha"
+out="$(tx $T2 owner/repo)"; rc=$?
+chk "quick never reuses the parent's run: a parent's quick run does not pass the gate" "[ $rc != 0 ] && echo '$out' | grep -q '^quick.yml: no successful run tested' && echo '$out' | grep -q '^identity.yml: run 1'"
+setup; for w in identity windows quick; do echo 1 > "$T/data/$w.yml.runs"; done; echo $T2 > "$T/data/1.sha"
+out="$(tx $C2 owner/repo)"; rc=$?
+chk "a code commit (C2 changes src.c) does not reuse the parent's identity/windows runs" "[ $rc != 0 ] && echo '$out' | grep -q '^identity.yml: no successful run tested $C2'"
+setup; for w in identity windows quick; do echo 1 > "$T/data/$w.yml.runs"; done; echo $C1 > "$T/data/1.sha"
+out="$(tx $C2 owner/repo)"; rc=$?
+chk "C2 (code) on top of text commits: even C1's run does not count" "[ $rc != 0 ] && echo '$out' | grep -q '^identity.yml: no successful run tested $C2'"
+setup; for w in identity windows quick; do echo 1 > "$T/data/$w.yml.runs"; done; echo $T1 > "$T/data/1.sha"
+out="$(tx $T2 owner/repo)"; rc=$?
+chk "a text-only commit may reuse a run of its text-only parent too (T1 is a parent of T2)" "[ $rc != 0 ] && echo '$out' | grep -q '^quick.yml: no successful run' && echo '$out' | grep -q '^identity.yml: run 1 tested $T1'"
 
 # the workflows really write what the gate reads
 chk "quick, windows and identity each end with a record job that uploads tested-sha" "[ \$(grep -c 'name: tested-sha' .github/workflows/quick.yml .github/workflows/windows.yml .github/workflows/identity.yml | grep -c ':1\$') = 3 ]"

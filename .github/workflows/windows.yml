@@ -14,7 +14,6 @@ on:
   push:
     branches: [windows-ci]    # run it on any commit: git push origin <commit>:refs/heads/windows-ci
   schedule:
-    - cron: "30 3 * * *"     # main
     - cron: "30 4 * * *"     # experimental (AUD-001: scheduled runs always use the workflow file on main, so the ref is picked below; the file must be on main first)
 
 permissions:

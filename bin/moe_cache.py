@@ -216,7 +216,7 @@ def llama_search_dirs():
 
 # llama.cpp commits (first 9 digits) that CI ran this plugin against: the tested "yes" rows of .github/workflows/identity.yml; the @commit entries of
 # MOE_CACHE_TESTED_GGML in src/moe_cache_plugin.cpp are a subset. tests/tested_commits_test.py fails when they disagree.
-TESTED_COMMITS = ("7fe450e19", "23b0202a1", "ff0d396e3", "51fe42c5d", "998200491", "f5e6915c2")
+TESTED_COMMITS = ("998200491", "f5e6915c2")
 
 
 def tested_commit(ver):
@@ -8119,7 +8119,7 @@ def check(argv):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
             warn("ggml version", "this llama.cpp build is not one we tested" + (f" ({ver})" if ver else "") + ": we tested " +
-                 ("b11669, b11966, b12064, b12207 and b12651 on Windows" if WINDOWS else "six llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966, 51fe42c5d = b12064, 998200491 = b12207 and f5e6915c2 = b12651)") +
+                 ("b11669, b11966, b12064, b12207 and b12651 on Windows" if WINDOWS else "two llama.cpp commits on Linux (998200491 = b12207 and f5e6915c2 = b12651)") +
                  ". Other builds usually work; if the plugin does not load, the lines below say so (moe_cache.py update --check shows the newest build)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):

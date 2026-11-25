@@ -103,16 +103,16 @@ static FILE * fopen_private(const char * path) {
 #endif
 }
 
-// ggml builds CI runs this build against (comma-separated, src/mc_tested.h): API 2 = identity CI at 7fe450e19 (0.25.1); API 3 = identity CI at 23b0202a1
-// (0.26.0), Windows CI + the Windows test PC at release b11669 (0.27.0, any build of it) and identity + Windows CI at release b11966 (0.28.0, named by
-// commit because later 0.28.0 builds changed a struct layout without a version bump) release b12064 (0.28.0@51fe42c5d, the pin from 2026-11-03 to 2026-11-09) and release b12207 (0.29.0@998200491, the pin since 2026-11-09)
+// ggml builds CI runs this build against (comma-separated, src/mc_tested.h; TOOLS-1305): the identity.yml rows with tested "yes", named by commit because a ggml
+// version number covers many llama.cpp builds. API 4 = release b12651 (1.0.0@f5e6915c2, current); API 3 = release b12207 (0.29.0@998200491, previous). API 2 (ggml 0.25) has
+// no CI row and no tested claim any more (owner 2026-11-26): the plugin still builds for it, an API 2 llama-server gets the "not tested" note.
 #ifndef MOE_CACHE_TESTED_GGML
 #if defined(MC_API_TAG) && MC_API_TAG == 4
 #define MOE_CACHE_TESTED_GGML "1.0.0@f5e6915c2"     // GGML_API=4 build: release b12651; CI identity + Windows tests, and a PC decode A/B against the previous kit (2026-11-23, inside the 5 % gate)
 #elif GGML_BACKEND_API_VERSION >= 3
-#define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0, 0.28.0@ff0d396e3, 0.28.0@51fe42c5d, 0.29.0@998200491"
+#define MOE_CACHE_TESTED_GGML "0.29.0@998200491"
 #else
-#define MOE_CACHE_TESTED_GGML "0.25.1"
+#define MOE_CACHE_TESTED_GGML ""      // API 2: nothing claimed (TOOLS-1305)
 #endif
 #endif
 

@@ -14,6 +14,7 @@ Branches that lost or were only for a test are kept as tags so the commits stay 
 | `archive/block-prefetch` | `claude/block-prefetch-52b3eb` | next-block weight prefetch into a second GPU buffer by a helper thread, with the design note and laptop results | identity held, speed was not readable on the laptop; the helper-thread idea was dropped |
 | `archive/r02-prefetch` | `claude/exec-prefetch-r02` | software prefetch in the CPU executor (`MOE_CACHE_EXEC_PREFETCH`, off by default) | lost on the laptop |
 | `archive/cache623-without-1541b0e` | `ci/cache623-without-1541b0e` | a CI test branch: the same code with only one hunk of an older commit reverted, to A/B a cache-eviction change | test only, never for merging |
+| `archive/workflows/patch067_shader.yml` | (a workflow file, not a branch) | one-off CI for branch `claude/patch067-b12207` on the old b12207 pin; the branch is gone from the remote | one-off finished; kept out of `.github/workflows/` so it no longer counts as a workflow (TOOLS-1305). Restore: `git mv` it back |
 
 ## What is here
 Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 2026-11-01, one baseline against each arm in mirrored order. Baseline 252.1 / 251.9 tok/s prompt, decode about 27.7. Keep-or-drop runs, not chart numbers.

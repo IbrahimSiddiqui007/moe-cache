@@ -2,7 +2,7 @@
 # downloads a small MoE (Granite 3.1 1B-A400M Q4_K_M, sha256-checked) and checks that stock and plugin produce identical tokens
 # with the cache forced to evict (0.2 GiB) and with the executor forced on and byte-checked (repacking off, or the executor steps aside),
 # and that llama-perplexity's logits at batch 8 are the same (KL divergence 0) with eviction and the executor together.
-#   Actions tab -> identity -> Run workflow   (also runs daily, 05:00 UTC). The "master" row builds llama.cpp's newest commit: an early warning
+#   Actions tab -> identity -> Run workflow   (also runs daily on experimental, 06:30 UTC). The "master" row builds llama.cpp's newest commit: an early warning
 #   when upstream changes something the plugin depends on (it may fail without the release being broken).
 name: identity
 
@@ -14,8 +14,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 5 * * *"      # main
-    - cron: "30 6 * * *"     # experimental (AUD-001: scheduled runs always use the workflow file on main, so the ref is picked below; the file must be on main first)
+    - cron: "30 6 * * *"     # experimental (no nightly on main: main only moves at a release and the release gate runs the checks on the tag; TOOLS-1305) (AUD-001: scheduled runs always use the workflow file on main, so the ref is picked below; the file must be on main first)
 
 permissions:
   contents: read
@@ -34,17 +33,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "ggml-0.25-api2", sha: "7fe450e19305b828c199d602c23a8337aaa1f03b", api: "2", tested: "yes" }
-          - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3", tested: "yes" }
-          # release b11966 = ggml 0.28.0, the previous pin (kept as a row); named by commit in MOE_CACHE_TESTED_GGML
-          - { name: "ggml-0.28-b11966-api3", sha: "ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1", api: "3", tested: "yes" }
-          # release b12064 = ggml 0.28.0, the previous pin (kept as a row). The vendored headers (third_party/ggml-v3, from 0.26) differ from it by new
-          # declarations only, plus three optional hooks appended to ggml_backend_buffer_i (set_tensor_n, get_tensor_n, cpy_tensor_n; the plugin passes its interface zero-padded, src/mc_buffer.inl)
-          - { name: "ggml-0.28-b12064-api3", sha: "51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c", api: "3", tested: "yes" }
           # release b12207 = ggml 0.29.0, the identity reference pin; the kits bundle b12651 since v0.3.9 (the build the Windows kit and the Linux tarball bundle; upstream's own moe-cache cache, PRs 30966 / 31233 / 31888, is in it)
           - { name: "ggml-0.29-b12207-api3", sha: "998200491327347eed85f007e4de7a1a7c871453", api: "3", tested: "yes" }
-          # DRAFT: master after #32807 (ggml 1.0.0, API 4), the Inkling 2 pin; tested only after the API-4 plugin passes this workflow
+          # current: master after #32807 (ggml 1.0.0, API 4), the Inkling 2 pin and the build the kits bundle (TOOLS-1305: rows = current + previous + the non-blocking master row)
           - { name: "ggml-1.0-b12651-api4", sha: "f5e6915c28f10330885fcb9243a93ae98d3115ab", api: "4", tested: "yes" }
+          # NON-BLOCKING (tested "no" -> continue-on-error): an early warning when upstream master moves; a failure here never blocks a release
           - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -284,8 +277,8 @@ jobs:
           if grep -q "expert pack" ident_pack_noenv/plugin.log; then echo "FAIL: a pack was used without MOE_CACHE_PACK"; exit 1; fi
           rm -f granite.moepack
 
-      - name: llama.cpp built the way install.sh, official releases and Windows are (backends as files, CPU variants) - 0.26 row only
-        if: matrix.name == 'ggml-0.26-api3'
+      - name: llama.cpp built the way install.sh, official releases and Windows are (backends as files, CPU variants) - b12207 row only
+        if: matrix.name == 'ggml-0.29-b12207-api3'
         run: |
           cmake -S llama.cpp -B llama.cpp/build-dl -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF \
                 -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_USE_PREBUILT_WEBUI=OFF
@@ -293,7 +286,7 @@ jobs:
           ls llama.cpp/build-dl/bin/ | grep -E "ggml-cpu|llama-server"
 
       - name: Path loading (GGML_BACKEND_PATH, the official way), cache forced to evict, with MOE_CACHE_GPU_CACHE=1 - the plugin must refuse that mode (wrong tokens there before, T7)
-        if: matrix.name == 'ggml-0.26-api3'
+        if: matrix.name == 'ggml-0.29-b12207-api3'
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build-dl/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so

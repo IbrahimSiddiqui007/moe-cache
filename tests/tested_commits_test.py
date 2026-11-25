@@ -16,7 +16,7 @@ def check(ok, what):
 
 yml = open(os.path.join(HERE, ".github", "workflows", "identity.yml"), encoding="utf-8").read()
 ci = {m.group(1)[:9] for m in re.finditer(r'sha: "([0-9a-f]{40})"[^}]*tested: "yes"', yml)}
-check(len(ci) >= 4, f"identity.yml: {len(ci)} tested commits found")
+check(len(ci) >= 2, f"identity.yml: {len(ci)} tested commits found")
 check(ci == set(mc.TESTED_COMMITS), f"launcher TESTED_COMMITS {sorted(mc.TESTED_COMMITS)} == identity.yml tested rows {sorted(ci)}")
 
 cpp = open(os.path.join(HERE, "src", "moe_cache_plugin.cpp"), encoding="utf-8").read()

@@ -17,7 +17,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 ## llama.cpp versions (policy, 2026-10-14)
 
 - **Backend API 3** (ggml 0.26, llama.cpp `23b0202a1` and newer) is first-class: new features only need to work there.
-- **Backend API 2** (ggml 0.25.1, llama.cpp `7fe450e19`) is maintained: bug fixes only, no new features, and CI keeps both builds green.
+- **Backend API 2** (ggml 0.25.1, llama.cpp `7fe450e19`): no CI row and no "tested" claim since 2026-11-26 (owner decision, TOOLS-1305); the plugin may still build for it, nothing is promised.
 - API 2 is dropped when either (a) the AUR package (`llama.cpp-cuda-aidock-bin`, which these docs call the Arch `llama.cpp-cuda` package) moves to ggml 0.26 or newer,
   or (b) a third backend API appears and the CI minutes or the maintenance become a burden.
 - Status on 2026-10-14: condition (a) is met (the AUR package moved to llama.cpp v0.6.0, `8345f333`, ggml 0.26.0 / API 3, on 2026-10-07), but the owner chose to
@@ -35,7 +35,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 | Linux + Windows | Linux tested. Windows: identity 4/4 on real hardware (MSI Claw bugs fixed; Windows 11 desktop Ryzen 9 7950X + RX 9070 XT, RESULTS 54) and in CI. Clean cold speed runs on the desktop (RESULTS 59-61): speed figures follow in a later release. **Open: MSI Claw round 3, NVIDIA and Intel GPUs on Windows.** |
 | NVIDIA, AMD and Intel GPUs each tested | NVIDIA (CUDA, Vulkan), Intel iGPU (Vulkan), AMD iGPU (Vega 8, Linux) and AMD discrete (RX 9070 XT: a user on Linux, issue #1; the developer on Windows, RESULTS 54) tested. |
 | Compatibility list checked automatically per model | list exists (docs/reference/platforms.md); an automatic per-model check is not built yet (the old `bench/run_matrix.py` lives in the unmaintained [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) repository); not run by CI (needs models). |
-| Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; llama.cpp 7fe450e19 (API 2) and 23b0202a1 (API 3) are supported, each with its own plugin build. **Open: re-run the full identity matrix on 23b0202a1 (5 models done), run GLM-5.3-Flash on it (needs a model file), automate both builds in CI.** |
+| Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; CI tests llama.cpp b12651 (API 4, current) and b12207 (API 3, previous), each with its own plugin build; API 2 is no longer claimed. **Open: re-run the full identity matrix on 23b0202a1 (5 models done), run GLM-5.3-Flash on it (needs a model file), automate both builds in CI.** |
 | Continuous tests (identity + speed regression guard) | CI builds, runs unit tests and the kernel bit-exactness check on every push (`quick`), and runs identity on small models on CPU runners daily (`identity`, five llama.cpp rows including master), Windows nightly and sanitizers weekly (table in [EXACTNESS.md](exactness.md)). **Open: identity on big models and a GPU, and any speed regression guard.** |
 | Documentation for contributors | CONTRIBUTING.md, TECHNIQUES.md, SECURITY.md exist. |
 | Safety: automatic fallback on a fault | read faults fall back to buffered reads; a wrong model file disables caching instead of aborting; an unrecoverable read still stops the server (never serves wrong data). |

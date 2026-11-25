@@ -7,9 +7,6 @@ name: quality
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["claude/approx"]
-    paths: ["src/**", "tools/quality_gate.py", "tools/quality_yardstick.py", "tools/quality_tasks.json", ".github/workflows/quality.yml", "docs/reference/quality-gate.md"]
 
 permissions:
   contents: read
