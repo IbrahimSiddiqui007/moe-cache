@@ -1325,9 +1325,14 @@ def harden_key_dir(d):
     POSIX gets the same from os.makedirs(mode=0o700); there this does nothing."""
     if not WINDOWS:
         return
+    user = os.environ.get("USERNAME")
+    if not user:
+        return                      # no name to grant: removing the inherited entries would leave nobody with access
     try:
-        subprocess.run([win_tool("icacls"), d, "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME')}:(OI)(CI)F"],
-                       capture_output=True, timeout=15)
+        # grant FIRST, then drop the inherited entries: if the grant fails, nothing was removed (the other order can leave an empty ACL and lock the user out)
+        g = subprocess.run([win_tool("icacls"), d, "/grant:r", f"{user}:(OI)(CI)F"], capture_output=True, timeout=15)
+        if g.returncode == 0:
+            subprocess.run([win_tool("icacls"), d, "/inheritance:r"], capture_output=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
         pass
 

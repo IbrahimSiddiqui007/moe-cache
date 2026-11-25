@@ -412,17 +412,27 @@ check(mode(cbak) == 0o600 and json.load(open(cbak)) == {"env": {}}, "claude: the
 # ---- Windows only: the key folder just created gets icacls (POSIX does nothing); the run is only recorded here ----
 _kd = os.path.join(TMP, "keydir-probe")
 runs, real_run, real_w = [], mc.subprocess.run, mc.WINDOWS
-mc.subprocess.run = lambda *a, **k: runs.append(a[0] if a else k.get("args"))
+class _R:
+    returncode = 0
+def _rec(*a, **k):
+    runs.append(a[0] if a else k.get("args")); return _R()
+mc.subprocess.run = _rec
 mc.WINDOWS = True
+real_user = os.environ.get("USERNAME"); os.environ["USERNAME"] = "tester"
 try:
     mc.harden_key_dir(_kd)
+    n_ok = list(runs); runs.clear()
+    del os.environ["USERNAME"]; mc.harden_key_dir(_kd)      # no user name: nothing is run (removing inheritance without a grant would lock the user out)
+    n_nouser = list(runs); runs.clear()
 finally:
     mc.WINDOWS = real_w
     mc.subprocess.run = real_run
-check(runs == [[runs[0][0], _kd, "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME')}:(OI)(CI)F"]] if runs and runs[0][0].endswith("icacls") else False,
-      f"Windows: harden_key_dir runs icacls /inheritance:r /grant:r USER:(OI)(CI)F on the folder ({runs})")
+    if real_user is not None: os.environ["USERNAME"] = real_user
+check(len(n_ok) == 2 and n_ok[0][1:] == [_kd, "/grant:r", "tester:(OI)(CI)F"] and n_ok[1][1:] == [_kd, "/inheritance:r"] and n_ok[0][0].endswith("icacls"),
+      f"Windows: harden_key_dir grants the user FIRST, then removes the inherited entries ({n_ok})")
+check(n_nouser == [], f"Windows: without a user name harden_key_dir runs nothing ({n_nouser})")
 runs.clear()
-mc.subprocess.run = lambda *a, **k: runs.append(a[0] if a else k.get("args"))
+mc.subprocess.run = _rec
 try:
     mc.harden_key_dir(_kd)
 finally:
