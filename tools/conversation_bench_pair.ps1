@@ -1,6 +1,6 @@
 # conversation_bench_pair.ps1 (TEST-699): the Windows driver for tools\conversation_bench.py: stock llama-server against moe-cache, ABBA, one multi-turn
 # conversation per run that fills the context (default 65,536 tokens), each run on a cold file cache. PowerShell 5. NOT run by the author on a PC yet: read
-# docs\CONVERSATION_BENCH.md, run it once with -Ctx 8192 -MaxTurns 4 to see it work, then the real run.
+# docs\reference\conversation-bench.md, run it once with -Ctx 8192 -MaxTurns 4 to see it work, then the real run.
 # Same shape as tools\agent_bench_pair.ps1: the model pushed out of Windows' file cache before every run (tools\win_flush_cache.ps1), the server started and
 # stopped by PID, a health wait, a quiet-CPU gate, then `conversation_bench.py run`; at the end `conversation_bench.py assemble` writes ONE bench record.
 # Stock = the llama-server command the launcher prints for --agent --dry-run (computed once). moe-cache = the launcher with --agent --always-plugin and
