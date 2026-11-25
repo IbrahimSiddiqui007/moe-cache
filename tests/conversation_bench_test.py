@@ -64,6 +64,11 @@ class Fake(http.server.BaseHTTPRequestHandler):
         pn = total - common
         answer = f"Answer {len(msgs)}: " + "word " * 30
         pred = body["max_tokens"] // 2
+        short_from = getattr(s, "short_from", None)       # TEST-1184: from this depth the model answers in 4 tokens, unless ignore_eos forces the full length
+        if short_from is not None and body.get("ignore_eos"):
+            pred = body["max_tokens"]
+        elif short_from is not None and total >= short_from:
+            pred = 4
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         for piece in (answer[:20], answer[20:]):
             self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": piece}}]}).encode() + b"\n\n"); self.wfile.flush()
@@ -76,6 +81,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
 
 class Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    short_from = None                 # TEST-1184: from this depth the fake answers in 4 tokens, unless the request carries ignore_eos
 
 
 def start(name, n_ctx, p_tps, d_tps):
@@ -335,4 +341,30 @@ check(q2["stop_reason"] == "context full" and q2["final_depth"] is not None and 
       f"dense tokens, no /tokenize: the guess may be low, a 400 context refusal still ends as context full ({q2['stop_reason']}, final depth {q2['final_depth']})")
 check(T2.requests and True, "the no-/tokenize run did send requests")
 check(getattr(T2, "refused", 0) == 0, f"TEST-905: no /tokenize and 1 character per token: the sizes follow the server's own prompt counts, so no request was refused for the context (refused {getattr(T2, 'refused', 0)})")
+# ---- TEST-1184: in the deep depth bands the answers are under 16 tokens, so the band's decode tok/s is empty; --ignore-eos-from-depth forces full-length answers from a depth on
+def shorty(name, n_ctx, **kw):
+    s, u = start(name, n_ctx, 100.0, 10.0)
+    for k, v in dict(short_from=2048, **kw).items():   # short_from: from this depth the fake answers in 4 tokens unless the request carries ignore_eos
+        setattr(s, k, v)
+    return s, u
+S9, us9 = shorty("S9", 8192)
+r9 = cb.run_conversation(us9, "stock", 8192, 32, 42, "", "m", 30, None, None, None, False, False, quiet, None, None, True)
+last9 = [b for b in r9["bands"] if b["turns"]][-1]
+check(all(t["ignore_eos"] is False for t in r9["turns"]), "without --ignore-eos-from-depth no turn asks for ignore_eos")
+check(last9["decode_turns"] == 0 and any("--ignore-eos-from-depth" in w for w in r9["answer_stats"]["warnings"]),
+      f"TEST-1184: the deepest band's answers are 4 tokens, its decode tok/s is empty and a warning names --ignore-eos-from-depth (band {last9['band']}, {last9['turns']} turns)")
+S10, us10 = shorty("S10", 8192)
+r10 = cb.run_conversation(us10, "stock", 8192, 32, 42, "", "m", 30, None, None, None, False, False, quiet, None, None, True, 24, None, 0.0, "(no visible answer)", None, True, 2048)
+prev10 = [0] + [t["depth_after"] for t in r10["turns"]][:-1]      # the option compares the depth the conversation had BEFORE the new user message
+deep10 = [t for t, pv in zip(r10["turns"], prev10) if pv >= 2048]
+shallow10 = [t for t, pv in zip(r10["turns"], prev10) if pv < 2048]
+check(deep10 and all(t["ignore_eos"] for t in deep10) and shallow10 and all(not t["ignore_eos"] for t in shallow10),
+      f"ignore_eos_from_depth: every turn from the depth on asks ignore_eos, every turn below does not ({sum(t['ignore_eos'] for t in r10['turns'])} of {len(r10['turns'])} turns deep)")
+check(all(b["decode_turns"] > 0 for b in r10["bands"] if b["turns"]) and not any("none generated" in w for w in r10["answer_stats"]["warnings"]),
+      "ignore_eos_from_depth: every band with turns has decode turns and there is no 'none generated' warning")
+S11, us11 = shorty("S11", 8192)
+rc = cb.main(["run", "--url", us11, "--arm", "stock", "--ctx", "8192", "--max-turns", "4", "--ignore-eos-from-depth", "0",
+              "--out", os.path.join(tempfile.mkdtemp(), "r11.json")])
+check(rc == 0 and S11.requests and all(r.get("ignore_eos") for r in S11.requests), "--ignore-eos-from-depth parses and sets ignore_eos in every request body")
+check(r10["ignore_eos_from_depth"] == 2048 and r9["ignore_eos_from_depth"] is None, "the run records ignore_eos_from_depth (protocol label, R17)")
 sys.exit(1 if fails else 0)
