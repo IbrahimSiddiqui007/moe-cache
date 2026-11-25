@@ -1244,7 +1244,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     reserve and context, SMI_GAP_GIB until measured). mtp: MTP drafting is on (its draft context needs GPU memory, MTP_DRAFT_GIB until a load with MTP was recorded).
     keep_ub: a stock cache on a CUDA llama-server keeps -ub 2048 (CACHE-1187; measured on one NVIDIA laptop only), see the cache branch below.
     loop_n_head: a looped model's head count for its dense relative-position bias buffer (LAUNCHER-1284/1303). None (the default) = read from the header (loop_heads:
-    <arch>.loop.count > 1), so the bias is always counted for a looped model; 0 = not counted. loop_ubs: the micro-batches the launcher's looped-model rule runs when expert
+    <arch>.loop.count > 1) only when loop_ubs is given (loop_plan's plans at the rule's small -ub), else 0 = not counted, as before 2026-11-25: on CUDA the bias is not a
+    dense buffer (laptop 4060, -ub 2048, 4k: 547 MiB of compute in all), so the stock check, the OOM retry, the multi-GPU probe and fast_kv_hint keep the old plan. The
+    launcher passes loop_ubs only where the bias is a dense buffer (Vulkan, PC buffer lines). loop_ubs: the micro-batches the launcher's looped-model rule runs when expert
     layers stay on the CPU (inkling_loop_stage: (128,) by default, LOOP_UBS with MOE_CACHE_LOOP_FIT=1); None = no such rule (callers that keep the planner's -ub). With it
     the plan is made at the -ub that will really run (loop_plan), not at a -ub the rule then replaces.
     cut_block: below BLOCK_FULL_CTX the long-prompt block's room may be cut (LAUNCHER-1303/1236); False (--exact, MOE_CACHE_GPU_CHUNKS=0) keeps the full room at every
@@ -1252,7 +1254,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     """
     args = dict(locals())
     if loop_n_head is None:
-        loop_n_head = loop_heads(path)
+        loop_n_head = loop_heads(path) if loop_ubs else 0          # LAUNCHER-1303 critic: counted only in loop_plan's plans (see the docstring)
     if loop_n_head and loop_ubs and not ub:
         return loop_plan(dict(args, loop_n_head=loop_n_head))
     lay = model_layout(path)

@@ -65,6 +65,27 @@ with tempfile.TemporaryDirectory() as tmp:
     tiny = multigpu.plan(model, 8192, [1 * GIB, 1 * GIB])
     check(tiny["n_cpu_moe"] == L and tiny["tensor_split"] == "", "1 + 1 GiB: all experts stay on the CPU, no -ts")
 
+    # LAUNCHER-1303/1236 critic: cut_block=False (--exact, MOE_CACHE_GPU_CHUNKS=0) keeps the first card's full block room below 32k = the old plan (block share 1 at every context)
+    keep_share = gguf_plan.block_weight_share
+    pairs = ((8, 8), (8, 4), (16, 8), (6, 6), (12, 6))
+    try:
+        gguf_plan.block_weight_share = lambda ctx: 1.0
+        olds = {(c, p): multigpu.plan(model, c, [p[0] * GIB, p[1] * GIB]) for c in (4096, 8192) for p in pairs}
+    finally:
+        gguf_plan.block_weight_share = keep_share
+    offbad, cut_differs = [], False
+    for (c, p), o in olds.items():
+        x = multigpu.plan(model, c, [p[0] * GIB, p[1] * GIB], cut_block=False)
+        if (x["n_cpu_moe"], x["ub"], x["tensor_split"], x["per_card_gib"]) != (o["n_cpu_moe"], o["ub"], o["tensor_split"], o["per_card_gib"]):
+            offbad.append((c, p))
+        cut_differs |= multigpu.plan(model, c, [p[0] * GIB, p[1] * GIB])["n_cpu_moe"] < o["n_cpu_moe"]
+    check(not offbad, f"cut_block=False at 4k/8k: the old multi-GPU plan (full block room on the first card) ({offbad or 'all equal'})")
+    check(cut_differs, "the switch matters: with the cut (default) some 4k/8k pair keeps fewer expert layers on the CPU")
+    la = multigpu.launch_args([{"dev": "CUDA0", "free_mib": 8192}, {"dev": "CUDA1", "free_mib": 8192}], model, 4096, cut_block=False)
+    check(la["n_cpu_moe"] == olds[(4096, (8, 8))]["n_cpu_moe"], "launch_args passes cut_block through")
+    src = open(os.path.join(HERE, "bin", "moe_cache.py"), encoding="utf-8").read()
+    check('kw["cut_block"] = block_cut_on(a)          # --exact / MOE_CACHE_GPU_CHUNKS=0: the first card' in src, "the launcher's --multi-gpu path uses the one-card switch (block_cut_on)")
+
     # a dense model (no experts) is not this planner's job
     check(multigpu.plan(model, 8192, [8 * GIB], layout={"n_layers": 0, "expert_bytes_per_layer": 0, "other_bytes": 1e9}) is None, "dense model: None (llama-fit-params / --fit)")
 

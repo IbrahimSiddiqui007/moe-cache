@@ -38,10 +38,11 @@ def fill(n_layers, n_cpu_moe, light, heavy, caps):
     return counts
 
 
-def plan(path, ctx, frees, kv_q8=False, ub=None, reserve_gb=0.5, layout=None, kv=None, compute_mib=None):
+def plan(path, ctx, frees, kv_q8=False, ub=None, reserve_gb=0.5, layout=None, kv=None, compute_mib=None, cut_block=True):
     """frees: free bytes per card in the order llama.cpp will list them (pass --device in this order). Returns a dict like gguf_plan.tune() with
     n_cpu_moe, ub, plus tensor_split ("a,b", counts of slots), per_card_gib (planned use per card), ub; or None when no card has memory information.
-    layout/kv/compute_mib: for tests (a layout dict as gguf_plan.model_layout returns, KV bytes, the compute buffer in MiB)."""
+    layout/kv/compute_mib: for tests (a layout dict as gguf_plan.model_layout returns, KV bytes, the compute buffer in MiB).
+    cut_block: tune()'s switch (LAUNCHER-1303/1236): False (--exact, MOE_CACHE_GPU_CHUNKS=0) keeps the first card's full long-prompt block room at every context, as before."""
     if not frees:
         return None
     lay = layout or gguf_plan.model_layout(path)
@@ -50,10 +51,11 @@ def plan(path, ctx, frees, kv_q8=False, ub=None, reserve_gb=0.5, layout=None, kv
         return None                                   # dense model: nothing to split by experts (llama.cpp's --fit / llama-fit-params does layers)
     kv = kv if kv is not None else gguf_plan._kv_or_flat(path, ctx, kv_q8)
     # 1) the answer for one pool of memory: what tune() gives for the sum, with each extra card paying its own compute buffer + reserve
-    probe = gguf_plan.tune(path, ctx, free=max(frees), kv_q8=kv_q8, want_cache=False, reserve_gb=reserve_gb, ub=ub) if layout is None else {"ub": ub or 1024, "compute_mib": compute_mib or 400}
+    probe = gguf_plan.tune(path, ctx, free=max(frees), kv_q8=kv_q8, want_cache=False, reserve_gb=reserve_gb, ub=ub, cut_block=cut_block) if layout is None else {"ub": ub or 1024, "compute_mib": compute_mib or 400}
     buf = (compute_mib if compute_mib is not None else probe["compute_mib"]) * MIB      # bytes
     u = probe["ub"]
-    block = gguf_plan.long_prompt_block_bytes(lay, u, ctx, gguf_plan.loop_bias_bytes(ctx, u, gguf_plan.loop_heads(path)) if layout is None else 0)                    # the plugin's long-prompt block: tune()'s own function; on the first card only
+    # the plugin's long-prompt block: tune()'s own function; on the first card only. cut_block False: the full room (ctx None), as tune() keeps it
+    block = gguf_plan.long_prompt_block_bytes(lay, u, ctx if cut_block else None, gguf_plan.loop_bias_bytes(ctx, u, gguf_plan.loop_heads(path)) if layout is None else 0)
     caps = [gguf_plan.room_bytes(f, buf / MIB, reserve_gb, block if k == 0 else 0) for k, f in enumerate(frees)]       # tune()'s own subtraction, per card
     light = (gguf_plan.gpu_fixed_weights_bytes(lay) + kv) / (L + 1)      # the same fixed part tune() counts (token_embd stays on the CPU), spread over the slots
     by = lay.get("expert_bytes_by_layer") or {}
@@ -120,11 +122,11 @@ def user_split_flags(extra):
     return [x for x in extra if x in USER_SPLIT_FLAGS or any(x.startswith(f + "=") for f in USER_SPLIT_FLAGS if f.startswith("--"))]
 
 
-def launch_args(cards, path, ctx, kv_q8=False, ub=None, reserve_gb=0.5):
+def launch_args(cards, path, ctx, kv_q8=False, ub=None, reserve_gb=0.5, cut_block=True):
     """What the launcher adds for 2+ cards: {"n_cpu_moe": N, "args": ["--device", "A,B", "-ts", "a,b"], "line": str}, or {"skip": reason}."""
     if len(cards) < 2:
         return {"skip": "fewer than two usable cards"}
-    p = plan(path, ctx, [c["free_mib"] * MIB for c in cards], kv_q8=kv_q8, ub=ub, reserve_gb=reserve_gb)
+    p = plan(path, ctx, [c["free_mib"] * MIB for c in cards], kv_q8=kv_q8, ub=ub, reserve_gb=reserve_gb, cut_block=cut_block)
     if p is None:
         return {"skip": "no expert layers to place (dense model or unreadable header): llama.cpp splits the layers itself"}
     if not p["tensor_split"]:

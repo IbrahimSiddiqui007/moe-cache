@@ -143,9 +143,9 @@ for ctx in (4096, 8192):
     n = plan(INKL, ctx, 14.0, loop_n_head=0)
     check(same and block_mib(n) == block_mib(plan(INKL, ctx, 14.0, old=True, loop_n_head=0)) and n["block_cap_mib"] == 0,
           f"looped Inkling-like ctx {ctx} -ub {n['ub']}: bias {gguf_plan.loop_bias_bytes(ctx, n['ub'], 24) // MiB} MiB uncounted >= the cut: full block, same pick, no cap")
-# LAUNCHER-1284/1303: by default (loop_n_head None) tune() reads the head count from the header and counts the bias
-dflt = plan(INKL, 4096, 14.2)          # 14.2 GiB: the cut frees a layer here (9 -> 8 CPU layers); at 14.0 it does not (9 = 9: no cut, no cap)
-check(dflt["loop_bias_mib"] == round(2 * 4096 * dflt["ub"] * 24 * 4 / MiB) and dflt["block_cap_mib"] > 0, f"looped, default: bias counted from the header ({dflt['loop_bias_mib']} MiB at -ub {dflt['ub']}), the cut applies")
+# LAUNCHER-1303 critic: by default (loop_n_head None, no loop_ubs) the bias is not counted (CUDA has no dense bias buffer): the same plan as loop_n_head=0, as before 2026-11-25
+dflt = plan(INKL, 4096, 14.2)
+check(dflt["loop_bias_mib"] == 0 and dflt == plan(INKL, 4096, 14.2, loop_n_head=0), f"looped, default without loop_ubs: bias not counted, = loop_n_head 0 (n_cpu_moe {dflt['n_cpu_moe']}, cap {dflt['block_cap_mib']})")
 # ... and when the bias is counted (loop_n_head given), the cut applies again
 nc = plan(INKL, 4096, 14.2, loop_n_head=24)
 check(block_mib(nc) < block_mib(plan(INKL, 4096, 14.2, old=True, loop_n_head=24)) and nc["block_cap_mib"] > 0, f"looped, bias counted: the block room is cut ({block_mib(nc)} MiB, cap {nc['block_cap_mib']})")

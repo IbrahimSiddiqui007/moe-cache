@@ -3350,6 +3350,7 @@ def multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_us
     free = [c["free_mib"] * 2**20 for c in cards]
     # (Windows commit: commit_stage counts the whole server after the plan; the old fixed 4 GiB cap of the pool is gone, LAUNCHER-991)
     kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}
+    kw["cut_block"] = block_cut_on(a)          # --exact / MOE_CACHE_GPU_CHUNKS=0: the first card keeps the full long-prompt block room, as the one-card plan does (LAUNCHER-1303/1236)
     res = multigpu.launch_args([dict(c, free_mib=f / 2**20) for c, f in zip(cards, free)], model, ctx, kv_q8=kv_q8, ub=int(ub) if (ub or "").isdigit() else None, **kw)
     if "skip" in res:
         say(f"moe-cache: --multi-gpu: not applied ({res['skip']}): the one-card plan stands")
@@ -3530,10 +3531,11 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
             kw["plugin"] = getattr(a, "plan_plugin", True)          # the long-prompt GPU block only when the plugin runs (LAUNCHER-1177)
             kw["keep_ub"] = bool(getattr(a, "cuda_listing", False))        # CUDA llama-server: a stock cache keeps -ub 2048 (CACHE-1187); other backends keep the old 1024 rule
             kw["mtp"] = "draft-mtp" in extra
-            # LAUNCHER-1284/1303 (2026-11-25, default for looped models; was opt-in with MOE_CACHE_LOOP_FIT=1): the planner counts a looped model's dense bias buffer (tune reads
-            # the head count from the header) and, when the looped-model rule will run a small -ub (inkling_loop_stage), plans at that -ub (loop_ubs). --exact / --cpu-only keep the old plan.
+            # LAUNCHER-1284/1303 (2026-11-25, default for looped models; was opt-in with MOE_CACHE_LOOP_FIT=1): when the looped-model rule will run a small -ub (inkling_loop_stage),
+            # the planner plans at that -ub (loop_ubs, loop_plan) and counts the model's dense bias buffer there. Only on a Vulkan llama-server, where the bias is a dense buffer
+            # (PC buffer lines); on CUDA it is not (laptop 4060, -ub 2048, 4k: 547 MiB of compute in all), so other backends keep the old plan, as do --exact / --cpu-only.
             lm_ = loop_meta(model)
-            if a.exact or a.cpu_only or not lm_:
+            if a.exact or a.cpu_only or not lm_ or not loop_bias_dense(a, gpu):
                 kw["loop_n_head"] = 0
             else:
                 kw["loop_n_head"] = lm_[5]
@@ -3568,6 +3570,9 @@ def walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=True, use_room
         reserve = 0.0 if use_room else 0.25
     fkw = dict(kw, reserve_gb=reserve, ub=tuned["ub"])
     fkw.pop("long_prompt", None)
+    fkw.pop("loop_ubs", None)
+    if not any(r.get("setting") == "loop_plan_ub" for r in tuned.get("inputs", [])):
+        fkw["loop_n_head"] = 0             # LAUNCHER-1303 critic: a looped model's bias only where loop_plan planned at the rule's -ub (the usual plan does not count it)
     ftuned = tune(model, ctx, free=free, want_cache=False, kv_q8=kv_q8, **fkw)
     floor = min(int(ftuned["n_cpu_moe"]), int(tuned["n_cpu_moe"]))
     srcs = {r["source"] for r in ftuned.get("inputs", []) if r["setting"] in ("gpu_weights_mib", "gpu_kv_mib", "gpu_compute_mib", "gpu_overhead_mib")}
@@ -5095,6 +5100,19 @@ def plugin_no_op_offload_stage(a, env, user_extra, stock):
     return [(k, v) for k, v in env if k != "MOE_CACHE_GPU_MIN_TOKENS"] + [("MOE_CACHE_GPU_MIN_TOKENS", "0")]
 
 
+def vulkan_listing(listing):
+    """True when the server's own device list shows Vulkan devices and nothing else (LAUNCHER-1303 critic: where a looped model's relative-position bias is a dense buffer)."""
+    kinds = re.findall(r"^\s+([A-Za-z]+)\d+: ", listing or "", re.M)
+    return bool(kinds) and set(kinds) == {"Vulkan"}
+
+
+def loop_bias_dense(a, gpu=None):
+    """LAUNCHER-1303 critic: whether a looped model's dense relative-position bias buffer is counted (and planned at the rule's -ub, gguf_plan.loop_plan): only on a Vulkan
+    llama-server (the PC's buffer lines, RX 9070 XT: 96 MiB at 4k -ub 128 = the formula). Not on CUDA (laptop 4060, b12642, -ub 2048, 4k: 547 MiB of compute in all, the dense
+    bias alone would be 1536) nor where the backend is not known: there the plan stays as before 2026-11-25 (no bias counted)."""
+    return bool(getattr(a, "vulkan_listing", False) or (gpu and str(gpu[0]).startswith("Vulkan")))
+
+
 def cuda_only_listing(listing):
     """True when the server's own device list (`llama-server --list-devices`) shows one CUDA device and nothing else: the only setup the GPU expert cache default was measured on
     (CACHE-1187, one NVIDIA laptop, Linux). Read from the listing, never guessed from the machine."""
@@ -6236,6 +6254,7 @@ def _launch_plan(a, extra, argv, machine):
     load, method, gcache, env, cap = memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine)
     dev_listing = listing if listing is not None else machine.list_devices(ls)        # the server's own device list (Linux gives None up to here)
     a.cuda_listing = cuda_only_listing(dev_listing)
+    a.vulkan_listing = vulkan_listing(dev_listing)          # LAUNCHER-1303 critic: a looped model's bias is counted only on Vulkan (loop_bias_dense)
     gcache = default_gpu_cache_stage(a, extra, ls, machine, dev_listing, dense, method == "none (stock)", gcache, ncmoe_user)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.

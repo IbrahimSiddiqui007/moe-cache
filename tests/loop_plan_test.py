@@ -1,7 +1,8 @@
 """LAUNCHER-1303 / 1284: the planner's numbers for a LOOPED model (Inkling 2 Mini today), model-free (synthetic sparse GGUF headers, no weights, no GPU).
   - KV cache + conv state (planner/gguf_plan.py loop_kv_bytes): one cache per pass through a loop layer, sliding-window layers capped at the window x slots + -ub,
     against the PC's -lv 4 buffer lines (2026-11-25, chain29, RX 9070 XT, Inkling 2 Mini UD-IQ4_XS, f16): 768 MiB KV + 14.6 MiB state at 4k, 2742.6 MiB at 64k.
-  - the dense relative-position bias is counted by default (loop_n_head None = read from the header), never twice (a measured load, llama-fit-params);
+  - the dense relative-position bias is counted in loop_plan's plans (the head count from the header) and when asked (loop_n_head), never twice (a measured load,
+    llama-fit-params); without loop_ubs nothing is counted (the stock check, the OOM retry, fast_kv_hint: as before 2026-11-25; CUDA has no dense bias buffer);
   - loop_plan: when the launcher's looped-model rule runs a small -ub with experts on the CPU, the plan is made at that -ub (PC 4k: our plan kept 6 layers on the CPU
     where stock ran 4 at the same -ub 128 and left 3.2 GiB unused); a plan that keeps every expert on the GPU or picks a GPU cache is left alone;
   - the compute buffer estimate at -ub 128 against the PC (153.3 MiB at 4k, 1699.2 MiB at 64k).
@@ -95,18 +96,18 @@ check(2742.6 <= kv64 <= 2742.6 * 1.03, f"64k f16: {kv64:.1f} MiB vs 2742.6 MiB r
 check(gguf_plan.kv_bytes(INK, 4096, True) / MiB < kv4 * 0.6, "q8_0 KV: about half")
 check(gguf_plan.kv_bytes(PLAIN, 4096) is None, "a sliding-window model that is not looped keeps the old answer (None: flat 40 KB per token), unchanged")
 
-# 2. the bias is counted by default, never twice
+# 2. the bias is counted when asked (loop_plan's plans pass the header's head count), never twice
 free_pc = 15419 * MiB              # PC: Vulkan1 15419 MiB free at the 4k item (chain29 -lv 4)
-t0 = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128)
-check(t0["loop_bias_mib"] == 96, f"default: bias read from the header, 2 x 4096 x 128 x 24 x 4 B = 96 MiB ({t0['loop_bias_mib']})")
+t0 = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128, loop_n_head=24)
+check(t0["loop_bias_mib"] == 96, f"loop_n_head 24: 2 x 4096 x 128 x 24 x 4 B = 96 MiB ({t0['loop_bias_mib']})")
 check(gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128, loop_n_head=0)["loop_bias_mib"] == 0, "loop_n_head=0 (--exact): not counted")
-tm = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128, measured={"buffers": {128: {"compute_mib": 153}}})
+tm = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128, loop_n_head=24, measured={"buffers": {128: {"compute_mib": 153}}})
 check(tm["loop_bias_mib"] == 0 and tm["compute_mib"] == 153, "a measured load at that -ub already holds the bias: not added twice")
 keep = (gguf_plan.plan_rule_active, gguf_plan.fit_params_buffer_mib)
 try:
     gguf_plan.plan_rule_active = lambda fp: True
     gguf_plan.fit_params_buffer_mib = lambda fp, path, ctx, u, kv_q8=False: 150.0
-    tf = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128, fit_params="/fake/llama-fit-params")
+    tf = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128, loop_n_head=24, fit_params="/fake/llama-fit-params")
 finally:
     gguf_plan.plan_rule_active, gguf_plan.fit_params_buffer_mib = keep
 check(tf["loop_bias_mib"] == 0 and tf["compute_mib"] == 150.0, f"llama-fit-params measured this model (it holds the bias): not added twice ({tf['compute_mib']})")
@@ -114,8 +115,8 @@ inp = {r["setting"]: r for r in t0["inputs"]}
 check("loop_bias_mib" in inp and inp["loop_bias_mib"]["value"] == 96, "the plan file names the bias (its own inputs row, R17)")
 
 # 3. compute buffer at -ub 128 against the PC
-c4 = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128)["compute_mib"]
-c64 = gguf_plan.tune(INK, 65536, free=free_pc, want_cache=False, ub=128)["compute_mib"]
+c4 = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, ub=128, loop_n_head=24)["compute_mib"]
+c64 = gguf_plan.tune(INK, 65536, free=free_pc, want_cache=False, ub=128, loop_n_head=24)["compute_mib"]
 check(153.3 <= c4 <= 153.3 * 1.5, f"4k -ub 128: {c4:.0f} MiB vs 153.3 measured on the PC (never under, at most +50 %)")
 check(1699.2 <= c64 <= 1699.2 * 1.15, f"64k -ub 128: {c64:.0f} MiB vs 1699.2 recorded on the PC (never under, at most +15 %)")
 
@@ -134,7 +135,7 @@ check(big["n_cpu_moe"] == 0 and big["ub"] == old["ub"] if old["ub"] else True, f
 cache = gguf_plan.tune(INK, 4096, free=8 * GiB, want_cache=True, loop_ubs=(128,))
 check(cache["n_cpu_moe"] in (999,) or cache.get("gpu_cache_mib") == 0, "a GPU-cache plan is left to the cache stage")
 fit = gguf_plan.tune(INK, 8192, free=free_pc, want_cache=False, loop_ubs=(512, 256, 128))
-r128 = gguf_plan.tune(INK, 8192, free=free_pc, want_cache=False, ub=128)
+r128 = gguf_plan.tune(INK, 8192, free=free_pc, want_cache=False, ub=128, loop_n_head=24)
 check(fit["ub"] in (512, 256, 128) and fit["n_cpu_moe"] == r128["n_cpu_moe"], f"MOE_CACHE_LOOP_FIT ladder: the fewest CPU layers, then the largest -ub (-ub {fit['ub']}, {fit['n_cpu_moe']} layers)")
 for f in (7.5, 11.0, 15.06, 23.0):
     lp = gguf_plan.tune(INK, 4096, free=f * GiB, want_cache=False, loop_ubs=(128,))
@@ -145,6 +146,35 @@ for f in (7.5, 11.0, 15.06, 23.0):
 src = open(os.path.join(HERE, "bin", "moe_cache.py"), encoding="utf-8").read()
 check('kw["loop_ubs"] = LOOP_UBS if loop_fit_on() else (LOOP_RULE_UB,)' in src and "pick = LOOP_RULE_UB" in src, "the launcher plans at the -ub its looped-model rule runs")
 check('kw["loop_n_head"] = 0' in src, "--exact / --cpu-only keep the old plan (bias not counted)")
+
+# 6. LAUNCHER-1303 critic: the bias only in loop_plan's plans and only on Vulkan
+#    a looped header with no loop_ubs (the stock check, the OOM retry tune_free, the multi-GPU probe, fast_kv_hint, a CUDA launch) plans as before c72af89: no bias
+#    (pre-c72af89 default loop_n_head=0); laptop 4060 CUDA, -ub 2048, 4k: 547 MiB of compute in all where the dense bias alone would be 1536
+bad = []
+for ctx in (4096, 65536):
+    for f in (7.5, 11.0, 15.06, 23.0):
+        for kw in ({"plugin": False}, {"plugin": True}, {"plugin": True, "cut_block": False}, {"reserve_gb": 1.0, "plugin": False}, {"ub": 2048}):
+            d, z = gguf_plan.tune(INK, ctx, free=f * GiB, want_cache=False, **kw), gguf_plan.tune(INK, ctx, free=f * GiB, want_cache=False, loop_n_head=0, **kw)
+            if d != z or d["loop_bias_mib"]:
+                bad.append((ctx, f, kw))
+check(not bad, f"looped header, no loop_ubs (stock check / OOM retry / probe shapes): the plan without the bias, = loop_n_head 0 ({bad or 'all equal'})")
+h0 = gguf_plan.tune(INK, 65536, free=11 * GiB, want_cache=False)
+check(h0["compute_mib"] < 2 * 65536 * h0["ub"] * 24 * 4 / MiB, f"64k -ub {h0['ub']}: compute {h0['compute_mib']:.0f} MiB holds no dense bias ({2 * 65536 * h0['ub'] * 24 * 4 / GiB:.0f} GiB)")
+#    loop_plan on Vulkan (the launcher passes loop_ubs and the header's head count) is unchanged: header default = explicit heads, at -ub 128 with the bias
+for f in (11.0, 15.06):
+    v_d = gguf_plan.tune(INK, 4096, free=f * GiB, want_cache=False, loop_ubs=(128,))
+    v_x = gguf_plan.tune(INK, 4096, free=f * GiB, want_cache=False, loop_ubs=(128,), loop_n_head=24)
+    check(v_d == v_x and v_d["ub"] == 128 and v_d["loop_bias_mib"] == 96, f"{f} GiB, loop_ubs (128,): loop_plan at -ub 128 with the 96 MiB bias, {v_d['n_cpu_moe']} CPU layers")
+check(gguf_plan.tune(INK, 4096, free=15.06 * GiB, want_cache=False, loop_ubs=(128,))["n_cpu_moe"] == 3, "15.06 GiB 4k: 3 CPU layers, as on experimental 1ea1074 (pinned)")
+#    the launcher asks for it only on a Vulkan server
+import types   # noqa: E402
+import moe_cache as mc   # noqa: E402
+A = types.SimpleNamespace
+VK, CU = "Available devices:\n  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 15419 MiB free)\n", "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4060 Laptop GPU (7806 MiB, 7600 MiB free)\n"
+check(mc.vulkan_listing(VK) and not mc.vulkan_listing(CU) and not mc.vulkan_listing(None) and not mc.vulkan_listing(VK + CU.split("\n", 1)[1]), "vulkan_listing: Vulkan only")
+check(mc.loop_bias_dense(A(vulkan_listing=True)) and not mc.loop_bias_dense(A(vulkan_listing=False)) and not mc.loop_bias_dense(A()), "loop_bias_dense: the server's device list")
+check(mc.loop_bias_dense(A(), ("Vulkan1", "AMD Radeon RX 9070 XT", 15419, 16304)) and not mc.loop_bias_dense(A(), ("CUDA0", "RTX 4060", 7600, 7806)), "loop_bias_dense: the Windows GPU pick")
+check("if a.exact or a.cpu_only or not lm_ or not loop_bias_dense(a, gpu):" in src and "a.vulkan_listing = vulkan_listing(dev_listing)" in src, "tune_launch passes loop_ubs / heads only on Vulkan")
 
 shutil.rmtree(tmp, ignore_errors=True)
 print("loop plan checks: " + (f"{fails} failed" if fails else "all passed"))
