@@ -96,6 +96,8 @@ CASES = [
     ("gpu_cache_auto_128k", ["--ram", "12", "--vram", "8", "--gpu-cache", "auto", "--ctx", "131072"], []),
     ("extra_threads_user", ["--ram", "12"], ["-t", "4"]),
     ("extra_jinja_user", ["--ram", "12", "--agent"], ["--no-jinja"]),
+    ("old_plugin_8k", ["--ram", "12", "--ctx", "8192", "@oldplugin"], []),       # LAUNCHER-1303 critic (pick-3): a plugin build without the block cap keeps the full block room, says so once
+    ("old_plugin_64k", ["--ram", "12", "--ctx", "65536", "@oldplugin"], []),     # ...and says nothing at 64k, where no cut would apply
 ]
 
 
@@ -191,6 +193,8 @@ def fake_machine(m, tmp):
 
 def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None):
     m = MACHINES[machine_name]
+    old_plugin = "@oldplugin" in opts           # test-only marker: the plugin library file has no block cap string
+    opts = [o for o in opts if o != "@oldplugin"]
     saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy(), mc.other_llama_servers)
     for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_ARG_HOST", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH", "LD_LIBRARY_PATH")]:
         del os.environ[k]
@@ -200,7 +204,7 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None)
     calls, _ = fake_machine(m, tmp)
     ls = os.path.join(tmp, "llama-server")
     lib = os.path.join(tmp, "libggml-moe-cache.so")
-    open(ls, "w").close(); open(lib, "w").write("MOE_CACHE_GPU_BLOCK_CAP_MIB")   # a current build: the plugin reads the block cap (LAUNCHER-1303 c)
+    open(ls, "w").close(); open(lib, "w").write("moe-cache-api=3" if old_plugin else "MOE_CACHE_GPU_BLOCK_CAP_MIB")   # a current build: the plugin reads the block cap (LAUNCHER-1303 c)
     mc.pick_lib = lambda ls_: lib
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

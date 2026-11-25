@@ -119,6 +119,16 @@ def say(msg, err=False):
         print(msg, file=sys.stderr if err else sys.stdout, flush=True)
 
 
+_SAID_ONCE = set()
+
+
+def say_once(key, msg, err=True):
+    """LAUNCHER-1158: one plain line per run for a fallback (an auto value replaced by a guess), however often the code asks."""
+    if key not in _SAID_ONCE:
+        _SAID_ONCE.add(key)
+        say(msg, err=err)
+
+
 def which(prog):
     return shutil.which(prog) or prog
 
@@ -1054,7 +1064,9 @@ def physical_cores():
                 return len(seen)
         except OSError:
             pass
-    return max(1, (os.cpu_count() or 2) // 2)
+    n = max(1, (os.cpu_count() or 2) // 2)
+    say_once("physical_cores", f"moe-cache: the CPU's core count could not be read: assuming {n} physical cores (half of the {os.cpu_count() or 2} logical CPUs; hyper-threading is the common case), so the thread count may be off (-t N in the server arguments sets it)")
+    return n
 
 
 # --leave-room (owner 2026-10-30: a big-model test made the desktop PC stutter while the owner used it; a friend using the PC while a model runs hits
@@ -3623,7 +3635,9 @@ def measured_loads(a, ls, model, ctx, kv_q8, machine, plugin, mtp, ub_asked=None
             return {}
         engine = "plugin" if plugin else "stock"
         out, bufs = {}, {}
-        for u in sorted({512, 1024, 2048, 4096} | ({int(ub_asked)} if (ub_asked or "").isdigit() else set())):
+        # LAUNCHER-1303: also the looped-model rule's small micro-batches (LOOP_UBS, 128 is what runs): a load recorded at -ub 128 was never looked up, so the plan
+        # kept the table's compute buffer and the PC placed 5 CPU layers with 2.5 GB free after a recorded load
+        for u in sorted({512, 1024, 2048, 4096} | set(LOOP_UBS) | ({int(ub_asked)} if (ub_asked or "").isdigit() else set())):
             m = lr.lookup(CACHE_DIR, gid, build, mid, ctx, u, kv_q8, engine, mtp, free_source)
             for k in ("non_expert_mib", "gap_mib", "draft_mib"):
                 if k in m:
@@ -3807,6 +3821,8 @@ def real_room_stage(a, g, machine):
         by_driver = driver - others if driver >= by_card else driver
         which = "the card's size minus that" if by_card <= by_driver else "llama-server's own free figure minus that"
         room = real_room_mib(min(by_card, by_driver), 0.0)     # the reserve off the smaller term; None when implausible (< 1 GiB)
+        if room is None:
+            say_once("room_implausible", f"moe-cache: GPU room: after the other programs' use and the reserve the card has under 1 GiB ({min(by_card, by_driver):.0f} MiB before the reserve), too little to plan with: the driver's own free figure ({driver:.0f} MiB) or a learned ceiling plans instead")
         if room:
             REAL_ROOM["room_mib"] = room
         why_ceil = bool(ceil_ and (room is None or ceil_ < room))
@@ -5099,9 +5115,10 @@ def block_cut_on(a, env=()):
     return not getattr(a, "exact", False) and not gpu_chunks_off(env) and not getattr(a, "plan_lib_nocap", False)
 
 
-def block_cap_lib_stage(a, lib, stock, machine):
+def block_cap_lib_stage(a, lib, stock, machine, ctx=None, extra=()):
     """LAUNCHER-1303 (c): after plugin_lib_stage. A plugin library that has no block cap (older build, MOE_CACHE_LIB at an old file, unreadable or missing) cannot be told
-    the smaller room, so the plan keeps the full room (no cut) and says so once. Sets a.plan_lib_nocap."""
+    the smaller room, so the plan keeps the full room (no cut) and says so once, but only where a cut would have applied (ctx below 32k, no --n-cpu-moe of yours, no --hybrid;
+    LAUNCHER-1303 critic pick-3: the line was printed at 64k too). Sets a.plan_lib_nocap."""
     a.plan_lib_nocap = False
     if stock or getattr(a, "exact", False) or gpu_chunks_off() or not lib:
         return
@@ -5111,7 +5128,10 @@ def block_cap_lib_stage(a, lib, stock, machine):
         ok = True                 # a machine object without the check (older test doubles): nothing is assumed
     if not ok:
         a.plan_lib_nocap = True
-        say(f"moe-cache: block-room cut off: plugin {lib} has no block cap (an older build; the plan keeps the full long-prompt block room)")
+        if ctx is not None and ctx >= 32768 or getattr(a, "hybrid", False) or getattr(a, "n_cpu_moe", None) is not None or arg_after(list(extra), "--n-cpu-moe", "-ncmoe") is not None:
+            return                # no cut would happen here anyway: nothing to announce
+        why = "has no block cap (an older build)" if os.path.isfile(lib) else "was not found or cannot be read"
+        say(f"moe-cache: block-room cut off: plugin {lib} {why}; the plan keeps the full long-prompt block room")
 
 
 def block_cap_stage(env, tuned, stock, ncmoe_user, ncmoe=None, exact=False):
@@ -6169,6 +6189,7 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
 
 
 def _launch_plan(a, extra, argv, machine):
+    _SAID_ONCE.clear()                # LAUNCHER-1158: each plan (a control page plan, a nested quiet one) tells its own fallbacks once
     extra = split_equals_flags(extra)          # review finding 1/2: callers that did not come through parse_server (tests, on-demand, plan files)
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -6255,7 +6276,7 @@ def _launch_plan(a, extra, argv, machine):
                 except Exception:
                     pass
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
-    block_cap_lib_stage(a, lib, stock, machine)
+    block_cap_lib_stage(a, lib, stock, machine, ctx, extra)
     try:
         ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
     except Exception:

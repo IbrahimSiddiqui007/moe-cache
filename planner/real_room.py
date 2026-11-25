@@ -193,7 +193,7 @@ def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=No
     sleep = sleep or time.sleep
     while alive() and not ready():
         sleep(1)
-    warned = False; miss = 0; i = 0
+    warned = False; miss = 0; i = 0; ever_read = False
     while alive():
         d = delays[i] if i < len(delays) else every
         i += 1
@@ -204,9 +204,11 @@ def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=No
         if ded is None:
             miss += 1
             if miss >= 3:
+                if not ever_read:
+                    say("moe-cache: GPU paging watch: the GPU's per-process memory counter could not be read three times in a row, so the watch stops (the learned GPU room is not updated by this start)")
                 return
             continue
-        miss = 0
+        miss = 0; ever_read = True
         if on_reading:
             try:
                 on_reading(ded, sha)

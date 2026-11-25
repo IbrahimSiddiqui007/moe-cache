@@ -142,6 +142,13 @@ for f in (7.5, 11.0, 15.06, 23.0):
     od = gguf_plan.tune(INK, 4096, free=f * GiB, want_cache=False)
     check(lp["n_cpu_moe"] <= od["n_cpu_moe"], f"{f} GiB free: never more CPU layers than the usual ladder ({lp['n_cpu_moe']} vs {od['n_cpu_moe']})")
 
+# 4b. LAUNCHER-1303 follow-up: a recorded load at the rule's -ub 128 (PC 4k: compute 153.3 MiB with the bias, KV 768 MiB) replaces the estimates in loop_plan
+mrec = {"buffers": {128: {"compute_mib": 153.3, "context_mib": 768.0}}}
+lm_ = gguf_plan.tune(INK, 4096, free=free_pc, want_cache=False, loop_ubs=(128,), measured=mrec)
+check(lm_["ub"] == 128 and lm_["compute_mib"] == 153.3 and lm_["loop_bias_mib"] == 0, f"loop_plan with a recorded -ub 128 load: its compute buffer {lm_['compute_mib']} MiB, bias not counted twice")
+check(lm_["n_cpu_moe"] <= new["n_cpu_moe"], f"a recorded load never puts more layers on the CPU than the estimate ({lm_['n_cpu_moe']} vs {new['n_cpu_moe']})")
+check(any(r["setting"] == "gpu_kv_mib" and r["source"] == "measured" for r in lm_["inputs"]), "the plan file marks the KV figure measured")
+
 # 5. the launcher passes the rule's -ub (source check: tune_launch and inkling_loop_stage share LOOP_RULE_UB)
 src = open(os.path.join(HERE, "bin", "moe_cache.py"), encoding="utf-8").read()
 check('kw["loop_ubs"] = LOOP_UBS if loop_fit_on() else (LOOP_RULE_UB,)' in src and "pick = LOOP_RULE_UB" in src, "the launcher plans at the -ub its looped-model rule runs")
