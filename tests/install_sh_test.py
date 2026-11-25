@@ -3,7 +3,7 @@
 Checks: a wrong hash is refused and installs nothing, a good one installs, a second run is idempotent, an update replaces the old version,
 --uninstall removes exactly what was added (a file of the user's in the same folders stays). Linux only.
    python3 tests/install_sh_test.py"""
-import hashlib, io, os, shutil, subprocess, sys, tarfile, tempfile
+import hashlib, io, os, re, shutil, subprocess, sys, tarfile, tempfile
 
 if not sys.platform.startswith("linux"):
     print("install.sh test: Linux only, skipped"); sys.exit(0)
@@ -232,6 +232,14 @@ rc, out = run2(r3, "9.9.3")
 check(rc == 0 and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "an update does not delete folders in versions/ that are not ours")
 rc, out = subprocess.run(["sh", inst, "--prefix", sp, "--uninstall"], capture_output=True, text=True, env=dict(os.environ, HOME=os.path.join(T, "home"), MOE_CACHE_REF="v9.9.3", **GOOD_ENV), stdin=subprocess.DEVNULL).returncode, ""
 check(rc == 0 and not os.path.exists(shim2) and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "uninstall without --bin-dir removes the command the install recorded, and still leaves folders that are not ours")
+
+# PACKAGING-1193: the commit install.sh builds by default (--build, no LLAMA_SHA) is the llama.cpp commit the release kits bundle (llama_patched.yml LLAMA_COMMIT);
+# the old default 7fe450e19 had no --moe-cache-mib, so --gpu-cache failed for users who built from source
+_sh = open(os.path.join(HERE, "install.sh")).read()
+_wf = open(os.path.join(HERE, ".github", "workflows", "llama_patched.yml")).read()
+_m1, _m2 = re.search(r'^LLAMA_SHA="\$\{LLAMA_SHA:-([0-9a-f]{40})\}"', _sh, re.M), re.search(r"^\s+LLAMA_COMMIT: ([0-9a-f]{40})\b", _wf, re.M)
+check(bool(_m1 and _m2 and _m1.group(1) == _m2.group(1)), f"install.sh's default build commit equals the bundled pin ({_m1 and _m1.group(1)[:9]} vs {_m2 and _m2.group(1)[:9]})")
+check(bool(_m1) and re.search(r"case \"\$LLAMA_SHA\" in .*\b" + _m1.group(1)[:9] + r"\*\) export GGML_API=4", _sh) is not None, "the default build commit selects GGML_API=4 (the bundled build's backend API)")
 
 check(subprocess.run(["bash", "-n", os.path.join(HERE, "install.sh")]).returncode == 0, "install.sh parses")
 print("FAIL" if fails else "PASS", f"({len(fails)} failed)"); sys.exit(1 if fails else 0)
