@@ -463,8 +463,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         produced.insert(ggml_graph_node(cg, i));
     }
     {
-        // CACHE-1230: only the last node's output is copied back, so no node outside the range may read another node of it (or flag one as an output)
+        // CACHE-1230: only the last node's output is copied back, so no node outside the range may read another node of it (or flag one as an output).
+        // Scope: this graph (be_compute's split) only; a reader in another backend's split or in the next piece of an eval-callback run is not seen.
         std::unordered_map<const ggml_tensor *, int> idx;
+        idx.reserve((size_t) n_all);
         for (int i = 0; i < n_all; i++) {
             idx.emplace(ggml_graph_node(cg, i), i);
         }
@@ -481,6 +483,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             [&](int i, int k) { const ggml_tensor * s = ggml_graph_node(cg, i)->src[k]; return s ? node_of(s) : -1; },
             [&](int i) { return (ggml_graph_node(cg, i)->flags & GGML_TENSOR_FLAG_OUTPUT) != 0; });
         if (!priv) {
+            static bool said = false;
+            if (!said) {
+                said = true;
+                fprintf(stderr, "moe-cache: a long-prompt block (graph nodes %d-%d) stays on the CPU: a node outside it reads one of its inner results (shown once)\n", first, last);
+            }
             return false;
         }
     }
