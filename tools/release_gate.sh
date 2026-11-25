@@ -6,7 +6,7 @@
 # holding `git rev-parse HEAD` of what it tested. This script looks at the newest successful runs of each workflow and accepts the first whose
 # tested-sha equals COMMIT.
 # TOOLS-1305 (text-only reuse): for identity.yml and windows.yml (the ~1 h workflows) a run that tested an ANCESTOR counts too, as long as every commit between
-# that ancestor and COMMIT changed only text files (docs/**, *.md, tools/lost_work_accepted.tsv; a merge commit or any other path ends the walk). quick.yml
+# that ancestor and COMMIT changed only text files (docs/**/*.md and *.txt, any *.md, tools/lost_work_accepted.tsv; images, html, json and code never; a merge commit or any other path ends the walk). quick.yml
 # always has to have run on COMMIT itself. Needs the history: release.yml checks out 20 commits (GATE_TEXT_DEPTH, default 20, is how far the walk goes). Runs older than the change (no artifact) never count. GATE_RUNS = how many runs per workflow to look at (default 100: quick also runs on every claude/** push, so the newest 30 could miss the release commit).
 set -u
 SHA="${1:?commit sha}"; REPO="${2:-${GITHUB_REPOSITORY:-}}"; N="${GATE_RUNS:-100}"
@@ -22,7 +22,7 @@ text_only() { # $1 = commit: true when it has exactly one parent and its diff to
   files="$(git -C "$ROOT" diff --name-only "$c^" "$c" 2>/dev/null)" || return 1
   [ -n "$files" ] || return 0
   while IFS= read -r f; do
-    case "$f" in docs/*|*.md|tools/lost_work_accepted.tsv) ;; *) return 1;; esac
+    case "$f" in docs/*.md|docs/*.txt|*.md|tools/lost_work_accepted.tsv) ;; *) return 1;; esac
   done <<< "$files"
 }
 CHAIN="$SHA"; cur="$SHA"; depth="${GATE_TEXT_DEPTH:-20}"

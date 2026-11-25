@@ -89,6 +89,11 @@ chk "a code commit (C2 changes src.c) does not reuse the parent's identity/windo
 setup; for w in identity windows quick; do echo 1 > "$T/data/$w.yml.runs"; done; echo $C1 > "$T/data/1.sha"
 out="$(tx $C2 owner/repo)"; rc=$?
 chk "C2 (code) on top of text commits: even C1's run does not count" "[ $rc != 0 ] && echo '$out' | grep -q '^identity.yml: no successful run tested $C2'"
+# a non-text file in docs (a png the kit might bundle) is not text-only
+( cd "$R" && echo x > docs/pic.png && git add -A && git commit -qm P1 && git rev-parse HEAD > ../P1 ) >/dev/null 2>&1; P1="$(cat "$T/P1")"
+setup; for w in identity windows quick; do echo 1 > "$T/data/$w.yml.runs"; done; echo $C2 > "$T/data/1.sha"
+out="$(tx $P1 owner/repo)"; rc=$?
+chk "a docs/*.png change is not text-only: the parent's runs do not count" "[ $rc != 0 ] && echo '$out' | grep -q '^identity.yml: no successful run tested $P1'"
 setup; for w in identity windows quick; do echo 1 > "$T/data/$w.yml.runs"; done; echo $T1 > "$T/data/1.sha"
 out="$(tx $T2 owner/repo)"; rc=$?
 chk "a text-only commit may reuse a run of its text-only parent too (T1 is a parent of T2)" "[ $rc != 0 ] && echo '$out' | grep -q '^quick.yml: no successful run' && echo '$out' | grep -q '^identity.yml: run 1 tested $T1'"
