@@ -59,7 +59,7 @@ for win in (True, False):
     for av in (17.4, 11.0, 7.5, 5.0):
         e = stage([], av * GIB, win); ed = dict(e)
         got = ed.get("MOE_CACHE_MAX_RAM_GB"); rg = float(ed.get("MOE_CACHE_RAM_GIB", 0))
-        check(got is not None and float(got) * 1e9 >= max(4.0, rg) * GIB - 1e6 and float(got) * 1e9 < mc.Machine.mem_cap(M(0, win)),
+        check(got is not None and float(got) * 1e9 >= max(4.0, rg) * GIB - 1e6 and float(got) * 1e9 < M(0, win).mem_cap(),
               f"{n}: {av} GiB available -> MOE_CACHE_MAX_RAM_GB {got} GB >= max(4 GiB, cache {rg:.2f} GiB) and below the default cap")
 # ONE consistent cap line: the whole-server cap shown is the limit in force
 for win in (True, False):
