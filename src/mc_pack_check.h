@@ -29,20 +29,34 @@ inline bool slice_fits(uint64_t in_off, uint64_t nb2, uint64_t stride) {
 constexpr uint32_t HASH_FLAG = 1;
 
 // CRC-32 (zlib polynomial), continuing from `crc` (start with 0); the same value as zlib.crc32 and crc32_update in mc_common.inl
+// slice-by-8: processes 8 bytes per step through 8 tables (T[0] = the plain byte-at-a-time table); the byte-by-byte loads below make it endian-independent
 inline uint32_t crc32_bytes(uint32_t crc, const void * data, size_t n) {
-    static uint32_t tab[256];
-    static bool ready = false;
-    if (!ready) {
-        for (uint32_t i = 0; i < 256; i++) {
-            uint32_t c = i;
-            for (int k = 0; k < 8; k++) { c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1; }
-            tab[i] = c;
+    struct tables_t {
+        uint32_t t[8][256];
+        tables_t() {
+            for (uint32_t i = 0; i < 256; i++) {
+                uint32_t c = i;
+                for (int k = 0; k < 8; k++) { c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1; }
+                t[0][i] = c;
+            }
+            for (uint32_t i = 0; i < 256; i++) {
+                for (int k = 1; k < 8; k++) { t[k][i] = (t[k - 1][i] >> 8) ^ t[0][t[k - 1][i] & 0xff]; }
+            }
         }
-        ready = true;
-    }
+    };
+    static const tables_t tab;    // thread-safe: C++11 magic static, built exactly once
     uint32_t c = crc ^ 0xffffffffu;
     const unsigned char * p = (const unsigned char *) data;
-    for (size_t i = 0; i < n; i++) { c = tab[(c ^ p[i]) & 0xff] ^ (c >> 8); }
+    while (n >= 8) {
+        uint32_t one  = (uint32_t) p[0] | ((uint32_t) p[1] << 8) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+        uint32_t two  = (uint32_t) p[4] | ((uint32_t) p[5] << 8) | ((uint32_t) p[6] << 16) | ((uint32_t) p[7] << 24);
+        one ^= c;
+        c = tab.t[7][one & 0xff] ^ tab.t[6][(one >> 8) & 0xff] ^ tab.t[5][(one >> 16) & 0xff] ^ tab.t[4][one >> 24] ^
+            tab.t[3][two & 0xff] ^ tab.t[2][(two >> 8) & 0xff] ^ tab.t[1][(two >> 16) & 0xff] ^ tab.t[0][two >> 24];
+        p += 8;
+        n -= 8;
+    }
+    for (size_t i = 0; i < n; i++) { c = tab.t[0][(c ^ p[i]) & 0xff] ^ (c >> 8); }
     return c ^ 0xffffffffu;
 }
 

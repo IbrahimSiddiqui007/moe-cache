@@ -25,6 +25,7 @@ Stored (one JSON file, <cache dir>/loads.json, newest 400 entries per kind):
                                                             with the free figure then; the auto-tune walk does not load a value it knows fails (follow-up 7)
 The GPU identity (machine) carries the driver version, so a new driver measures anew (follow-up 6).
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -40,6 +41,52 @@ SCHEMA = 1
 KINDS = ("weights", "buffers", "overhead", "drafts", "edges", "cachefail")
 _LOCK = threading.Lock()
 
+
+def _flock(fd, lock):
+    """Take (lock) or release the cross-process advisory lock on an fd: fcntl.flock on POSIX, msvcrt.locking on the first byte on Windows. Raises OSError."""
+    if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if lock else fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _store_lock(cache_dir):
+    """The writers' read-modify-write guard: the thread lock, plus a cross-process advisory lock on <cache_dir>/loads.json.lock (two launcher processes would
+    otherwise lose each other's entries). Never raises and never blocks for ever: a lock file that cannot be opened, or 10 s of waiting, goes on without the
+    file lock (the thread lock still serialises the process)."""
+    with _LOCK:
+        f, locked = None, False
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            f = open(os.path.join(cache_dir, FILE_NAME + ".lock"), "a+")
+            deadline = time.monotonic() + 10.0
+            while True:
+                try:
+                    _flock(f.fileno(), True)
+                    locked = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+        except OSError:
+            pass                                    # no lock file: proceed without it (the thread lock still holds)
+        try:
+            yield
+        finally:
+            if f is not None:
+                try:
+                    if locked:
+                        _flock(f.fileno(), False)
+                except OSError:
+                    pass
+                f.close()
+
+
 _NUM = r"([0-9]+(?:\.[0-9]+)?)"
 _DEV = r"((?:CUDA|ROCm|Vulkan|SYCL|Metal|MUSA|CANN|OpenCL)[0-9]*)"
 MODEL_RE = re.compile(r"load_tensors:\s+" + _DEV + r" model buffer size\s*=\s*" + _NUM + r" MiB")
@@ -50,6 +97,9 @@ COMPUTE_RE = re.compile(r"sched_reserve:\s+" + _DEV + r" compute buffer size\s*=
 BREAKDOWN_RE = re.compile(r"memory_breakdown_print: \|\s+- " + _DEV + r"[^|]*\|\s*([0-9]+)\s*=\s*([0-9]+)\s*\+\s*\(\s*([0-9]+)\s*=\s*([0-9]+)\s*\+\s*([0-9]+)\s*\+\s*([0-9]+)\s*\)\s*\+\s*(-?[0-9]+)\s*\|")
 MTP_DRAFT_RE = re.compile(r"creating MTP draft context")
 OOM_ALLOC_RE = re.compile(r"allocating " + _NUM + r" MiB on device ([0-9]+): \w+ failed")
+# Vulkan / HIP / CUDA-style out-of-memory lines that do not match OOM_ALLOC_RE (Vulkan and HIP errors, and CUDA's plain "out of memory")
+VK_OOM_RE = re.compile(r"ggml_vulkan: (?:Device memory allocation of size [0-9]+ failed|vk::Device::allocateMemory: ErrorOutOfDeviceMemory)"
+                       r"|unable to allocate Vulkan[0-9]* buffer|failed to allocate Vulkan[0-9]* compute buffer|hipMalloc failed|CUDA error: out of memory", re.I)
 COMPUTE_FAIL_RE = re.compile(r"failed to allocate compute|graph_reserve: failed to allocate")
 NCTX_RE = re.compile(r"llama_context: n_ctx\s*=\s*([0-9]+)")
 NUB_RE = re.compile(r"llama_context: n_ubatch\s*=\s*([0-9]+)")
@@ -141,6 +191,8 @@ def parse_log(lines):
             pending_oom = float(m.group(1))
             out["oom"] = True
             continue
+        if VK_OOM_RE.search(line):
+            out["oom"] = True               # Vulkan / HIP / plain-CUDA out-of-memory: no size to keep, the line may hold other info
         if pending_oom is not None and COMPUTE_FAIL_RE.search(line):
             out["failed_compute_mib"] = pending_oom          # the failed allocation was the compute buffer (a model buffer fails in load_tensors)
             pending_oom = None
@@ -339,7 +391,7 @@ def save_cache_fail(cache_dir, machine, build, model, ctx, kv, engine, fail_mib,
     if not (machine and build and model) or not fail_mib:
         return False
     try:
-        with _LOCK:
+        with _store_lock(cache_dir):
             d = _read(cache_dir)
             key = _key(machine, build, model, int(ctx), kv_name(kv), engine)
             old = d["cachefail"].get(key) or {}
@@ -364,7 +416,7 @@ def save_cache_ok(cache_dir, machine, build, model, ctx, kv, engine, ok_mib):
     if not (machine and build and model) or not ok_mib:
         return False
     try:
-        with _LOCK:
+        with _store_lock(cache_dir):
             d = _read(cache_dir)
             key = _key(machine, build, model, int(ctx), kv_name(kv), engine)
             old = d["cachefail"].get(key)
@@ -442,7 +494,7 @@ def save(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, ent, free_s
     if not (machine and build and model) or not ent:
         return False
     try:
-        with _LOCK:
+        with _store_lock(cache_dir):
             d = _read(cache_dir)
             bkey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv))
             ekey = _key(machine, build, model, int(ctx), int(ub or 0), kv_name(kv), engine, bool(mtp))
@@ -457,13 +509,7 @@ def save(cache_dir, machine, build, model, ctx, ub, kv, engine, mtp, ent, free_s
                 e = d["edges"].get(ekey)
                 if e and isinstance(e.get("fail_ncmoe"), int) and e["fail_ncmoe"] >= ent["edge_ok"]:
                     del d["edges"][ekey]
-            os.makedirs(cache_dir, exist_ok=True)
-            p = store_path(cache_dir)
-            tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(d, f, indent=1)
-            os.replace(tmp, p)
+            _write(cache_dir, d)
         return True
     except (OSError, TypeError, ValueError):
         return False
@@ -478,11 +524,12 @@ class Recorder:
     def feed(self, line):
         if isinstance(line, bytes):
             line = line.decode("utf-8", "replace")
+        oom_line = bool(VK_OOM_RE.search(line))
         if "model loaded" in line:
             self.loaded = True                 # from here on an allocation failure is the running server's (the plugin's long-prompt block), not a failed load
-        if self.loaded and ("MiB on device" in line or "failed to allocate" in line):
+        if self.loaded and (oom_line or "MiB on device" in line or "failed to allocate" in line):
             return
-        if ("buffer size" in line or "memory_breakdown" in line or "creating MTP draft context" in line or "llama_context: n_" in line or "llama_kv_cache: size" in line
+        if (oom_line or "buffer size" in line or "memory_breakdown" in line or "creating MTP draft context" in line or "llama_context: n_" in line or "llama_kv_cache: size" in line
                 or "MiB on device" in line or "failed to allocate" in line):
             self.lines.append(line)
 
