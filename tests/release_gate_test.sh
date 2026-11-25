@@ -59,6 +59,10 @@ chk "an unaccepted in-flight claude/* branch fails the gate (runs are fine) and 
 printf 'claude/inflight\tparked\tin-flight until the next release\n' > "$L/tools/lost_work_accepted.tsv"
 out="$(lw $A owner/repo)"; rc=$?
 chk "the same branch listed in the accept file passes the gate" "[ $rc = 0 ] && echo '$out' | grep -q 'lost-work check: ok'"
+# a shallow checkout (no origin/experimental, as in the release.yml build job) must not fail the gate
+S="$T/shallow"; mkdir -p "$S/tools"; cp tools/release_gate.sh tools/lost_work_check.py "$S/tools/"; ( cd "$S" && git init -q -b main . ) >/dev/null 2>&1
+out="$( cd "$S" && FAKE_DATA="$T/data" PATH="$T/bin:$PATH" tools/release_gate.sh $A owner/repo 2>&1 )"; rc=$?
+chk "no origin/experimental (shallow CI checkout): the lost-work step is skipped with a reason, the gate still passes" "[ $rc = 0 ] && echo '$out' | grep -q 'lost-work check: skipped here' && ! echo '$out' | grep -q FAILED"
 out="$(run $A owner/repo)"
 chk "GATE_SKIP_LOST_WORK=1 (tests only) says it skipped, never 'ok'" "echo '$out' | grep -q 'lost-work check: SKIPPED' && ! echo '$out' | grep -q 'lost-work check: ok'"
 chk "release.yml and the gate run the same lost_work_check command line" "[ \"\$(grep -o 'lost_work_check.py --repo .*accepted.tsv' .github/workflows/release.yml | head -1)\" = \"\$(grep -o 'lost_work_check.py --repo .*accepted.tsv' tools/release_gate.sh | head -1)\" ]"

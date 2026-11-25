@@ -13,6 +13,8 @@ For whoever cuts a release. Checked against `.github/workflows/*.yml`, `tools/se
 | `release` | a pushed tag `v*`, or by hand (build only, nothing published) | builds the Linux tarballs and the Windows kit, attests them, creates the release |
 | `packages` | after `release` finishes (stops by itself while the release is a draft), by hand after publishing | fills the scoop and winget manifests from the published Windows zip after its sha256 and attestation are checked (pre-releases are skipped for winget unless a repository variable says otherwise) |
 
+**Before pushing the tag (TOOLS-1300):** in a full clone run `git fetch --prune origin` and then `tools/release_gate.sh <tag commit sha> <owner>/<repo>`. Besides the identity, windows and quick runs it runs the same lost-work check as the release workflow, so an in-flight `claude/*` branch that is not accepted in `tools/lost_work_accepted.tsv` fails now and not after the tag. It also reads your local branches, which CI does not: a local-only branch can fail here and pass there.
+
 The release workflow already has its own gates:
 
 | Gate | Where | What happens when it fails |

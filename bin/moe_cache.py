@@ -7084,6 +7084,24 @@ def _prune(data, path):
     return True
 
 
+def free_name(path):
+    """path, or path.1, path.2 ... when that exists: an earlier .removed copy is never overwritten."""
+    p, i = path, 0
+    while os.path.lexists(p):
+        i += 1
+        p = f"{path}.{i}"
+    return p
+
+
+def bak_json(path):
+    """The JSON object in the first backup beside path ({} when there is none or it is not a plain JSON object)."""
+    try:
+        d = json.load(open(path + ".bak", encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def connect_remove(a):
     """connect AGENT --remove: disconnect the agent by taking out ONLY what connect wrote (everything else the user has in the file stays; unlike
     --undo the whole .bak is not copied back). No server needed. Every file that changed is kept first as <file>.removed."""
@@ -7094,7 +7112,7 @@ def connect_remove(a):
 
     def keep_copy(real):
         """Copy the file as it is to <file>.removed; Claude Code's project file holds the key, so its copy goes to the cache folder (like its .bak)."""
-        dst = claude_backup_path(real)[:-4] + ".removed" if a.agent == "claude" else real + ".removed"
+        dst = free_name(claude_backup_path(real)[:-4] + ".removed" if a.agent == "claude" else real + ".removed")
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(real, dst)
         return dst
@@ -7111,7 +7129,10 @@ def connect_remove(a):
             continue
         changed = False
         if a.agent == "codex":
-            raw = open(real, "rb").read().decode("utf-8")
+            try:
+                raw = open(real, "rb").read().decode("utf-8")
+            except UnicodeDecodeError:
+                raise SystemExit(f"{real} is not UTF-8 text: nothing removed; delete the '# >>> moe-cache' blocks by hand")
             out, skipping = [], False
             for ln in raw.replace("\r\n", "\n").splitlines():
                 if ln.startswith("# >>> moe-cache"):
@@ -7125,16 +7146,24 @@ def connect_remove(a):
             if skipping:
                 raise SystemExit(f"{real} has a moe-cache block without its end line: nothing removed; fix or remove it")
             if out != raw.replace("\r\n", "\n").splitlines():
-                shutil.copy2(real, real + ".removed")
                 body = "\n".join(out).strip("\n")      # the blank lines connect put around its blocks go with them
+                try:
+                    import tomllib
+                    tomllib.loads(body + "\n")
+                except ImportError:
+                    pass
+                except ValueError as e:      # e.g. the user added the same top-level key after connect: the restored line would be a duplicate
+                    raise SystemExit(f"{real}: removing the blocks would leave invalid TOML ({e}): nothing changed; remove the '# >>> moe-cache' blocks by hand")
+                dst = keep_copy(real)
                 write_private(real, body + "\n" if body else "", file_eol(real))
-                say(f"moe-cache: codex: removed moe-cache from {real}; the file as it was is kept as {real}.removed")
+                say(f"moe-cache: codex: removed moe-cache from {real}; the file as it was is kept as {dst}")
                 n += 1
         elif a.agent == "aider":
             if cfg == paths[0]:
                 if open(real, encoding="utf-8", errors="replace").readline().rstrip("\r\n") == AIDER_MARK:
-                    os.replace(real, real + ".removed")
-                    say(f"moe-cache: aider: removed moe-cache from {real}; the file as it was is kept as {real}.removed")
+                    dst = free_name(real + ".removed")
+                    os.replace(real, dst)
+                    say(f"moe-cache: aider: removed moe-cache from {real}; the file as it was is kept as {dst}")
                     n += 1
                 continue
             data = load_json_object(real, "aider", "Aider model metadata")
@@ -7146,8 +7175,9 @@ def connect_remove(a):
                 if data:
                     n += saved(real, data)
                 else:
-                    os.replace(real, real + ".removed")
-                    say(f"moe-cache: aider: removed moe-cache from {real}; the file as it was is kept as {real}.removed")
+                    dst = free_name(real + ".removed")
+                    os.replace(real, dst)
+                    say(f"moe-cache: aider: removed moe-cache from {real}; the file as it was is kept as {dst}")
                     n += 1
             continue
         else:
@@ -7156,23 +7186,25 @@ def connect_remove(a):
                 if _prune(data, ["provider", "moe-cache"]):
                     changed = True
                 if isinstance(data.get("model"), str) and data["model"].startswith("moe-cache/"):
-                    bak, restored = bak_path(real), False
-                    if os.path.isfile(bak):
-                        try:
-                            b = json.load(open(bak, encoding="utf-8"))
-                        except ValueError:
-                            b = None
-                        if isinstance(b, dict) and isinstance(b.get("model"), str) and not b["model"].startswith("moe-cache/"):
-                            data["model"] = b["model"]
-                            restored = True
-                    if not restored:
+                    old = bak_json(real).get("model")
+                    if isinstance(old, str) and not old.startswith("moe-cache/"):
+                        data["model"] = old
+                    else:
                         data.pop("model", None)
                     changed = True
             elif a.agent == "claude":
                 env = data.get("env")
-                if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
+                # ours = the signature claude_env writes (attribution header "0", the small model equal to the model); a user's own ANTHROPIC_BASE_URL is not touched
+                if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env and env.get("CLAUDE_CODE_ATTRIBUTION_HEADER") == "0" \
+                        and env.get("ANTHROPIC_MODEL") and env.get("ANTHROPIC_MODEL") == env.get("ANTHROPIC_SMALL_FAST_MODEL"):
+                    try:
+                        old = json.load(open(claude_backup_path(real), encoding="utf-8")).get("env", {})
+                    except (OSError, ValueError, AttributeError):
+                        old = {}
                     for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ATTRIBUTION_HEADER", "ANTHROPIC_SMALL_FAST_MODEL"):
                         env.pop(k, None)
+                        if isinstance(old, dict) and k in old:      # what the user had before the first connect comes back
+                            env[k] = old[k]
                     if not env:
                         _prune(data, ["env"])
                     changed = True
@@ -7180,8 +7212,11 @@ def connect_remove(a):
                 changed = _prune(data, ["providers", "moe-cache"])
             elif a.agent == "pi":
                 if data.get("defaultProvider") == "moe-cache":
-                    data.pop("defaultProvider")
-                    data.pop("defaultModel", None)
+                    old = bak_json(real)
+                    for k in ("defaultProvider", "defaultModel"):
+                        data.pop(k, None)
+                        if k in old:      # the user's earlier default comes back
+                            data[k] = old[k]
                     changed = True
             elif a.agent == "openclaw":
                 if _prune(data, ["models", "providers", "moe-cache"]):
@@ -7189,11 +7224,17 @@ def connect_remove(a):
                 ag = data.get("agents")
                 dfl = ag.get("defaults") if isinstance(ag, dict) else None
                 m = dfl.get("model") if isinstance(dfl, dict) else None
-                if isinstance(m, dict) and isinstance(m.get("primary"), str) and m["primary"].startswith("moe-cache/"):
-                    _prune(data, ["agents", "defaults", "model", "primary"])
-                    changed = True
-                elif isinstance(m, str) and m.startswith("moe-cache/"):
-                    _prune(data, ["agents", "defaults", "model"])
+                ours = (m.get("primary") if isinstance(m, dict) else m)
+                if isinstance(ours, str) and ours.startswith("moe-cache/"):
+                    ob = bak_json(real).get("agents", {})
+                    ob = ob.get("defaults", {}).get("model") if isinstance(ob, dict) and isinstance(ob.get("defaults"), dict) else None
+                    oprim = ob.get("primary") if isinstance(ob, dict) else ob
+                    if isinstance(m, dict):
+                        _prune(data, ["agents", "defaults", "model", "primary"])
+                    else:
+                        _prune(data, ["agents", "defaults", "model"])
+                    if ob is not None and not (isinstance(oprim, str) and oprim.startswith("moe-cache/")):
+                        want_dict(data, ["agents", "defaults"], real, "openclaw")["model"] = ob      # the user's earlier model setting, in the shape they had
                     changed = True
             elif a.agent == "qwen":
                 mp = data.get("modelProviders") if isinstance(data.get("modelProviders"), dict) else {}
@@ -7207,10 +7248,14 @@ def connect_remove(a):
                         _prune(data, ["modelProviders", "openai"])
                     changed = True
                 if isinstance(data.get("env"), dict) and QWEN_KEY_VAR in data["env"]:
-                    del data["env"][QWEN_KEY_VAR]
+                    _prune(data, ["env", QWEN_KEY_VAR])
                     changed = True
+                ob = bak_json(real)
                 if isinstance(data.get("model"), dict) and data["model"].get("name") in ids:
                     _prune(data, ["model", "name"])
+                    oname = ob.get("model", {}).get("name") if isinstance(ob.get("model"), dict) else None
+                    if isinstance(oname, str):
+                        want_dict(data, ["model"], real, "qwen")["name"] = oname
                     changed = True
                 left = mp.get("openai")
                 if not (isinstance(left, list) and left):
@@ -7218,6 +7263,9 @@ def connect_remove(a):
                     auth = sec.get("auth") if isinstance(sec, dict) else None
                     if isinstance(auth, dict) and auth.get("selectedType") == "openai":
                         _prune(data, ["security", "auth", "selectedType"])
+                        osel = ob.get("security", {}).get("auth", {}).get("selectedType") if isinstance(ob.get("security"), dict) and isinstance(ob["security"].get("auth"), dict) else None
+                        if isinstance(osel, str):
+                            want_dict(data, ["security", "auth"], real, "qwen")["selectedType"] = osel      # e.g. qwen-oauth
                         changed = True
             if changed and data == {} and a.agent == "claude":
                 dst = keep_copy(real)

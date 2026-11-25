@@ -26,10 +26,16 @@ for w in identity.yml windows.yml quick.yml; do
   else echo "$w: no successful run tested $SHA (looked at ${N} newest successful runs; tested commits found:${seen:- none}). Run it on this tag: gh workflow run ${w} --ref <tag>, then re-run this workflow."; bad=1; fi
 done
 # Lost-work check (TOOLS-1300; the same call as the lost-work-gate job in .github/workflows/release.yml): no unrecorded work left on a claude/* branch.
-# GATE_SKIP_LOST_WORK=1 is for tests/release_gate_test.sh only; release.yml never sets it.
-if [ "${GATE_SKIP_LOST_WORK:-0}" = "1" ]; then
+# Run it BEFORE pushing the tag (docs/internal/RELEASE_CHECKLIST.md), from a clone that has just done `git fetch --prune origin`: it also looks at your local
+# branches, which CI does not see. In release.yml the build job has a shallow checkout without origin/experimental: there the check is skipped (the
+# lost-work-gate job of the same run already did it, and blocks a tag).
+# GATE_SKIP_LOST_WORK=1 is for tests/release_gate_test.sh only (it works only together with the test's fake gh, FAKE_DATA); release.yml never sets it.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${GATE_SKIP_LOST_WORK:-0}" = "1" ] && [ -n "${FAKE_DATA:-}" ]; then
   echo "lost-work check: SKIPPED (test use only)"
-elif out="$(cd "$(dirname "$0")/.." && python3 tools/lost_work_check.py --repo . --base origin/experimental --public --records archive/README.md --accept tools/lost_work_accepted.tsv 2>&1)"; then
+elif ! git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/experimental >/dev/null 2>&1; then
+  echo "lost-work check: skipped here, no origin/experimental in this checkout (shallow CI checkout: the lost-work-gate job covers it; before tagging run this script from a full clone after 'git fetch --prune origin')"
+elif out="$(cd "$ROOT" && python3 tools/lost_work_check.py --repo . --base origin/experimental --public --records archive/README.md --accept tools/lost_work_accepted.tsv 2>&1)"; then
   echo "lost-work check: ok"
 else
   echo "lost-work check: FAILED (a claude/* branch has work that is not in origin/experimental and not accepted in tools/lost_work_accepted.tsv):"; echo "$out" | tail -40; bad=1

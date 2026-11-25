@@ -427,7 +427,7 @@ put(pm, json.dumps({"providers": {"mine": {"baseUrl": "x"}}})); put(ps, json.dum
 run("pi", "--write")
 check(rj(ps)["defaultProvider"] == "moe-cache", "remove: pi connected")
 rc, out, err = run("pi", "--remove")
-check(rc == 0 and list(rj(pm)["providers"]) == ["mine"] and "defaultProvider" not in rj(ps) and rj(ps)["theme"] == "t", f"remove: pi drops provider and default model in both files ({rc} {err})")
+check(rc == 0 and list(rj(pm)["providers"]) == ["mine"] and rj(ps) == {"defaultProvider": "other", "theme": "t"}, f"remove: pi drops provider in models.json and puts the user's earlier default back in settings.json ({rc} {err})")
 
 # openclaw
 oclaw = mc.agent_config_paths("openclaw")[0]
@@ -463,6 +463,51 @@ if tomllib:
 
 rc, _, err = run("hermes", "--remove")
 check(isinstance(rc, str) and "config.yaml.bak" in rc, "remove: hermes points at its backup")
+
+# critic fixes: the user's own earlier settings come back, a user's own Claude gateway is never touched, bad TOML is refused, CRLF kept, copies not overwritten
+own = os.path.join(TMP, "own", ".claude", "settings.local.json")
+put(own, json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://corp.example/gw", "ANTHROPIC_AUTH_TOKEN": "corp"}}))
+rc, out, err = run("claude", "--config", own, "--remove")
+check(rc == 1 and rj(own)["env"]["ANTHROPIC_BASE_URL"] == "https://corp.example/gw", "remove: claude leaves a gateway that connect did not write")
+put(own, json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://corp.example/gw", "ANTHROPIC_AUTH_TOKEN": "corp", "KEEP": "1"}}))
+run("claude", "--config", own, "--write")
+rc, out, err = run("claude", "--config", own, "--remove")
+check(rc == 0 and rj(own)["env"] == {"ANTHROPIC_BASE_URL": "https://corp.example/gw", "ANTHROPIC_AUTH_TOKEN": "corp", "KEEP": "1"}, f"remove: claude puts the user's own ANTHROPIC values back from the first backup ({rc} {err} {rj(own)})")
+run("claude", "--config", own, "--write"); run("claude", "--config", own, "--remove")
+rm = [f for f in os.listdir(os.path.join(HOME, "..", "cache", "moe-cache", "backups")) if ".removed" in f] if os.path.isdir(os.path.join(HOME, "..", "cache", "moe-cache", "backups")) else []
+check(len(rm) >= 2, f"remove: a second remove keeps the first .removed copy ({rm})")
+
+qw = mc.agent_config_paths("qwen")[0]
+for g in os.listdir(os.path.dirname(qw)):
+    os.remove(os.path.join(os.path.dirname(qw), g))
+put(qw, json.dumps({"security": {"auth": {"selectedType": "qwen-oauth"}}, "model": {"name": "qwen3-coder"}}))
+run("qwen", "--write")
+rc, out, err = run("qwen", "--remove")
+check(rc == 0 and rj(qw) == {"security": {"auth": {"selectedType": "qwen-oauth"}}, "model": {"name": "qwen3-coder"}}, f"remove: qwen puts the user's login type and model back ({rj(qw)})")
+
+oclaw = mc.agent_config_paths("openclaw")[0]
+for g in (oclaw, oclaw + ".bak"):
+    if os.path.exists(g):
+        os.remove(g)
+put(oclaw, json.dumps({"agents": {"defaults": {"model": "anthropic/claude-x"}}}))
+run("openclaw", "--write")
+rc, out, err = run("openclaw", "--remove")
+check(rc == 0 and rj(oclaw) == {"agents": {"defaults": {"model": "anthropic/claude-x"}}}, f"remove: openclaw puts a plain-string default model back ({rj(oclaw)})")
+
+if tomllib:
+    cx = os.path.join(HOME, ".codex", "config.toml")
+    for g in os.listdir(os.path.dirname(cx)):
+        os.remove(os.path.join(os.path.dirname(cx), g))
+    open(cx, "wb").write(b'model = "mine"\r\n[tui]\r\nx = 1\r\n')
+    run("codex", "--write")
+    rc, out, err = run("codex", "--remove")
+    check(rc == 0 and open(cx, "rb").read() == b'model = "mine"\r\n[tui]\r\nx = 1\r\n', f"remove: codex keeps CRLF line ends ({open(cx, 'rb').read()!r})")
+    put(cx, 'model = "mine"\n'); run("codex", "--write")
+    t = open(cx).read().replace("# <<< moe-cache\n\n#moe-cache-off#", "# <<< moe-cache\nmodel = \"later\"\n#moe-cache-off#", 1)
+    put(cx, t)
+    before = open(cx).read()
+    rc, out, err = run("codex", "--remove")
+    check(isinstance(rc, str) and "invalid TOML" in rc and open(cx).read() == before, f"remove: codex refuses when the restored key would be a duplicate ({rc})")
 
 print("\n%d failed" % len(fails) if fails else "\nall ok")
 sys.exit(1 if fails else 0)
