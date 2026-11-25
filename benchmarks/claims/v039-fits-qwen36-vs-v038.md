@@ -1,0 +1,11 @@
+---
+id: "v039-fits-qwen36-vs-v038"
+runs: ["2026-11-25_pc_468fa1"]
+cells: [{"run": "2026-11-25_pc_468fa1", "arm": "v0.3.8", "metric": "prompt_tps"}, {"run": "2026-11-25_pc_468fa1", "arm": "v0.3.8", "metric": "decode_tps"}, {"run": "2026-11-25_pc_468fa1", "arm": "kit-2e823d2", "metric": "prompt_tps", "vs": "v0.3.8"}, {"run": "2026-11-25_pc_468fa1", "arm": "kit-2e823d2", "metric": "decode_tps", "vs": "v0.3.8"}]
+valid_moe_cache: ["0.3.9", "0.3.9.1"]
+valid_llama_builds: [12651, 12651]
+withdrawn: ""
+---
+# v0.3.9 head kit against v0.3.8 on Qwen3.6-35B (fits in RAM, plugin on, --vram 8 plan): prompt +7.3 % (1656.2 vs 1544.0 tok/s), decode +1.4 % (43.3 vs 42.7 tok/s), forecast n=2 per arm
+
+Qwen3.6-35B-A3B UD-IQ3_XXS fits in RAM; the plugin runs on the launcher's plan for a card limited to 8 GB (`--vram 8`, as the test plan stated; the record holds only the resulting flags). Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5 at 6000 MT/s), 64k 6-turn conversation (60,880 prompt tokens, max 1500 answer tokens, seed 42), apps closed, cold file cache, order A B B A, 2 runs per arm, 2026-11-25. A = v0.3.8 kit (llama.cpp b12207), B = v0.3.9 head kit 2e823d2 (llama.cpp b12651). Overall (mean of 2 runs): prompt A 1544.0, B 1656.2 tok/s (+7.3 %); decode A 42.75, B 43.34 tok/s (+1.4 %). Per depth band, B against A, prompt: 0-16k 1611.5 vs 1745.2 (+8.3 %), 16-32k 1692.7 vs 1821.5 (+7.6 %), 32-48k 1516.5 vs 1627.1 (+7.3 %), 48-64k 1353.2 vs 1439.8 (+6.4 %); decode: 46.5 vs 47.1 (+1.5 %), 44.5 vs 45.0 (+1.2 %), 42.7 vs 43.3 (+1.3 %), 41.6 vs 42.2 (+1.5 %). The two arms differ in the plan: B puts one layer less on the CPU (`--n-cpu-moe 33` against 34), which explains the prompt gain; the decode gain is about the size of the run-to-run spread of A (1.1 %), so read it as no change. Forecast: n=2 per arm, one machine, one model; it does not set a default. The older claim v038-fits-qwen36 (plugin against stock, b12064, 2026-11-08) is a different comparison and stays as it is. Source: handover record files qwen36_1_A, qwen36_2_B, qwen36_3_B, qwen36_4_A (chain27 re-run), merged into run 2026-11-25_pc_468fa1.
