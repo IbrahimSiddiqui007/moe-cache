@@ -432,6 +432,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
     run["bands"] = bands(turns, ctx)
     run["thinking"] = not no_think
     run["answer_hint"] = bool(answer_hint)
+    run["ignore_eos_from_depth"] = ignore_eos_from_depth
     run["answer_stats"] = answer_stats(turns, min_median)
     run["answer_stats"]["warnings"] += empty_decode_band_warnings(run["bands"])    # TEST-1184: a band whose answers are all too short has no decode number
     for w in run["answer_stats"]["warnings"]:
@@ -696,7 +697,7 @@ def build_record(runs, a):
     depths = [r["final_depth"] for r in runs if r["final_depth"] is not None]
     proto = {"arms": sorted(counts), "order": order, "runs_per_arm": max(counts.values()), "prompt_set": f"conversation script, seed {r0['seed']}, filled to a {r0['ctx']}-token context",
              "prompt_sha256": r0["user_turns_sha256"], "prompt_tokens": max(depths) if depths else rr.NR,
-             "n_predict": r0["max_tokens"], "temperature": 0, "seed": 42, "sampler": "greedy, cache_prompt on, chat template of the model" + ("" if r0.get("thinking") is None else (", thinking " + ("on" if r0["thinking"] else "off") + (", answer hint on" if r0.get("answer_hint") else ", answer hint off")))}
+             "n_predict": r0["max_tokens"], "temperature": 0, "seed": 42, "sampler": "greedy, cache_prompt on, chat template of the model" + ("" if r0.get("thinking") is None else (", thinking " + ("on" if r0["thinking"] else "off") + (", answer hint on" if r0.get("answer_hint") else ", answer hint off"))) + (f", ignore_eos from depth {r0['ignore_eos_from_depth']} tokens (forced full-length answers: deep decode is not comparable with runs without it)" if r0.get("ignore_eos_from_depth") is not None else "")}
     given = getattr(a, "command_line", None) or getattr(a, "server_cmd", None)
     if given:
         st = rr.settings_from(given, env={}, log_lines=None)

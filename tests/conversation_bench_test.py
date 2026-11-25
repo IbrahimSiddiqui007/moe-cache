@@ -366,4 +366,5 @@ S11, us11 = shorty("S11", 8192)
 rc = cb.main(["run", "--url", us11, "--arm", "stock", "--ctx", "8192", "--max-turns", "4", "--ignore-eos-from-depth", "0",
               "--out", os.path.join(tempfile.mkdtemp(), "r11.json")])
 check(rc == 0 and S11.requests and all(r.get("ignore_eos") for r in S11.requests), "--ignore-eos-from-depth parses and sets ignore_eos in every request body")
+check(r10["ignore_eos_from_depth"] == 2048 and r9["ignore_eos_from_depth"] is None, "the run records ignore_eos_from_depth (protocol label, R17)")
 sys.exit(1 if fails else 0)
