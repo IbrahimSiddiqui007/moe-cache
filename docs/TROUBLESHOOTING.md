@@ -101,6 +101,8 @@ took llama-server to 15.7 / 17.6 GB of commit and Windows closed other programs 
 Qwen3 / GLM thinking models can think for thousands of tokens before they answer. llama-server can cap it: add `-- --reasoning-budget N` (tokens; llama.cpp
 #30333, #31093), or use the model's no-think mode for coding agents. This changes how long the model thinks, not the plugin.
 
+**An empty answer with `finish_reason` `length`** (Inkling 2 Mini and other thinking models): the token limit ran out while the model was still thinking, so `content` is empty and the text so far is in `reasoning_content`. Raise the request's max tokens (or `-n` on the server), or cap the thinking with `--reasoning-budget` as above.
+
 
 ## Known problems from llama.cpp and the platforms (one line each)
 
