@@ -12,7 +12,7 @@ def check(ok, what):
     if not ok: fails.append(what)
 
 T = tempfile.mkdtemp(prefix="moe-lostwork-")
-def git(*a): subprocess.run(["git", "-C", T, *a], check=True, capture_output=True, env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+def git(*a): subprocess.run(["git", "-c", "commit.gpgsign=false", "-C", T, *a], check=True, capture_output=True, env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
 git("init", "-q", "-b", "base"); open(os.path.join(T, "a"), "w").write("x\n"); git("add", "a"); git("commit", "-q", "-m", "one")
 args = ["--repo", T, "--base", "base", "--no-claims", "--accept", os.path.join(T, "none.tsv")]
 

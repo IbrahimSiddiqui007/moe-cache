@@ -158,7 +158,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && { [ -z "$SELF_
   DEFPFX="${XDG_DATA_HOME:-$HOME/.local/share}/moe-cache"
   if [ -f "$REL_REC" ]; then OWNC="$(rec own_cache || true)"; OWNC="${OWNC:-0}"
   elif [ $HAD_COPY = 1 ]; then OWNC=0
-  elif [ -n "${PREFIX:-}" ] && [ "$(realpath -m -- "$REL_PREFIX" 2>/dev/null || echo "$REL_PREFIX")" != "$(realpath -m -- "$DEFPFX" 2>/dev/null || echo "$DEFPFX")" ]; then OWNC=1; else OWNC=0; fi   # TOOLS-1309: real paths, so a trailing slash, '..' or a symlink naming the default folder is still the default
+  elif [ -n "${PREFIX:-}" ] && [ "$(realpath -m -- "$REL_PREFIX" 2>/dev/null || echo "$REL_PREFIX")" != "$(realpath -m -- "$DEFPFX" 2>/dev/null || echo "$DEFPFX")" ]; then OWNC=1; else OWNC=0; fi   # TOOLS-1309: real paths, so a trailing slash or '..' naming the default folder is still the default
   # an older release (MOE_CACHE_REF) ignores the flag and would use the user cache while the record says otherwise: only a kit that reads it gets it
   grep -q own_cache_base "$REL_PREFIX/versions/$REL_NAME/bin/moe_cache.py" 2>/dev/null || OWNC=0
   printf 'version=%s\nprefix=%s\ncommand=%s\nown_cache=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" "$OWNC" > "$NEWREC"

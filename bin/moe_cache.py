@@ -4965,6 +4965,12 @@ def loop_fit_on():
     return os.environ.get("MOE_CACHE_LOOP_FIT", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _cap_skip(ctx_n, pick, n_head, st, ub, fits):
+    """TOOLS-1309 (critic): the plan line names the assumed per-tensor cap when it is what kept a larger -ub out."""
+    big = [u for u in LOOP_UBS if pick < u <= int(ub) and not loop_tensor_ok(ctx_n, u, n_head) and fits(u, st, cap=False)]
+    return (f"; -ub {big[0]} was skipped: its bias tensor passes the {LOOP_MAX_TENSOR_GIB:g} GiB per-tensor cap ({LOOP_MAX_TENSOR_SRC})") if big else ""
+
+
 def loop_tensor_ok(ctx, ub, n_head):
     """One bias tensor under LOOP_MAX_TENSOR_GIB."""
     return ctx * ub * max(n_head, 1) * 4 <= LOOP_MAX_TENSOR_GIB * 2**30
@@ -5088,7 +5094,8 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
             src = "looped-model rule: the relative-position bias is n_kv x n_tokens x n_head F32; MOE_CACHE_LOOP_FIT=1 sizes it to the planner's budget (PC test pending)"
         elif fits(pick, st):
             src = (f"our estimate {loop_compute_mib(ctx_n, pick, n_head, st):.0f} MiB (dense relative-position bias n_kv x n_tokens x {n_head} heads F32 x2"
-                   f"{f' + {st / 2**20:.0f} MiB op-offload staging' if st else ''}) fits the {budget} MiB compute buffer the planner kept for -ub {ub}")
+                   f"{f' + {st / 2**20:.0f} MiB op-offload staging' if st else ''}) fits the {budget} MiB compute buffer the planner kept for -ub {ub}"
+                   + _cap_skip(ctx_n, pick, n_head, st, ub, fits))
         elif not budget or not ctx_n or n_head <= 0:
             src = "the floor: no planner budget or head count to size it from"
         elif not loop_tensor_ok(ctx_n, pick, n_head) and fits(pick, st, cap=False):

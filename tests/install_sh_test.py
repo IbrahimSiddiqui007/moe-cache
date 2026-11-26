@@ -160,7 +160,7 @@ xd = tempfile.mkdtemp(dir=T)
 h, rc, out = run_default(lambda h: ["--prefix", os.path.join(xd, "moe-cache")], xdg=xd)
 check(rc == 0 and "own_cache=0" in open(os.path.join(xd, "moe-cache", ".installed")).read(), "--prefix naming the XDG_DATA_HOME default folder: own_cache=0")
 
-# TOOLS-1309 (b): the default-prefix compare is on real paths, not strings: a trailing slash, a '..' and a symlink to the default folder are still the default (own_cache=0)
+# TOOLS-1309 (b): the default-prefix compare is on real paths, not strings: a trailing slash and a '..' naming the default folder are still the default (own_cache=0)
 h, rc, out = run_default(lambda h: ["--prefix", os.path.join(h, ".local", "share", "moe-cache") + "/"])
 check(rc == 0 and "own_cache=0" in open(os.path.join(h, ".local", "share", "moe-cache", ".installed")).read(), "TOOLS-1309: --prefix <default>/ (trailing slash): own_cache=0")
 h, rc, out = run_default(lambda h: ["--prefix", os.path.join(h, ".local", "share", "x", "..", "moe-cache")])

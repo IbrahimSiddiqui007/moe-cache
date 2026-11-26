@@ -57,6 +57,8 @@ elif ! git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/experimental >/d
 elif out="$(cd "$ROOT" && python3 tools/lost_work_check.py --repo . --base origin/experimental --public --records archive/README.md --accept tools/lost_work_accepted.tsv 2>&1)"; then
   echo "lost-work check: ok"
 else
+  lwrc=$?
+  [ "$lwrc" = 2 ] && { echo "lost-work check: ERROR (the check could not run, e.g. a git call failed; this is not a verdict on the branches):"; echo "$out" | tail -40; exit 1; }
   echo "lost-work check: FAILED (a claude/* branch has work that is not in origin/experimental and not accepted in tools/lost_work_accepted.tsv):"; echo "$out" | tail -40; bad=1
 fi
 exit $bad

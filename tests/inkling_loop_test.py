@@ -81,6 +81,12 @@ finally:
     mc.say = _old_say
 _cap = [l for l in _said if "per-tensor cap" in l]
 check(len(_cap) == 1 and "our constant, assumed" in _cap[0] and "not read from the device" in _cap[0] and "2 GiB per-tensor cap" in _cap[0], f"the per-tensor cap line says it is an assumed constant [got {_cap}]")
+_said.clear(); mc.say = lambda m, *a, **k: _said.append(str(m))
+try:
+    mc.inkling_loop_stage(A(), ["-ub", "4096"], "m.gguf", "4096", "13", None, False, ctx=65536, tuned={"compute_mib": 12000}, ls="ls")
+finally:
+    mc.say = _old_say
+check(any("-ub 512 was skipped" in l and "our constant, assumed" in l for l in _said), f"a -ub kept out by the cap says so in the plan line [got {_said}]")
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=262144, tuned={"compute_mib": 7000}, ls="ls")
 check("--no-op-offload" in extra and ub == "128", f"b12651 at 256k, budget 7000 MiB: even -ub 128 + staging (6144 bias + 577 loop_base_mib + 547) is over: op-offload off, -ub 128 [got {ub}]")
