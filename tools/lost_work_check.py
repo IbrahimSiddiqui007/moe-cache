@@ -36,6 +36,10 @@ SURV_OK, SURV_PARTIAL = 0.80, 0.20
 DEFAULT_IGNORE = [r"(^|/)ci/", r"(^|/)windows-ci$", r"(^|/)sanitize$", r"/HEAD$", r"^v\d", r"/v\d", r"^stash"]
 
 
+class GitError(RuntimeError):
+    """a git call that exited non-zero where an answer was needed (TOOLS-1309: it used to read as an empty, clean result)"""
+
+
 class Git:
     def __init__(self, repo):
         self.repo = str(repo)
@@ -47,7 +51,10 @@ class Git:
         return p.returncode, p.stdout
 
     def out(self, *args):
-        return self.run(*args)[1]
+        rc, o = self.run(*args)
+        if rc != 0:
+            raise GitError(f"git {' '.join(args)} failed (exit {rc}) in {self.repo}")
+        return o
 
     def show_file(self, rev, path):
         rc, o = self.run("show", f"{rev}:{path}")
@@ -176,6 +183,14 @@ def list_refs(git, base, ignore, include):
 
 
 def main(argv=None):
+    try:
+        return _main(argv)
+    except GitError as e:
+        print(f"error: {e}: the check cannot say clean when git failed", file=sys.stderr)
+        return 2
+
+
+def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     here = Path(__file__).resolve()
     ap.add_argument("--repo", default=str(here.parents[3] / "moe-cache"), help="git repo (default: sibling moe-cache)")

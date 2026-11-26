@@ -4882,6 +4882,10 @@ LOOP_OP_OFFLOAD_BUILD = 12642     # first llama.cpp release with PR 32807 (commi
 LOOP_UBS = (512, 256, 128)        # micro-batches tried for a looped model, largest first; 128 is the floor (the old fixed rule)
 LOOP_RULE_UB = 128                # the looped-model rule's -ub without MOE_CACHE_LOOP_FIT (inkling_loop_stage), which the planner plans at (LAUNCHER-1303)
 LOOP_MAX_TENSOR_GIB = 2.0         # one bias tensor (ctx x ub x n_head x 4 B) must stay under this: Vulkan drivers often cap one allocation at 2-4 GiB (assumed, not read from the device)
+# R19 source label (TOOLS-1309 c): this is an assumed constant (the low end of the 2-4 GiB range drivers are known to use, nothing measured on any device; maxMemoryAllocationSize is not queried),
+# not a run-time input. Wherever the plan prints the cap it says so (LOOP_MAX_TENSOR_SRC)
+LOOP_MAX_TENSOR_SRC = "our constant, assumed: low end of the 2-4 GiB Vulkan single-allocation range, not read from the device"
+
 LOOP_KNOWN_ARCHS = ("inkling2_loop",)   # where the bias formula, the NaN rule and PR 32704 were seen; any other looped arch gets them as "assumed from Inkling 2" (printed)
 _LS_BUILD = {}
 
@@ -5088,7 +5092,7 @@ def inkling_loop_stage(a, extra, model, ub, ncmoe, ncmoe_user, stock, ctx=None, 
         elif not budget or not ctx_n or n_head <= 0:
             src = "the floor: no planner budget or head count to size it from"
         elif not loop_tensor_ok(ctx_n, pick, n_head) and fits(pick, st, cap=False):
-            src = f"the floor: one bias tensor would pass the {LOOP_MAX_TENSOR_GIB:g} GiB per-tensor cap (assumed driver limit, not read from the device)"
+            src = f"the floor: one bias tensor would pass the {LOOP_MAX_TENSOR_GIB:g} GiB per-tensor cap ({LOOP_MAX_TENSOR_SRC})"
         else:
             src = f"the floor: even -ub 128 is estimated over the {budget} MiB the planner kept"
         say(f"moe-cache: micro-batch -ub {pick} for the looped model (source: {src}; --ub N to change)")

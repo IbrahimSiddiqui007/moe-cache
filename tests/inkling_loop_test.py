@@ -73,6 +73,14 @@ check("--no-op-offload" not in extra and ub == "256" and extra[1] == "256", f"b1
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=131072, tuned={"compute_mib": 7958}, ls="ls")
 check("--no-op-offload" not in extra and ub == "128", f"b12651 at 128k: -ub 256 fits the budget (7651 <= 7958) but its bias tensor (131072 x 256 x 24 x 4 B = 3 GiB) is over the 2 GiB per-tensor cap -> -ub 128 [got {ub}]")
+# TOOLS-1309 c: the plan line that names the 2 GiB cap carries its R19 source label (assumed constant, not read from the device)
+_said = []; _old_say = mc.say; mc.say = lambda m, *a, **k: _said.append(str(m))
+try:
+    mc.inkling_loop_stage(A(), ["-ub", "4096"], "m.gguf", "4096", "13", None, False, ctx=262144, tuned={"compute_mib": 20000}, ls="ls")      # -ub 128 alone: 3 GiB bias, over the cap, under the budget
+finally:
+    mc.say = _old_say
+_cap = [l for l in _said if "per-tensor cap" in l]
+check(len(_cap) == 1 and "our constant, assumed" in _cap[0] and "not read from the device" in _cap[0] and "2 GiB per-tensor cap" in _cap[0], f"the per-tensor cap line says it is an assumed constant [got {_cap}]")
 extra = ["-ub", "4096"]
 ub, _ = mc.inkling_loop_stage(A(), extra, "m.gguf", "4096", "13", None, False, ctx=262144, tuned={"compute_mib": 7000}, ls="ls")
 check("--no-op-offload" in extra and ub == "128", f"b12651 at 256k, budget 7000 MiB: even -ub 128 + staging (6144 bias + 577 loop_base_mib + 547) is over: op-offload off, -ub 128 [got {ub}]")
