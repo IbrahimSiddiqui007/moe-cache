@@ -257,4 +257,22 @@ try:
 finally:
     mc.say = real_say
 
+# --- LAUNCHER-1182 (b)+(c): the re-plans' free figure and reserve (one function for the MoE re-plan and the cache fallback) ---
+import types  # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "planner"))
+import gguf_plan  # noqa: E402
+_A = lambda room=None, **kw: types.SimpleNamespace(**dict(dict(gpu_margin=None, leave_room=False, room_gib=room), **kw))
+_G = 2**30
+_TF = (16 * _G, 14.65 * _G)          # (total, free) as llama-server reports them after the failed load
+f, r = mc.oom_replan_free(_A(), _TF)
+check(f == 14.65 * _G and r == max(gguf_plan.desk_reserve_gb(*_TF)[0], 1.0), "re-plan, no room figure: the fresh figure and the desk reserve (unchanged)")
+f, r = mc.oom_replan_free(_A(13.08), _TF)
+check(f == 13.08 * _G and r == 1.0, f"re-plan on Windows AMD with a measured room: the room, the 1.0 GB retry floor, no desk reserve on top ({f / _G:.2f} GiB, {r} GB)")
+f, r = mc.oom_replan_free(_A(13.08, leave_room=True), _TF)
+check(f == 13.08 * _G and r == mc.LEAVE_ROOM_VRAM_GB, f"re-plan on the room with --leave-room: {r} GB")
+f, r = mc.oom_replan_free(_A(13.08, gpu_margin=3.0), _TF)
+check(f == 13.08 * _G and r == 3.0 * _G / 1e9, "re-plan on the room with --gpu-margin: the user's number as given")
+f, r = mc.oom_replan_free(_A(15.0), _TF)
+check(f == 14.65 * _G, "re-plan: a room larger than the fresh figure is not used")
+
 sys.exit(1 if fails else 0)

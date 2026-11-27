@@ -1431,6 +1431,18 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             "compute_mib": comp, "loop_bias_mib": round(loop_bias_mib(ub)) if (comp and not has_bias(ub)) else 0, "why": why, "inputs": inputs, "gap_mib": round(gap / MiB), "plugin": bool(plugin), "static_n_cpu_moe": static_n}
 
 
+def plan_free_bytes(fresh_free, room_gib=None, mm_bytes=0):
+    """LAUNCHER-1182 (c): the one free-GPU-memory calculation of every MoE plan (the start's plan in gpu_room_inputs, the plan-time q8_0 hint, the out-of-memory
+    re-plan): the measured room (Windows AMD / Intel, LAUNCHER-1133: the other programs and the room's growth reserve are already off it) when it is the smaller figure,
+    else the fresh reading (the user's --vram, llama-server's or the machine's, taken at plan time or after a failed load). mm_bytes (projector weights + headroom)
+    comes off whichever is used. Returns (bytes or None when there is no reading, True when the room was used)."""
+    use_room = bool(room_gib and fresh_free and room_gib * 2**30 < float(fresh_free))
+    free = room_gib * 2**30 if use_room else fresh_free
+    if free is not None and mm_bytes:
+        free = max(float(free) - mm_bytes, 0.0)
+    return free, use_room
+
+
 def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072, fit_params=None):
     """Exact mode keeps llama-server's f16 KV cache (identity with stock). At long contexts (>= 128k) q8_0 KV, which --fast uses, can free enough
     VRAM for more expert layers on the GPU: one plain line saying so when it gains 2+ layers or lets the context fit at all; None otherwise

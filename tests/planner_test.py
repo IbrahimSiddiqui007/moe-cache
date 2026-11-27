@@ -587,6 +587,15 @@ _fp = os.path.join(_md, "fnx_full.gguf"); _full_gguf(_fp, _fkv, _ft)
 _h256, _h64 = gguf_plan.fast_kv_hint(_fp, 262144, free=15.06 * 2**30), gguf_plan.fast_kv_hint(_fp, 65536, free=15.06 * 2**30)
 check(_h256 and "--fast" in _h256 and ("more layers of experts on the GPU" in _h256 or "prompt chunk of 2048" in _h256) and _h64 is None, f"fast_kv_hint: 256k -> {_h256}; 64k -> {_h64}")
 
+# LAUNCHER-1182 (c): the one free-memory calculation (plan, plan-time hint, out-of-memory re-plan)
+G = 2**30
+check(gguf_plan.plan_free_bytes(14.65 * G, 13.08) == (13.08 * G, True), "plan_free_bytes: the measured room wins when it is the smaller figure")
+check(gguf_plan.plan_free_bytes(13.0 * G, 13.08) == (13.0 * G, False), "plan_free_bytes: the fresh figure wins when the desktop gave memory back")
+check(gguf_plan.plan_free_bytes(10 * G, None) == (10 * G, False), "plan_free_bytes: no room figure -> the fresh figure as it is")
+check(gguf_plan.plan_free_bytes(10 * G, None, 300 * 2**20) == (10 * G - 300 * 2**20, False) and gguf_plan.plan_free_bytes(14.65 * G, 13.08, G) == (12.08 * G, True),
+      "plan_free_bytes: the projector's share comes off the figure used")
+check(gguf_plan.plan_free_bytes(None, None) == (None, False) and gguf_plan.plan_free_bytes(None, 13.0) == (None, False), "plan_free_bytes: no reading -> None (the caller keeps its own fallback)")
+
 # hard memory cap (owner 2026-10-29): physical RAM minus max(4 GiB, 12.5 %), MOE_CACHE_MAX_RAM_GB overrides (0 = off), --ram cannot exceed it
 _mt, _env = L.mem_total, os.environ.pop("MOE_CACHE_MAX_RAM_GB", None)
 _caps = {}

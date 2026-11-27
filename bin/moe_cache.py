@@ -2052,6 +2052,19 @@ def kv_retry_cmd(cmd):
     return new, " / ".join(f"{k} {was[k]}" for k in ("K", "V") if k in was)
 
 
+def oom_replan_free(a, tf):
+    """LAUNCHER-1182 (b)+(c): the free figure and reserve of the out-of-memory re-plans (the MoE re-plan and the cache fallback), from the fresh reading tf = (total, free) bytes taken
+    after the failed load: the measured room when it is the smaller figure (Windows AMD / Intel; the driver's figure overstates the real room, LAUNCHER-1133), the same order as the
+    plan's (gguf_plan.plan_free_bytes). Reserve: the user's --gpu-margin as given; on the room the 1.0 GB retry floor (2 GB with --leave-room) and no desk reserve on top (the room
+    keeps the other programs' memory and its growth reserve); else the fresh desk reserve, at least 1.0 GB (2 with --leave-room). Returns (free bytes, reserve GB)."""
+    from gguf_plan import plan_free_bytes, desk_reserve_gb
+    free, from_room = plan_free_bytes(tf[1], getattr(a, "room_gib", None))
+    floor = max(1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
+    if a.gpu_margin is not None:
+        return free, a.gpu_margin * 2**30 / 1e9
+    return free, floor if from_room else max(desk_reserve_gb(*tf)[0], floor)
+
+
 def cache_fallback_cmd(cmd, n_cpu_moe, ub=None):
     """LAUNCHER-1200: llama-server could not load with the cache the LAUNCHER chose (--gpu-cache auto / MIB, also the default): the same command without --moe-cache-mib, with the
     static plan (n_cpu_moe expert layers on the CPU, a smaller -ub when the static plan needs it). None when the command has no cache flag."""
@@ -3476,18 +3489,17 @@ def gpu_room_inputs(a, machine, gpu, mm_bytes, say_desk=None, say_leave=None):
     keeps its 2 GB in all (the room's own reserve counts toward them). say_desk / say_leave: called with the line about the desk reserve / --leave-room's reserve (None: not said).
     Returns {"free": bytes or None, "kw": the tune() arguments reserve_gb / free_source, "desk_kw": GB the desktop forced or None, "use_room": bool}."""
     planner_path()
-    free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
-    if mm_bytes and free:
-        free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
+    from gguf_plan import plan_free_bytes
+    fresh = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
+    mmb = (mm_bytes + MMPROJ_VRAM_HEADROOM) if mm_bytes else 0        # MM6: the projector's weights and its compute buffer sit in VRAM too
     kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
     desk_kw = None
     room = getattr(a, "room_gib", None)          # LAUNCHER-1133: Windows AMD / Intel, the room the card really gives (never set for the user's own --vram)
-    use_room = bool(room and a.vram and room < float(a.vram))
+    free, use_room = plan_free_bytes(fresh, room if a.vram else None, mmb)          # LAUNCHER-1182 (c): the shared free-memory calculation
     if use_room:
         # planner map fix 1, "real room on every path": the MoE plan used the Vulkan budget (PC, desktop on the card: 15.4 GiB "free", 13.1-13.5 GiB kept); without the plugin's
         # block on the stock path that alone put every expert of the 35B on the card at 32k (the 2.2 GiB spill of LAUNCHER-1152). The room already leaves the other programs
         # their memory and a growth reserve, so the desk reserve is not added on top of it; the tuner's default 0.5 GB still is (follow-up 4 is held, owner decision (b)).
-        free = max(room * 2**30 - ((mm_bytes + MMPROJ_VRAM_HEADROOM) if mm_bytes else 0), 0.0)
         from gguf_plan import ROOM_RESERVE_MIB
         room_reserve_gb = ROOM_RESERVE_MIB * 2**20 / 1e9
         if a.gpu_margin is None:
@@ -3586,15 +3598,20 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     return tuned, desk_kw, ub_asked
 
 
+WALK_DESK_GIVE_GB = 0.25          # LAUNCHER-1182 (a): how much of the desk reserve the auto-tune walk's fit limit gives back
+
+
 def walk_floor(tune, model, ctx, free, kv_q8, kw, tuned, a, spill=True, use_room=False):
     """The auto-tune walk's fit limit on a machine where a load that does not fit spills into shared memory instead of failing (Windows; critic H1): the lowest
     --n-cpu-moe the same tuner places with a smaller reserve at the plan's micro-batch. The reserve kept is the user's --gpu-margin / --leave-room or the desk reserve
-    for other programs when one applies (their memory grows while the server runs), else none on the room figure (the room keeps its own) and 0.25 GB on another figure.
+    for other programs minus 0.25 GB when one applies (their memory grows while the server runs; the 0.25 GB given back is what lets the walk go past the plan, LAUNCHER-1182 a), else none on the room figure (the room keeps its own) and 0.25 GB on another figure.
     None where a failed load stops the walk itself (Linux, macOS: there the walk goes to the edge) or the plan places no static expert layers. Written into the plan's inputs."""
     if not spill or not tuned or tuned.get("gpu_cache_mib") or not (0 < int(tuned.get("n_cpu_moe", 999)) < 999):
         return None
-    if a.gpu_margin is not None or a.leave_room or kw.get("reserve_gb", 0.5) > 0.5:
-        reserve = kw.get("reserve_gb", 0.5)          # the user's margin, --leave-room or the desk reserve the plan kept
+    if a.gpu_margin is not None or a.leave_room:
+        reserve = kw.get("reserve_gb", 0.5)          # the user's margin or --leave-room, kept whole
+    elif kw.get("reserve_gb", 0.5) > 0.5:
+        reserve = max(kw["reserve_gb"] - WALK_DESK_GIVE_GB, 0.0)          # LAUNCHER-1182 (a): the desk reserve minus 0.25 GB, so the walk can run past the plan on Windows
     else:
         reserve = 0.0 if use_room else 0.25
     fkw = dict(kw, reserve_gb=reserve, ub=tuned["ub"])
@@ -4860,8 +4877,9 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
         ncmoe = str(tuned["n_cpu_moe"])
         if not kv_q8 and not a.fast:
             try:
-                from gguf_plan import fast_kv_hint
-                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None, fit_params=plan_fit_params(ls),
+                from gguf_plan import fast_kv_hint, plan_free_bytes
+                # LAUNCHER-1182 (c): the same free figure as the plan (the measured room when it is the smaller one), through the one shared calculation
+                h = fast_kv_hint(model, ctx, free=plan_free_bytes(float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), getattr(a, "room_gib", None) if a.vram else None)[0], ub=int(ub) if (ub or "").isdigit() else None, fit_params=plan_fit_params(ls),
                                  **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
                 if h:
                     say("moe-cache: " + h)
@@ -6519,7 +6537,7 @@ def run_launch_plan(plan):
             # LAUNCHER-1200: the cache is the launcher's own choice: start once more with the static plan and no cache, and remember the size that failed
             try:
                 planner_path()
-                from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes
+                from gguf_plan import tune, gpu_total_free_bytes
                 def free_now():
                     if WINDOWS:
                         g = pick_gpu_full(list_devices(ls, ttl=0))       # ttl=0: fresh numbers after a failed load (the memo must not answer with the plan-time free MiB)
@@ -6528,8 +6546,8 @@ def run_launch_plan(plan):
                 time.sleep(2)                          # the failed server's memory is given back a moment after it exits
                 tf = free_now()
                 def tune_free(tf_):
-                    reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf_)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
-                    t = tune(model, ctx, free=tf_[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
+                    free_b, reserve = oom_replan_free(a, tf_)
+                    t = tune(model, ctx, free=free_b, want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
                              free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
                     return t["n_cpu_moe"], t["ub"]
                 def record_fail(mib, free_mib):
@@ -6565,7 +6583,7 @@ def run_launch_plan(plan):
             return None
         try:
             planner_path()
-            from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes, model_layout
+            from gguf_plan import tune, gpu_total_free_bytes, model_layout
             if WINDOWS:
                 g = pick_gpu_full(list_devices(ls, ttl=0))       # ttl=0: fresh numbers after a failed load (the memo must not answer with the plan-time free MiB)
                 tf = (g[3] * 2**20, g[2] * 2**20) if g and g[3] > 0 else None
@@ -6573,9 +6591,9 @@ def run_launch_plan(plan):
                 tf = gpu_total_free_bytes()
             if not tf:
                 return None
-            reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
+            free_b, reserve = oom_replan_free(a, tf)
             # the tables, not the load records, after an out-of-memory load (a record may be what was too tight); the same engine, free-figure and MTP terms as the plan
-            t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
+            t = tune(model, ctx, free=free_b, want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
                      free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None), cut_block=block_cut_on(a))
             lay = model_layout(model)
             old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])

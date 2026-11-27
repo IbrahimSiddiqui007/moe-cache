@@ -382,6 +382,15 @@ check(mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, di
 check(fl is not None and 25 <= fl <= t64["n_cpu_moe"] and flm == t64["n_cpu_moe"] and {r["setting"]: r for r in t64["inputs"]}.get("walk_floor_n_cpu_moe") is None,
       f"fit limit at 64k: {fl} (plan {t64['n_cpu_moe']}; 25 runs out of memory on the laptop); with --gpu-margin 2 GB: {flm} (never past the plan)")
 check(mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kw0, {"n_cpu_moe": 999, "ub": 512}, FA) is None, "no fit limit when the plan places no expert layers")
+# LAUNCHER-1182 (a): under the plan's desk reserve the limit keeps it minus 0.25 GB (before: the whole reserve, so the limit equalled the plan and the walk never ran)
+kwd = dict(kw0, reserve_gb=1.2)
+tdesk = gguf_plan.tune(TWIN, 65536, free=FREE_PLAN * MIB, want_cache=False, kv_q8=False, **kwd)
+fld = mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, kwd, dict(tdesk, inputs=list(tdesk["inputs"])), FA)
+t095 = gguf_plan.tune(TWIN, 65536, free=FREE_PLAN * MIB, want_cache=False, kv_q8=False, **dict(kw0, reserve_gb=0.95, ub=tdesk["ub"]))
+check(fld == min(t095["n_cpu_moe"], tdesk["n_cpu_moe"]) and fld <= tdesk["n_cpu_moe"],
+      f"fit limit under a 1.2 GB desk reserve: {fld} = the tuner with 0.95 GB kept (plan {tdesk['n_cpu_moe']}); --gpu-margin / --leave-room keep their reserve whole")
+fll = mc.walk_floor(gguf_plan.tune, TWIN, 65536, FREE_PLAN * MIB, False, dict(kw0, reserve_gb=2.0), dict(t64, inputs=list(t64["inputs"])), types.SimpleNamespace(gpu_margin=None, leave_room=True))
+check(fll == t64["n_cpu_moe"], f"--leave-room keeps its 2 GB whole in the fit limit: {fll}")
 pcf = mc.walk_floor(gguf_plan.tune, TWIN, 32768, room * MIB, False, {"plugin": False, "measured": {"buffers": {2048: {"compute_mib": PC_COMPUTE}}}, "free_source": "room"},
                     dict(pc, inputs=list(pc["inputs"])), FA, use_room=True)
 needf = weights + gguf_plan.gpu_expert_bytes(lay, pcf) / MIB + 891.25 + PC_COMPUTE
