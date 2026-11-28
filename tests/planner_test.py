@@ -467,9 +467,28 @@ check(gguf_plan.compute_buffer_mib(65536, 4096) is None and _g4[65536] == 4660 a
 check(_g4[131072] == 7958 and _g4[262144] == 7958 and _g4[524288] == 15916 and _g4[131072] >= _g4[65536],
       f"-ub 4096 guess: 128k/256k scale the 2048 rows x2 (7958), above 256k it grows with the context (15916) ({_g4})")
 _run = gguf_plan.subprocess.run      # audit 2026-10-29 L4: two NVIDIA GPUs print two lines; the tuner read none
-gguf_plan.subprocess.run = lambda *a, **k: types.SimpleNamespace(stdout="24564, 300\n12288, 100\n")
+gguf_plan.subprocess.run = lambda *a, **k: types.SimpleNamespace(stdout="24564, 24264\n12288, 12188\n")
 try:
     check(gguf_plan.free_vram_bytes() == (24564 - 300) * 1048576, "free VRAM with two NVIDIA GPUs: the first GPU's line")
+finally:
+    gguf_plan.subprocess.run = _run
+# LAUNCHER-1313: the driver's own memory.free, not total - used (RTX 4060 laptop 2026-11-28: total 8188, used 117, reserved 331, memory.free 7742 MiB)
+def _smi(_cmd_out, _calls):
+    def run(cmd, **k):
+        _calls.append(cmd[1]); f = cmd[1]
+        if "memory.free" in f: return types.SimpleNamespace(stdout=_cmd_out[0])
+        if _cmd_out[1] is None: raise OSError("no")
+        return types.SimpleNamespace(stdout=_cmd_out[1])
+    return run
+_calls = []
+gguf_plan.subprocess.run = _smi(("8188, 7742\n", "8188, 117\n"), _calls)
+try:
+    check(gguf_plan.free_vram_bytes() == 7742 * 1048576 and gguf_plan.gpu_total_free_bytes() == (8188 * 1048576, 7742 * 1048576),
+          "LAUNCHER-1313: free VRAM is nvidia-smi memory.free (7742 MiB), not total - used (8071 MiB)")
+    check(gguf_plan.LAST_FREE_NOTE[0] == "memory.free", "LAUNCHER-1313: the figure's source is labelled memory.free")
+    gguf_plan.subprocess.run = _smi(("", "8188, 117\n"), [])
+    check(gguf_plan.free_vram_bytes() == (8188 - 117) * 1048576 and gguf_plan.LAST_FREE_NOTE[0] == "total minus used",
+          "LAUNCHER-1313: memory.free unreadable -> the labelled total - used fallback")
 finally:
     gguf_plan.subprocess.run = _run
 _h = gguf_plan.tune(model, 524288, free=16 * GIB, want_cache=False)

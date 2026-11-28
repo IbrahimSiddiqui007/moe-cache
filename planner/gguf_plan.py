@@ -502,14 +502,30 @@ def _kv_or_flat(path, ctx, kv_q8=False):
     return kv if kv is not None else ctx * 40e3 * (0.53 if kv_q8 else 1.0)
 
 
+def nvidia_total_free_bytes():
+    """(total, free) bytes of the first NVIDIA GPU, or None. LAUNCHER-1313: free is the driver's OWN memory.free; total - used overstates it by the driver's reserve
+    (RTX 4060 8 GB: 8071 MiB by subtraction, 7742 MiB memory.free). Fallback when memory.free cannot be read (very old nvidia-smi): total - used, which is labelled in LAST_FREE_NOTE."""
+    LAST_FREE_NOTE[0] = None
+    for fields, how in (("memory.total,memory.free", "memory.free"), ("memory.total,memory.used", "total minus used")):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=" + fields, "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
+            row = out.strip().splitlines()[0].split(",")      # one line per GPU: the first, as plan.py
+            tot, b = float(row[0]), float(row[1])
+        except Exception:
+            continue
+        LAST_FREE_NOTE[0] = how
+        return tot * 1048576, ((b if how == "memory.free" else tot - b) * 1048576)
+    return None
+
+
+LAST_FREE_NOTE = [None]      # "memory.free" or "total minus used (memory.free unreadable)": which nvidia-smi figure the last read used
+
+
 def gpu_total_free_bytes():
     """(total, free) bytes of the GPU the planner uses (NVIDIA first, else the AMD GPU with the most VRAM); None when there is none."""
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
-        out = out.strip().splitlines()[0].split(",")
-        return float(out[0]) * 1048576, (float(out[0]) - float(out[1])) * 1048576
-    except Exception:
-        pass
+    nv = nvidia_total_free_bytes()
+    if nv:
+        return nv
     best = None
     for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
         try:
@@ -714,14 +730,10 @@ LAST_FREE_SOURCE = [None]       # where free_vram_bytes' last figure came from (
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
     LAST_FREE_SOURCE[0] = None
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
-        out = out.strip().splitlines()[0].split(",")    # one line per GPU: the first, as plan.py (with two GPUs the whole text failed to parse: no GPU)
-        v = (float(out[0]) - float(out[1])) * 1048576
+    nv = nvidia_total_free_bytes()
+    if nv:
         LAST_FREE_SOURCE[0] = "nvidia-smi"
-        return v
-    except Exception:
-        pass
+        return nv[1]
     best = None
     for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
         try:
