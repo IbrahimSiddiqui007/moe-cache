@@ -31,6 +31,10 @@ def main():
                 os.unlink(path)
             r = lp.run_case(machine, opts + ["--plan-file", path], list(extra), model, tmp)
             return r, (json.load(open(path)) if os.path.exists(path) else None)
+        # LAUNCHER-1312: the real Inkling command (server log 2026-11-28, chain30 c1271_trace_inkling): --n-cpu-moe 0 plus the planner's 13 layers by -ot
+        ot = "blk\\.(0|1|2|3|4|5|6|18|19|20|21|22|23)\\.ffn_(gate_up|gate|up|down)_exps\\.weight=CPU"
+        check(pf.cpu_expert_layers(["llama-server", "--n-cpu-moe", "0", "-ot", ot]) == [0, 1, 2, 3, 4, 5, 6, 18, 19, 20, 21, 22, 23], "1312: the -ot rule is read as the real CPU expert layers (13)")
+        check(pf.cpu_expert_layers(["llama-server", "--n-cpu-moe", "0"]) == [] and pf.cpu_expert_layers(["-ot", "exps=CPU"]) == [], "1312: no launcher -ot rule = no layers")
         r, rec = plan(["--ram", "12"])
         check(rec is not None and rec["schema"] == 1 and rec["settings"], "a dry run with --plan-file writes the file")
         check(all(x["source"] in ("probe", "measured", "constant", "user", "llama") and x["why"] for x in rec["settings"]), "every row has a source and a reason")

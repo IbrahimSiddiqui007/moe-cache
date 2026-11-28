@@ -10,6 +10,7 @@ File: <cache dir>/plans/port-<PORT>.json (next to the auto-tune picks in <cache 
 """
 import json
 import os
+import re
 import sys
 
 SCHEMA = 1
@@ -26,6 +27,21 @@ def _after(args, *names):
 
 def _has(args, *names):
     return any(x in names or any(x.startswith(n + "=") for n in names if n.startswith("--")) for x in args)
+
+
+_OT_CPU_RE = re.compile(r"blk\\\.\(([0-9|]+)\)\\\.ffn_[^=]*_exps\\\.weight=CPU")
+
+
+def cpu_expert_layers(cmd):
+    """LAUNCHER-1312: the expert layers the command puts on the CPU with the launcher's own -ot rule (expert placement by use count), [] when it has none.
+    The same on Linux and Windows (it only reads the command)."""
+    out = []
+    for i, x in enumerate(cmd):
+        v = x.split("=", 1)[1] if x.startswith("--override-tensor=") else (cmd[i + 1] if x in ("-ot", "--override-tensor") and i + 1 < len(cmd) else None)
+        m = _OT_CPU_RE.search(v or "")
+        if m:
+            out += [int(t) for t in m.group(1).split("|") if t.isdigit()]
+    return sorted(set(out))
 
 
 def _row(name, value, source, why):
@@ -87,7 +103,12 @@ def build(plan):
 
     # n-cpu-moe
     n = _after(cmd, "--n-cpu-moe", "-ncmoe")
-    if n is None:
+    ot_cpu = cpu_expert_layers(cmd) if plan.ncmoe_user is None and n in (None, "0") and not _has(uextra, "-ot", "--override-tensor") else []
+    if ot_cpu:                          # LAUNCHER-1312: --n-cpu-moe says 0 because the planner's layers go in by -ot; the table shows what the command really puts on the CPU
+        rows.append(_row("n_cpu_moe", len(ot_cpu), "constant" if not (picked and pick.startswith("ncmoe")) else "measured",
+                         "expert layers on the CPU, placed by use count with -ot (layers %s; the command's --n-cpu-moe is %s): the planner's count for the free GPU memory (the rows gpu_* below)"
+                         % (",".join(map(str, ot_cpu)), n if n is not None else "absent")))
+    elif n is None:
         rows.append(_row("n_cpu_moe", None, "llama", "no --n-cpu-moe passed (dense model, or llama.cpp places the layers)"))
     elif plan.ncmoe_user is not None or "ncmoe" in uflags or _has(uextra, "--n-cpu-moe", "-ncmoe"):
         rows.append(_row("n_cpu_moe", n, "user", "your --n-cpu-moe"))
