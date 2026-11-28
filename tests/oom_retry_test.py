@@ -275,4 +275,27 @@ check(f == 13.08 * _G and r == 3.0 * _G / 1e9, "re-plan on the room with --gpu-m
 f, r = mc.oom_replan_free(_A(15.0), _TF)
 check(f == 14.65 * _G, "re-plan: a room larger than the fresh figure is not used")
 
+# --- LAUNCHER-1324: (1) the dense retry takes a fresh reading, a.vram only when the user gave it; (2) llama-server's FREE figure, not the total; (3) the projector's share ---
+_lsfree = {"mib": (2 * 1024, 16 * 1024)}                       # free 2 GiB of 16 GiB total, after the failed load
+_real = (mc.WINDOWS, mc.list_devices, mc.pick_gpu_full)
+mc.WINDOWS, mc.list_devices, mc.pick_gpu_full = True, (lambda ls, ttl=None: "x"), (lambda listing: ("Vulkan0", "AMD Radeon", _lsfree["mib"][0], _lsfree["mib"][1]))
+try:
+    _M = types.SimpleNamespace(free_vram_bytes=lambda: None)
+    _a = types.SimpleNamespace(vram=14.0, vram_user=None)     # Windows auto-detection set a.vram = 14 GiB at plan time; the user gave no --vram
+    got = mc.dense_retry_free(_a, _M, "ls")
+    check(got == 2 * _G, f"dense retry: stale 14 GiB at plan time, 2 GiB free now, 16 GiB total: the fresh free figure ({None if got is None else got / _G} GiB)")
+    got = mc.dense_retry_free(types.SimpleNamespace(vram=14.0, vram_user=14.0), _M, "ls")
+    check(got == 14.0 * _G, "dense retry: the user's own --vram wins")
+    got = mc.dense_retry_free(_a, _M, "ls", 2 * _G)
+    check(got == max(2 * _G - (2 * _G + mc.MMPROJ_VRAM_HEADROOM), 0.0) == 0.0, "dense retry: a 2 GiB projector comes off the fresh figure (floor 0)")
+    _lsfree["mib"] = (10 * 1024, 16 * 1024)
+    got = mc.dense_retry_free(_a, _M, "ls", 2 * _G)
+    check(abs(got - (10 * _G - 2 * _G - mc.MMPROJ_VRAM_HEADROOM)) < 1, f"dense retry: 10 GiB free, 2 GiB projector: {got / _G:.2f} GiB")
+finally:
+    mc.WINDOWS, mc.list_devices, mc.pick_gpu_full = _real
+f, r = mc.oom_replan_free(_A(), _TF, 2 * _G)
+check(abs(f - (14.65 * _G - 2 * _G - mc.MMPROJ_VRAM_HEADROOM)) < 1, f"MoE re-plan: the 2 GiB projector and its headroom come off the fresh figure ({f / _G:.2f} GiB)")
+f, r = mc.oom_replan_free(_A(13.08), _TF, 2 * _G)
+check(abs(f - (13.08 * _G - 2 * _G - mc.MMPROJ_VRAM_HEADROOM)) < 1, "MoE re-plan on the measured room: the projector comes off the room too")
+
 sys.exit(1 if fails else 0)

@@ -41,6 +41,29 @@ def make_dense(path, n_layers=24, d=2048):
     with open(path, "wb") as f:
         f.write(head); f.truncate(len(head) + off)
 
+def make_dense_unequal(path, mults, d=2048):
+    """a dense header whose layers have different FFN sizes (mults[i] x the base FFN width)"""
+    def string(x):
+        b = x.encode(); return struct.pack("<Q", len(b)) + b
+    infos, off = [], 0
+    def add(name, dims, ty, nbytes):
+        nonlocal off
+        infos.append((name, dims, ty, off)); off += (nbytes + 31) // 32 * 32
+    add("token_embd.weight", [d, 32000], 1, d * 32000 * 2)
+    for l, mu in enumerate(mults):
+        add(f"blk.{l}.attn_q.weight", [d, d], 12, d // 256 * 144 * d)
+        add(f"blk.{l}.ffn_up.weight", [d, 4 * d * mu], 12, d // 256 * 144 * 4 * d * mu)
+    kv = [("general.architecture", 8, string("llama")), ("llama.block_count", 4, struct.pack("<I", len(mults))), ("llama.context_length", 4, struct.pack("<I", 8192)),
+          ("llama.embedding_length", 4, struct.pack("<I", d)), ("llama.attention.head_count", 4, struct.pack("<I", 16)), ("llama.attention.head_count_kv", 4, struct.pack("<I", 4))]
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(infos), len(kv))
+    for k, t, v in kv:
+        head += string(k) + struct.pack("<I", t) + v
+    for name, dims, ty, o in infos:
+        head += string(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", x) for x in dims) + struct.pack("<IQ", ty, o)
+    head += b"\0" * ((-len(head)) % 32)
+    with open(path, "wb") as f:
+        f.write(head); f.truncate(len(head) + off)
+
 def cmdline(r):
     m = re.search(r"^.*llama-server\S* -m .*$", r["stdout"], re.M)
     return m.group(0) if m else ""
@@ -174,4 +197,21 @@ with tempfile.TemporaryDirectory() as tmp:
     check("only" in r["stderr"] + r["stdout"] and "left" in r["stderr"] + r["stdout"], "others hold nearly the whole cap: a warning, not a silent tiny size")
 
 print("FAILED: " + "; ".join(fails) if fails else "all ok")
+# LAUNCHER-1324: the layers sent to the CPU are the LAST ones: their real FFN sizes are added up, not the average layer
+import gguf_plan as _gp
+with tempfile.TemporaryDirectory() as _t2:
+    unit = 2048 // 256 * 144 * 4 * 2048          # bytes of one base FFN (mult 1)
+    def split(mults, overflow_units):
+        pth = os.path.join(_t2, "u%d.gguf" % abs(hash(tuple(mults)))); make_dense_unequal(pth, mults)
+        need = _gp.dense_ffn_split(pth, 8192, 10000 * GIB)["need_gib"]
+        free_bytes = (need - overflow_units * unit / GIB + _gp.SMI_GAP_GIB) * GIB          # the planner takes the 0.40 GiB gap off again
+        return _gp.dense_ffn_split(pth, 8192, free_bytes)
+    r1 = split([1] * 7 + [8], 4)       # a big LAST layer (8 units) covers a 4-unit overflow alone; the average layer (1.9 units) said 3
+    r2 = split([8] * 7 + [1], 4)       # a small last layer (1 unit) then big ones: the average (7.1 units) said 1 layer, which frees 1 unit: two are needed (1 + 8)
+    r3 = split([1] * 8, 4)             # equal layers: unchanged, 4 layers
+    check(r1 and r1["n_off"] == 1 and r1["first_layer"] == 7, f"dense_ffn_split: one big last layer covers the overflow ({r1 and r1['n_off']} layers)")
+    check(r2 and r2["n_off"] == 2 and r2["first_layer"] == 6, f"dense_ffn_split: a small last layer: two needed, not the average's one ({r2 and r2['n_off']} layers)")
+    check(r3 and r3["n_off"] == 4, "dense_ffn_split: equal layers give the same count as before")
+    check(split([1] * 8, 100)["n_off"] is None, "dense_ffn_split: overflow bigger than every FFN together -> None")
+
 sys.exit(1 if fails else 0)

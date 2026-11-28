@@ -2052,17 +2052,36 @@ def kv_retry_cmd(cmd):
     return new, " / ".join(f"{k} {was[k]}" for k in ("K", "V") if k in was)
 
 
-def oom_replan_free(a, tf):
+def oom_replan_free(a, tf, mm_bytes=0):
     """LAUNCHER-1182 (b)+(c): the free figure and reserve of the out-of-memory re-plans (the MoE re-plan and the cache fallback), from the fresh reading tf = (total, free) bytes taken
     after the failed load: the measured room when it is the smaller figure (Windows AMD / Intel; the driver's figure overstates the real room, LAUNCHER-1133), the same order as the
     plan's (gguf_plan.plan_free_bytes). Reserve: the user's --gpu-margin as given; on the room the 1.0 GB retry floor (2 GB with --leave-room) and no desk reserve on top (the room
     keeps the other programs' memory and its growth reserve); else the fresh desk reserve, at least 1.0 GB (2 with --leave-room). Returns (free bytes, reserve GB)."""
     from gguf_plan import plan_free_bytes, desk_reserve_gb
-    free, from_room = plan_free_bytes(tf[1], getattr(a, "room_gib", None))
+    mmb = (mm_bytes + MMPROJ_VRAM_HEADROOM) if mm_bytes else 0          # LAUNCHER-1324: the vision projector's weights and compute buffer, as gpu_room_inputs takes them off the plan's figure
+    free, from_room = plan_free_bytes(tf[1], getattr(a, "room_gib", None), mmb)
     floor = max(1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
     if a.gpu_margin is not None:
         return free, a.gpu_margin * 2**30 / 1e9
     return free, floor if from_room else max(desk_reserve_gb(*tf)[0], floor)
+
+
+def dense_retry_free(a, machine, ls, mm_bytes=0):
+    """LAUNCHER-1324: the free GPU bytes for the dense out-of-memory retry: the user's own --vram (a.vram_user; a.vram may be the launcher's first Windows reading at plan time, stale
+    after the failed load), else a fresh reading (the machine's, on Windows AMD / Intel llama-server's own free MiB with ttl=0), minus the vision projector's share as the plan took it."""
+    user = getattr(a, "vram_user", a.vram)
+    free = float(user) * 2**30 if user else None
+    if free is None:
+        try:
+            free = machine.free_vram_bytes()
+        except Exception:
+            free = None
+    if free is None and WINDOWS:
+        g = pick_gpu_full(list_devices(ls, ttl=0))       # (device, name, free MiB, total MiB): the FREE figure is g[2], not the total g[3]
+        free = g[2] * 2**20 if g and g[3] > 0 else None
+    if free and mm_bytes:
+        free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)
+    return free
 
 
 def cache_fallback_cmd(cmd, n_cpu_moe, ub=None):
@@ -6455,6 +6474,7 @@ def _launch_plan(a, extra, argv, machine):
     plan.cache_ram, plan.profile, plan.alias, plan.slotdir, plan.host = cram, profile, alias, slotdir, host
     plan.api_key, plan.cmd, plan.env, plan.key_env, plan.win_limit = api_key, cmd, env, key_env, win_limit
     plan.machine, plan.commit_refusal = machine, commit_refusal
+    plan.mm_bytes = mm_bytes          # LAUNCHER-1324: the out-of-memory re-plans take the projector's share off the free figure too
     plan.tuned, plan.planner_info, plan.planner_error = tuned, planner_info, planner_error
     plan.autotune = tune_info
     plan.tune_fallback = tune_fallback
@@ -6546,7 +6566,7 @@ def run_launch_plan(plan):
                 time.sleep(2)                          # the failed server's memory is given back a moment after it exits
                 tf = free_now()
                 def tune_free(tf_):
-                    free_b, reserve = oom_replan_free(a, tf_)
+                    free_b, reserve = oom_replan_free(a, tf_, getattr(plan, "mm_bytes", 0))
                     t = tune(model, ctx, free=free_b, want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
                              free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
                     return t["n_cpu_moe"], t["ub"]
@@ -6560,15 +6580,7 @@ def run_launch_plan(plan):
                 say(f"moe-cache: llama-server could not load with the GPU expert cache; the retry without it could not be planned ({e})", err=True)
             return None
         if "--n-cpu-moe" not in cmd and ncmoe_user is None:       # LAUNCHER-850: a dense model
-            free = float(a.vram) * 2**30 if a.vram else None
-            if free is None:
-                try:
-                    free = machine.free_vram_bytes()
-                except Exception:
-                    free = None
-            if free is None and WINDOWS:
-                g = pick_gpu_full(list_devices(ls, ttl=0))       # ttl=0: fresh numbers after a failed load (see the tune_free site below)
-                free = g[3] * 2**20 if g and g[3] > 0 else None
+            free = dense_retry_free(a, machine, ls, getattr(plan, "mm_bytes", 0))
             margin = a.gpu_margin if a.gpu_margin is not None else 0.25
             user_ot = any(x in ("-ot", "--override-tensor") or x.startswith("--override-tensor=") for x in extra)
             kvq = kv_plan_type(extra, kv_q8)
@@ -6591,7 +6603,7 @@ def run_launch_plan(plan):
                 tf = gpu_total_free_bytes()
             if not tf:
                 return None
-            free_b, reserve = oom_replan_free(a, tf)
+            free_b, reserve = oom_replan_free(a, tf, getattr(plan, "mm_bytes", 0))
             # the tables, not the load records, after an out-of-memory load (a record may be what was too tight); the same engine, free-figure and MTP terms as the plan
             t = tune(model, ctx, free=free_b, want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
                      free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None), cut_block=block_cut_on(a))

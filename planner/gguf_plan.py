@@ -306,8 +306,14 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, free_so
     out = {"n_layers": n_blocks, "ffn_gib": per / GiB, "need_gib": need, "free_gib": free, "kv_gib": kv / GiB, "fits_all": need <= free, "n_off": 0, "first_layer": n_blocks}
     if need <= free:
         return out
-    n_off = int(-(-(need - free) * GiB // per))
-    if n_off > n_blocks:
+    # LAUNCHER-1324: the layers that go to the CPU are the LAST ones, so add up their real FFN sizes from the last layer backwards until the overflow is covered
+    # (the old count used the average layer, wrong when the layers differ: a big last layer covers the overflow with fewer, a small one needs more)
+    over, covered, n_off = (need - free) * GiB, 0, 0
+    for blk in sorted(ffn, reverse=True):
+        if covered >= over:
+            break
+        covered += ffn[blk]; n_off += 1
+    if covered < over:
         out["n_off"] = None            # even every FFN on the CPU does not fit: the caller keeps llama.cpp's --fit
         return out
     out["n_off"], out["first_layer"] = n_off, n_blocks - n_off
