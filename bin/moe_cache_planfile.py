@@ -103,9 +103,10 @@ def build(plan):
 
     # n-cpu-moe
     n = _after(cmd, "--n-cpu-moe", "-ncmoe")
-    ot_cpu = cpu_expert_layers(cmd) if plan.ncmoe_user is None and n in (None, "0") and not _has(uextra, "-ot", "--override-tensor") else []
+    ot_cpu = cpu_expert_layers(cmd) if plan.ncmoe_user is None and n in (None, "0") and not _has(uextra, "-ot", "--override-tensor") and not _has(own, "-ot", "--override-tensor") else []
     if ot_cpu:                          # LAUNCHER-1312: --n-cpu-moe says 0 because the planner's layers go in by -ot; the table shows what the command really puts on the CPU
-        rows.append(_row("n_cpu_moe", len(ot_cpu), "constant" if not (picked and pick.startswith("ncmoe")) else "measured",
+        srcs_ot = {r["source"] for r in tuned.get("inputs", []) if r["setting"] in ("gpu_weights_mib", "gpu_kv_mib", "gpu_compute_mib", "gpu_overhead_mib")}
+        rows.append(_row("n_cpu_moe", len(ot_cpu), "measured" if (picked and pick.startswith("ncmoe")) or srcs_ot == {"measured"} else "probe",   # R19: counted from the free GPU memory read at run time, never a constant
                          "expert layers on the CPU, placed by use count with -ot (layers %s; the command's --n-cpu-moe is %s): the planner's count for the free GPU memory (the rows gpu_* below)"
                          % (",".join(map(str, ot_cpu)), n if n is not None else "absent")))
     elif n is None:

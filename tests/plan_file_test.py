@@ -68,6 +68,16 @@ def main():
         check(row(rec2, "n_cpu_moe")["source"] == "measured", "an ncmoe pick makes --n-cpu-moe 'measured'")
         rec2 = pf.build(stub(base, None, {"ub": ("2048", "1024"), "n_cpu_moe": ("25", "27")}))
         check(row(rec2, "ub")["source"] == "probe" and "commit" in row(rec2, "ub")["why"] and "commit" in row(rec2, "n_cpu_moe")["why"], "a value the commit check changed says so")
+        # LAUNCHER-1312 (critic): build() with the launcher's own -ot placement shows the real CPU layers, labelled probe / measured, never constant
+        inkling = ["llama-server", "--n-cpu-moe", "0", "-ot", ot, "-ub", "128", "-c", "131072"]
+        rec3 = pf.build(stub(inkling))
+        r3 = row(rec3, "n_cpu_moe")
+        check(r3["value"] == 13 and "0, 1, 2" not in r3["why"] and "18,19,20,21,22,23" in r3["why"] and r3["source"] == "probe", "1312: build() prints 13 CPU expert layers (layers listed) with source probe")
+        check(row(pf.build(stub(inkling, {"changed": True, "state": "cached", "picked": "ncmoe-2"})), "n_cpu_moe")["source"] == "measured", "1312: a measured pick labels the -ot row measured")
+        user_ot = stub(inkling); user_ot.user_extra = ["-ot", ot]
+        check(row(pf.build(user_ot), "n_cpu_moe")["value"] == "0", "1312: the user's own -ot keeps the flag value (their placement, not ours)")
+        own_ot = stub(inkling); own_ot.argv_in = ["--override-tensor", ot]
+        check(row(pf.build(own_ot), "n_cpu_moe")["value"] == "0", "1312: a user -ot before -- keeps the flag value")
         path = os.path.join(tmp, "x", "p.json")
         check(pf.write(os.path.join(tmp, "y", "p.json"), {"bad": object()}) is False, "a value that cannot be written never raises")
         pf.write(path, rec2)
