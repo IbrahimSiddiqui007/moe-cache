@@ -5413,7 +5413,7 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
         return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
     layers = "|".join(str(i) for i in range(r["first_layer"], r["n_layers"]))
     say(f"moe-cache: dense model: attention, the KV cache and the other weights stay on the GPU; the FFN weights of layers {r['first_layer']}-{r['n_layers'] - 1} ({r['n_off']} of {r['n_layers']}, "
-        f"{r['n_off'] * r['ffn_gib']:.1f} GiB) stay in RAM (-ot; the model plus a {ctx}-token KV cache needs {r['need_gib']:.1f} GiB, the GPU has {r['free_gib']:.1f}). "
+        f"{r.get('off_gib', r['n_off'] * r['ffn_gib']):.1f} GiB) stay in RAM (-ot; the model plus a {ctx}-token KV cache needs {r['need_gib']:.1f} GiB, the GPU has {r['free_gib']:.1f}). "
         "A plain layer split would run the attention of the RAM layers on the CPU: far slower in long chats. --no-ffn-ram turns this off")
     return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
 

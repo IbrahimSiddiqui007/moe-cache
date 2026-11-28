@@ -211,6 +211,7 @@ with tempfile.TemporaryDirectory() as _t2:
     r3 = split([1] * 8, 4)             # equal layers: unchanged, 4 layers
     check(r1 and r1["n_off"] == 1 and r1["first_layer"] == 7, f"dense_ffn_split: one big last layer covers the overflow ({r1 and r1['n_off']} layers)")
     check(r2 and r2["n_off"] == 2 and r2["first_layer"] == 6, f"dense_ffn_split: a small last layer: two needed, not the average's one ({r2 and r2['n_off']} layers)")
+    check(r1 and abs(r1["off_gib"] - 8 * unit / GIB) < 1e-9 and r2 and abs(r2["off_gib"] - 9 * unit / GIB) < 1e-9, "dense_ffn_split: off_gib is the real size of the layers sent to the CPU (8 and 9 units), not n_off x the average")
     check(r3 and r3["n_off"] == 4, "dense_ffn_split: equal layers give the same count as before")
     check(split([1] * 8, 100)["n_off"] is None, "dense_ffn_split: overflow bigger than every FFN together -> None")
 

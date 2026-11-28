@@ -316,7 +316,7 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, free_so
     if covered < over:
         out["n_off"] = None            # even every FFN on the CPU does not fit: the caller keeps llama.cpp's --fit
         return out
-    out["n_off"], out["first_layer"] = n_off, n_blocks - n_off
+    out["n_off"], out["first_layer"], out["off_gib"] = n_off, n_blocks - n_off, covered / GiB      # off_gib: the real size of the layers sent to the CPU (the launcher's line quotes it)
     return out
 
 
