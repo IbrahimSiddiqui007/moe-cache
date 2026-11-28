@@ -271,6 +271,7 @@ def gpu_layers_that_fit(lay, room):
 
 
 SMI_GAP_GIB = 0.40           # nvidia-smi (total - used) is 0.4 GiB more than CUDA can allocate on the RTX 4060 8 GB laptop (8146 vs 7745 MiB at idle); the first live run ran out of memory without it
+SMI_FREE_GAP_GIB = 0.08     # LAUNCHER-1313: the same gap when the figure is nvidia-smi's own memory.free (it already leaves out the driver's 331 MiB reserve: 0.40 - 331/1024 = 0.08, derived not measured; the usable room stays 7.48 GiB on the RTX 4060 laptop)
 DENSE_FIXED_GIB = 0.30        # CUDA context + compute buffer (-ub 512) besides the weights and the KV cache; the token embedding stays on the CPU. RTX 4060 8 GB: Qwen3-8B at 16k f16 peaked at 6.88 GiB (4.33 weights + 2.25 KV), Qwen3-14B q8_0 fits at 32k with 25 FFN layers off and not with 22
 
 
@@ -300,7 +301,7 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
     except Exception:
         return None
     per = sum(ffn.values()) / len(ffn)
-    free = free_bytes / GiB - SMI_GAP_GIB
+    free = free_bytes / GiB - smi_gap_gib()
     need = (total - emb) / GiB + kv / GiB + DENSE_FIXED_GIB + margin_gib
     out = {"n_layers": n_blocks, "ffn_gib": per / GiB, "need_gib": need, "free_gib": free, "kv_gib": kv / GiB, "fits_all": need <= free, "n_off": 0, "first_layer": n_blocks}
     if need <= free:
@@ -500,6 +501,11 @@ def loop_kv_bytes(g, blocks, kv_list, ctx, kv_q8=False, n_seq=4):
 def _kv_or_flat(path, ctx, kv_q8=False):
     kv = kv_bytes(path, ctx, kv_q8)
     return kv if kv is not None else ctx * 40e3 * (0.53 if kv_q8 else 1.0)
+
+
+def smi_gap_gib():
+    """The gap to take off the last free figure read by free_vram_bytes: SMI_FREE_GAP_GIB when it was nvidia-smi's memory.free, else SMI_GAP_GIB (total - used, and AMD sysfs as before). LAUNCHER-1313."""
+    return SMI_FREE_GAP_GIB if LAST_FREE_NOTE[0] == "memory.free" else SMI_GAP_GIB
 
 
 def nvidia_total_free_bytes():
@@ -1300,7 +1306,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         note("gpu_overhead_mib", gap / MiB, "measured", "what the free figure overstates (driver vs CUDA total, CUDA context, buffers made after load"
              + "), from the memory tables of the last load")
     elif free_source in GAP_SOURCES:
-        gap = SMI_GAP_GIB * 2**30
+        gap = smi_gap_gib() * 2**30
         note("gpu_overhead_mib", gap / MiB, "constant", "nvidia-smi's free figure is about this much above what CUDA can fill (RTX 4060 laptop, 8146 vs 7745 MiB at idle); no load recorded here")
     else:
         gap = 0.0

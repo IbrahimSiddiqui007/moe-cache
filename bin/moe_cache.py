@@ -3912,12 +3912,12 @@ def dense_fit_free(a, machine):
     (SMI_GAP_GIB too high, see planner/gguf_plan.py); (None, 0) without a GPU figure."""
     try:
         planner_path()
-        from gguf_plan import SMI_GAP_GIB
+        from gguf_plan import smi_gap_gib
         if a.vram:
             room = getattr(a, "room_gib", None)           # LAUNCHER-1133: the room the card really gives (gpu_stage; never set for the user's own --vram)
             return (min(float(a.vram), room) if room else float(a.vram)) * 2**30, 0.0
         f = machine.free_vram_bytes()
-        return (f, SMI_GAP_GIB) if f else (None, 0.0)
+        return (f, smi_gap_gib()) if f else (None, 0.0)
     except Exception:
         return None, 0.0
 

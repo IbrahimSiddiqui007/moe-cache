@@ -489,6 +489,11 @@ try:
     gguf_plan.subprocess.run = _smi(("", "8188, 117\n"), [])
     check(gguf_plan.free_vram_bytes() == (8188 - 117) * 1048576 and gguf_plan.LAST_FREE_NOTE[0] == "total minus used",
           "LAUNCHER-1313: memory.free unreadable -> the labelled total - used fallback")
+    check(gguf_plan.smi_gap_gib() == gguf_plan.SMI_GAP_GIB, "LAUNCHER-1313: the total - used fallback keeps the 0.40 GiB CUDA gap")
+    gguf_plan.subprocess.run = _smi(("8188, 7742\n", None), [])
+    gguf_plan.free_vram_bytes()
+    check(abs(gguf_plan.smi_gap_gib() - 0.08) < 1e-9 and abs((7742 / 1024 - gguf_plan.smi_gap_gib()) - ((8071 / 1024) - gguf_plan.SMI_GAP_GIB)) < 0.01,
+          "LAUNCHER-1313: memory.free takes the 0.08 GiB gap: the usable room (7.48 GiB) is the same as total - used minus 0.40")
 finally:
     gguf_plan.subprocess.run = _run
 _h = gguf_plan.tune(model, 524288, free=16 * GIB, want_cache=False)
