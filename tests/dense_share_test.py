@@ -166,7 +166,20 @@ with tempfile.TemporaryDirectory() as tmp:
         mc.plan_placement(type("A", (), {"ram": 12, "vram": None})(), dense, 8192, None, DenseMachine())
     check("planner failed (disk on fire)" in buf.getvalue(), "any other planner failure keeps the old line")
 
-    r = run(dense, ["--mmproj", "auto"])
+    _real_lp, _seen = mc.launch_plan, []
+    mc.launch_plan = lambda *a_, **k_: _seen.append(_real_lp(*a_, **k_)) or _seen[-1]
+    try:
+        r = run(dense, ["--mmproj", "auto"])
+    finally:
+        mc.launch_plan = _real_lp
+    check(_seen and _seen[-1].mm_bytes == 600 * 2**20, f"LAUNCHER-1324: the plan carries the projector's bytes for the out-of-memory re-plans ({_seen and _seen[-1].mm_bytes})")
+    _nomm = []
+    mc.launch_plan = lambda *a_, **k_: _nomm.append(_real_lp(*a_, **k_)) or _nomm[-1]
+    try:
+        run(dense, [])
+    finally:
+        mc.launch_plan = _real_lp
+    check(_nomm and _nomm[-1].mm_bytes == 0, "LAUNCHER-1324: no projector: mm_bytes is 0 on the plan (read directly, never a getattr default)")
     check(f"--mmproj {dense.replace('vision-7b-Q4.gguf', 'mmproj-vision-7b-f16.gguf')}".replace(tmp, "<TMP>") in cmdline(r), "--mmproj auto finds the projector next to the model and passes it")
     check("600" in r["stdout"] or "0.63 GB" in r["stdout"], "its size is reported")
     big = run(dense, ["--mmproj", "auto", "--ram", "12"])

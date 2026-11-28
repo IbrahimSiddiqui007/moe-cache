@@ -298,4 +298,44 @@ check(abs(f - (14.65 * _G - 2 * _G - mc.MMPROJ_VRAM_HEADROOM)) < 1, f"MoE re-pla
 f, r = mc.oom_replan_free(_A(13.08), _TF, 2 * _G)
 check(abs(f - (13.08 * _G - 2 * _G - mc.MMPROJ_VRAM_HEADROOM)) < 1, "MoE re-plan on the measured room: the projector comes off the room too")
 
+# --- LAUNCHER-1324 critic: the three retry reads of the plan's projector bytes are direct reads (a missing attribute fails loudly) and none was dropped ---
+import inspect  # noqa: E402
+_src = inspect.getsource(mc.run_launch_plan)
+check(_src.count("plan.mm_bytes") == 4 and 'getattr(plan, "mm_bytes"' not in _src,
+      f"run_launch_plan: oom_replan_free (x2), dense_retry_free and the retry line each read plan.mm_bytes directly ({_src.count('plan.mm_bytes')} reads)")
+check("oom_replan_free(a, tf_, plan.mm_bytes)" in _src and "oom_replan_free(a, tf, plan.mm_bytes)" in _src and "dense_retry_free(a, machine, ls, plan.mm_bytes, raw)" in _src,
+      "run_launch_plan: each of the three re-plan sites passes the plan's projector bytes")
+check("free_source=retry_free_source(machine)" in _src and _src.count("retry_free_source(machine)") == 3,
+      "run_launch_plan: all three re-plans name the source of the fresh reading (the gap matches the plan's)")
+# the gap follows the reading's label
+_gp_run = gguf_plan.subprocess.run
+gguf_plan.subprocess.run = lambda cmd, **k: types.SimpleNamespace(stdout="8188, 7742\n")
+try:
+    gguf_plan.gpu_total_free_bytes()
+    check(gguf_plan.LAST_FREE_SOURCE[0] == "nvidia-smi-free", "gpu_total_free_bytes labels its reading (the re-plan's gap source)")
+finally:
+    gguf_plan.subprocess.run = _gp_run
+check(mc.retry_free_source(types.SimpleNamespace(free_vram_source=lambda: "nvidia-smi-free")) == "nvidia-smi-free", "retry_free_source: the machine's label on Linux (also with the user's --vram: the retry reads the card again)")
+mc.WINDOWS = True
+try:
+    check(mc.retry_free_source(types.SimpleNamespace(free_vram_source=lambda: "nvidia-smi")) == "llama-server", "retry_free_source: llama-server's own figure on Windows")
+finally:
+    mc.WINDOWS = False
+# dense_oom_replan passes the label on: a memory.free label takes the 0.08 GiB gap, none the 0.40 GiB gap (a figure between the two answers differently)
+_seen_src = []
+_real_dfs = gguf_plan.dense_ffn_split
+gguf_plan.dense_ffn_split = lambda *a_, **k_: _seen_src.append(k_.get("free_source")) or None
+try:
+    mc.dense_oom_replan(["llama-server", "-m", "x"], "x", 8192, False, 4 * _G, 0.25, False, free_source="nvidia-smi-free")
+finally:
+    gguf_plan.dense_ffn_split = _real_dfs
+check(_seen_src == ["nvidia-smi-free"], f"dense_oom_replan hands the free_source to dense_ffn_split ({_seen_src})")
+_raw = []
+mc.WINDOWS, mc.list_devices, mc.pick_gpu_full = True, (lambda ls, ttl=None: "x"), (lambda listing: ("Vulkan0", "AMD Radeon", 10 * 1024, 16 * 1024))
+try:
+    _fr = mc.dense_retry_free(types.SimpleNamespace(vram=None, vram_user=None), types.SimpleNamespace(free_vram_bytes=lambda: None), "ls", 2 * _G, _raw)
+finally:
+    mc.WINDOWS, mc.list_devices, mc.pick_gpu_full = _real
+check(_raw == [10 * _G] and _fr < _raw[0], "dense retry: the raw free figure (10 GiB) is kept for the retry line, before the projector's share")
+
 sys.exit(1 if fails else 0)

@@ -532,8 +532,10 @@ def nvidia_total_free_bytes():
 
 def gpu_total_free_bytes():
     """(total, free) bytes of the GPU the planner uses (NVIDIA first, else the AMD GPU with the most VRAM); None when there is none."""
+    LAST_FREE_SOURCE[0] = None
     nv = nvidia_total_free_bytes()
     if nv:
+        LAST_FREE_SOURCE[0] = "nvidia-smi-free" if nv[2] == "memory.free" else "nvidia-smi"        # LAUNCHER-1324: the label of this reading, for the re-plans' gap
         return nv[0], nv[1]
     best = None
     for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
@@ -545,6 +547,8 @@ def gpu_total_free_bytes():
             continue
         if tot >= 2**30 and (best is None or tot > best[0]):
             best = (tot, tot - used)
+    if best:
+        LAST_FREE_SOURCE[0] = "amd-sysfs"
     return (float(best[0]), float(best[1])) if best else None
 
 

@@ -2066,7 +2066,7 @@ def oom_replan_free(a, tf, mm_bytes=0):
     return free, floor if from_room else max(desk_reserve_gb(*tf)[0], floor)
 
 
-def dense_retry_free(a, machine, ls, mm_bytes=0):
+def dense_retry_free(a, machine, ls, mm_bytes=0, raw_out=None):
     """LAUNCHER-1324: the free GPU bytes for the dense out-of-memory retry: the user's own --vram (a.vram_user; a.vram may be the launcher's first Windows reading at plan time, stale
     after the failed load), else a fresh reading (the machine's, on Windows AMD / Intel llama-server's own free MiB with ttl=0), minus the vision projector's share as the plan took it."""
     user = getattr(a, "vram_user", a.vram)
@@ -2079,9 +2079,17 @@ def dense_retry_free(a, machine, ls, mm_bytes=0):
     if free is None and WINDOWS:
         g = pick_gpu_full(list_devices(ls, ttl=0))       # (device, name, free MiB, total MiB): the FREE figure is g[2], not the total g[3]
         free = g[2] * 2**20 if g and g[3] > 0 else None
+    if raw_out is not None:
+        raw_out.append(free)          # before the projector's share: what the retry line says is free now
     if free and mm_bytes:
         free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)
     return free
+
+
+def retry_free_source(machine):
+    """LAUNCHER-1324: the source label of the fresh reading an out-of-memory re-plan used (so the 0.40 / 0.08 GiB gap matches the plan's): llama-server's own figure on Windows,
+    else the machine's reading (nvidia-smi-free, nvidia-smi, amd-sysfs). Never the plan's label: with the user's --vram that is "user", but the retry reads the card again."""
+    return "llama-server" if WINDOWS else (machine.free_vram_source() if hasattr(machine, "free_vram_source") else None)
 
 
 def cache_fallback_cmd(cmd, n_cpu_moe, ub=None):
@@ -5418,7 +5426,7 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
     return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
 
 
-def dense_oom_replan(cmd, model, ctx, kv_q8, free_bytes, margin_gib, user_ot=False):
+def dense_oom_replan(cmd, model, ctx, kv_q8, free_bytes, margin_gib, user_ot=False, free_source=None):
     """LAUNCHER-850: llama-server of a dense model ran out of GPU memory at load (a game or browser took memory after the plan was made). -> (new command, plain text) or
     (None, reason). One step smaller, from the free memory measured again: the FFN weights of at least one more layer go to RAM (-ot; never fewer than before + 1; without a
     free-memory figure an eighth of the layers more), or, when every layer's FFN is already there or the model is a hybrid recurrent one the FFN plan does not cover, half the
@@ -5428,7 +5436,7 @@ def dense_oom_replan(cmd, model, ctx, kv_q8, free_bytes, margin_gib, user_ot=Fal
     try:
         planner_path()
         from gguf_plan import dense_ffn_split
-        r = dense_ffn_split(model, ctx, free_bytes, kv_q8=kv_q8, margin_gib=margin_gib) if free_bytes else None
+        r = dense_ffn_split(model, ctx, free_bytes, kv_q8=kv_q8, margin_gib=margin_gib, free_source=free_source) if free_bytes else None
     except Exception:
         r = None
     new = list(cmd)
@@ -6566,9 +6574,9 @@ def run_launch_plan(plan):
                 time.sleep(2)                          # the failed server's memory is given back a moment after it exits
                 tf = free_now()
                 def tune_free(tf_):
-                    free_b, reserve = oom_replan_free(a, tf_, getattr(plan, "mm_bytes", 0))
+                    free_b, reserve = oom_replan_free(a, tf_, plan.mm_bytes)
                     t = tune(model, ctx, free=free_b, want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=False, mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
-                             free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None))
+                             free_source=retry_free_source(machine))
                     return t["n_cpu_moe"], t["ub"]
                 def record_fail(mib, free_mib):
                     rid = cache_record_ident(a, machine, ls, model)
@@ -6580,15 +6588,16 @@ def run_launch_plan(plan):
                 say(f"moe-cache: llama-server could not load with the GPU expert cache; the retry without it could not be planned ({e})", err=True)
             return None
         if "--n-cpu-moe" not in cmd and ncmoe_user is None:       # LAUNCHER-850: a dense model
-            free = dense_retry_free(a, machine, ls, getattr(plan, "mm_bytes", 0))
+            raw = []
+            free = dense_retry_free(a, machine, ls, plan.mm_bytes, raw)
             margin = a.gpu_margin if a.gpu_margin is not None else 0.25
             user_ot = any(x in ("-ot", "--override-tensor") or x.startswith("--override-tensor=") for x in extra)
             kvq = kv_plan_type(extra, kv_q8)
-            new, what = dense_oom_replan(cmd, model, ctx, kvq, free, margin, user_ot)
+            new, what = dense_oom_replan(cmd, model, ctx, kvq, free, margin, user_ot, free_source=(None if getattr(a, "vram_user", a.vram) else retry_free_source(machine)))
             if not new:
                 say(f"moe-cache: llama-server ran out of GPU memory while loading ({what}): free some GPU memory (a game or browser may have taken it), or use a smaller --ctx / -ub / --gpu-margin", err=True)
                 return None
-            say("moe-cache: llama-server ran out of GPU memory while loading (another program took some after the plan" + (f", now {free / 2**30:.1f} GiB free" if free else "") + f"): trying again once with {what}")
+            say("moe-cache: llama-server ran out of GPU memory while loading (another program took some after the plan" + (f", now {raw[0] / 2**30:.1f} GiB free" + (f", {free / 2**30:.1f} GiB of it for the model after the vision projector" if plan.mm_bytes else "") if raw and raw[0] else "") + f"): trying again once with {what}")
             return new
         if ncmoe_user is not None or "--n-cpu-moe" not in cmd:
             say("moe-cache: llama-server ran out of GPU memory while loading: free some GPU memory, or give a larger --n-cpu-moe / smaller -ub / --gpu-margin", err=True)
@@ -6603,10 +6612,10 @@ def run_launch_plan(plan):
                 tf = gpu_total_free_bytes()
             if not tf:
                 return None
-            free_b, reserve = oom_replan_free(a, tf, getattr(plan, "mm_bytes", 0))
+            free_b, reserve = oom_replan_free(a, tf, plan.mm_bytes)
             # the tables, not the load records, after an out-of-memory load (a record may be what was too tight); the same engine, free-figure and MTP terms as the plan
             t = tune(model, ctx, free=free_b, want_cache=False, kv_q8=kv_q8, reserve_gb=reserve, plugin=plan.engine == "plugin", mtp="draft-mtp" in cmd, fit_params=plan_fit_params(ls),
-                     free_source="llama-server" if WINDOWS else getattr(a, "plan_free_source", None), cut_block=block_cut_on(a))
+                     free_source=retry_free_source(machine), cut_block=block_cut_on(a))
             lay = model_layout(model)
             old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])
             new_n = min(lay["n_layers"] or 999, max(int(t["n_cpu_moe"]), old_n + 1)) if lay["n_layers"] else old_n + 1
