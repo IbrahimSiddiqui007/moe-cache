@@ -316,11 +316,12 @@ try:
 finally:
     gguf_plan.subprocess.run = _gp_run
 check(mc.retry_free_source(types.SimpleNamespace(free_vram_source=lambda: "nvidia-smi-free")) == "nvidia-smi-free", "retry_free_source: the machine's label on Linux (also with the user's --vram: the retry reads the card again)")
+_win_saved = mc.WINDOWS
 mc.WINDOWS = True
 try:
     check(mc.retry_free_source(types.SimpleNamespace(free_vram_source=lambda: "nvidia-smi")) == "llama-server", "retry_free_source: llama-server's own figure on Windows")
 finally:
-    mc.WINDOWS = False
+    mc.WINDOWS = _win_saved
 # dense_oom_replan passes the label on: a memory.free label takes the 0.08 GiB gap, none the 0.40 GiB gap (a figure between the two answers differently)
 _seen_src = []
 _real_dfs = gguf_plan.dense_ffn_split
@@ -337,5 +338,65 @@ try:
 finally:
     mc.WINDOWS, mc.list_devices, mc.pick_gpu_full = _real
 check(_raw == [10 * _G] and _fr < _raw[0], "dense retry: the raw free figure (10 GiB) is kept for the retry line, before the projector's share")
+
+# --- LAUNCHER-1324 round 2: DRIVE the oom_retry closure of run_launch_plan (fake plan and machine; dense_oom_replan, tune and the readings stubbed) ---
+import threading  # noqa: E402
+_MiB = 2**20
+
+
+def _drive(cmd, *, mm_bytes, vram, vram_user, windows, free_mib=10 * 1024, src="nvidia-smi-free", tf=(16 * _G, 10 * _G), ncmoe_user=None):
+    """run run_launch_plan on a fake plan up to run_child (stubbed: it hands back oom_retry), call oom_retry() once. -> dict(said, dense (free, free_source) or None, tune (free, free_source) or None, new)"""
+    out = {"said": [], "dense": None, "tune": None, "new": None}
+    a = types.SimpleNamespace(dry_run=False, project=None, agent=False, open=False, no_warm=True, exact=False, vram=vram, vram_user=vram_user, gpu_margin=None, leave_room=False,
+                              room_gib=None, allow_sleep=False, cpu_gpu_split=None)
+    machine = types.SimpleNamespace(free_vram_bytes=lambda: None if windows else free_mib * _MiB, free_vram_source=lambda: src)
+    pl = mc.LaunchPlan()
+    pl.a, pl.extra, pl.machine, pl.commit_refusal = a, [], machine, None
+    pl.model, pl.ls, pl.port, pl.ctx, pl.host, pl.cmd, pl.env, pl.key_env = "m.gguf", "ls", 8099, 8192, "127.0.0.1", list(cmd), [], []
+    pl.method, pl.win_limit, pl.api_key, pl.alias, pl.slotdir, pl.kv_q8, pl.ncmoe_user = "none (stock)", None, "k", "al", None, False, ncmoe_user
+    pl.engine, pl.tuned, pl.autotune, pl.tune_fallback, pl.mm_bytes = "stock", None, None, None, mm_bytes
+    saved = {n: getattr(mc, n) for n in ("WINDOWS", "port_busy", "loading_line", "llama_patch_line", "run_child", "list_devices", "pick_gpu_full", "dense_oom_replan", "say", "plan_fit_params", "kv_plan_type", "make_load_recorder", "_LOAD_RECORDER")}
+    gsave = {n: getattr(gguf_plan, n) for n in ("tune", "gpu_total_free_bytes", "model_layout")}
+    def fake_dense(c, model, ctx, kvq, free, margin, user_ot, free_source=None):
+        out["dense"] = (free, free_source); return list(c) + ["-ot", "x"], "FFN in RAM"
+    def fake_tune(model, ctx, **kw):
+        out["tune"] = (kw.get("free"), kw.get("free_source")); return {"n_cpu_moe": 30, "ub": 512}
+    mc.WINDOWS, mc.port_busy, mc.loading_line, mc.llama_patch_line = windows, (lambda p: False), (lambda m: ""), (lambda ls: "")
+    mc.list_devices, mc.pick_gpu_full = (lambda ls, ttl=None: "x"), (lambda listing: ("Vulkan0", "AMD Radeon", free_mib, 16 * 1024))
+    mc.dense_oom_replan, mc.plan_fit_params, mc.kv_plan_type, mc.make_load_recorder = fake_dense, (lambda ls: None), (lambda extra, kv: None), (lambda p: None)
+    mc.say = lambda msg, err=False: out["said"].append(msg)
+    mc.run_child = lambda c, e, **kw: out.__setitem__("new", kw["oom_retry"]()) or 0
+    gguf_plan.tune, gguf_plan.gpu_total_free_bytes, gguf_plan.model_layout = fake_tune, (lambda: tf), (lambda m: {"n_layers": 40})
+    try:
+        mc.run_launch_plan(pl)
+    finally:
+        for n, v in saved.items():
+            setattr(mc, n, v)
+        for n, v in gsave.items():
+            setattr(gguf_plan, n, v)
+    return out
+
+
+_dense_cmd = ["llama-server", "-m", "m.gguf", "-c", "8192"]
+_proj = 600 * _MiB
+_share = _proj + mc.MMPROJ_VRAM_HEADROOM
+r1 = _drive(_dense_cmd, mm_bytes=_proj, vram=14.0, vram_user=None, windows=True)             # Windows: stale 14 GiB plan reading, llama-server says 10 GiB free now
+check(r1["dense"] is not None and abs(r1["dense"][0] - (10 * _G - _share)) < 1, f"driven dense retry, projector: dense_oom_replan gets 10 GiB minus the projector share ({r1['dense'] and r1['dense'][0] / _G:.2f} GiB)")
+check(r1["dense"] and r1["dense"][1] == "llama-server", f"driven dense retry on Windows, no user --vram: free_source llama-server ({r1['dense'] and r1['dense'][1]})")
+_line = next((m for m in r1["said"] if "trying again once" in m), "")
+check("now 10.0 GiB free" in _line and "after the vision projector" in _line and f"{(10 * _G - _share) / _G:.1f} GiB of it for the model" in _line, f"driven dense retry line: raw 10.0 GiB first, then the model's share ({_line[-170:]})")
+r2 = _drive(_dense_cmd, mm_bytes=0, vram=14.0, vram_user=None, windows=True)
+check("after the vision projector" not in next((m for m in r2["said"] if "trying again once" in m), ""), "driven dense retry, no projector: the line has no projector clause")
+r3 = _drive(_dense_cmd, mm_bytes=_proj, vram=6.0, vram_user=6.0, windows=False)             # the user's own --vram wins, the label is None like the plan's
+check(r3["dense"] and abs(r3["dense"][0] - (6 * _G - _share)) < 1 and r3["dense"][1] is None, f"driven dense retry with the user's --vram: their 6 GiB minus the share, free_source None ({r3['dense']})")
+r4 = _drive(_dense_cmd, mm_bytes=_proj, vram=None, vram_user=None, windows=False, free_mib=5 * 1024)
+check(r4["dense"] and abs(r4["dense"][0] - (5 * _G - _share)) < 1 and r4["dense"][1] == "nvidia-smi-free", f"driven dense retry on Linux, no --vram: the fresh reading and its label ({r4['dense']})")
+_moe_cmd = ["llama-server", "-m", "m.gguf", "-c", "8192", "--n-cpu-moe", "20", "-ub", "1024"]
+r5 = _drive(_moe_cmd, mm_bytes=_proj, vram=6.0, vram_user=6.0, windows=False, tf=(16 * _G, 9 * _G), src="nvidia-smi-free")
+check(r5["tune"] and abs(r5["tune"][0] - (9 * _G - _share)) < 1 and r5["tune"][1] == "nvidia-smi-free", f"driven MoE re-plan with a user --vram: the fresh reading minus the share, labelled by the reading, not 'user' ({r5['tune']})")
+r6 = _drive(_moe_cmd, mm_bytes=_proj, vram=None, vram_user=None, windows=True, tf=(16 * _G, 9 * _G))
+check(r6["tune"] and r6["tune"][1] == "llama-server", f"driven MoE re-plan on Windows: free_source llama-server ({r6['tune']})")
+check(r5["new"] and "--n-cpu-moe" in r5["new"] and r5["new"][r5["new"].index("--n-cpu-moe") + 1] == "30", "driven MoE re-plan: the new command has the tuner's layer count")
+
 
 sys.exit(1 if fails else 0)
