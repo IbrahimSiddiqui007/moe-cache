@@ -662,6 +662,10 @@ void exec_run_prepared(state_t & s, exec_prep_t * p, int n) {
     const uint64_t tp0 = etimes ? exec_now_ns() : 0;       // idea D13: the per-type time is kept only with MOE_CACHE_EXEC_TIMES (two clock reads less per op)
     s.pool->run(single->data(), (int) single->size(), w->ne[1], w->ne[0], w->nb[1], p[0].dot, s.exec_chunk, p[0].nd->name);
     const uint64_t rn = etimes ? exec_now_ns() - tp0 : 0;
+    if (etimes && s.stats) {     // the summary used to print only at a clean shutdown, which a stopped server (PC runs) never reaches: print it as the run goes
+        static std::atomic<uint64_t> et_runs{0};
+        if (et_runs.fetch_add(1, std::memory_order_relaxed) % 20000 == 19999) { s.print_exec_times(); }
+    }
     for (int k = 0; k < n; k++) {
         const uint64_t bytes = (uint64_t) p[k].tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
         if (etimes) {
