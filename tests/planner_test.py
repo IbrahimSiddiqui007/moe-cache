@@ -473,29 +473,25 @@ try:
 finally:
     gguf_plan.subprocess.run = _run
 # LAUNCHER-1313: the driver's own memory.free, not total - used (RTX 4060 laptop 2026-11-28: total 8188, used 117, reserved 331, memory.free 7742 MiB)
-def _smi(_cmd_out, _calls):
+def _smi(_cmd_out):
     def run(cmd, **k):
-        _calls.append(cmd[1]); f = cmd[1]
-        if "memory.free" in f: return types.SimpleNamespace(stdout=_cmd_out[0])
+        if "memory.free" in cmd[1]: return types.SimpleNamespace(stdout=_cmd_out[0])
         if _cmd_out[1] is None: raise OSError("no")
         return types.SimpleNamespace(stdout=_cmd_out[1])
     return run
-_calls = []
-gguf_plan.subprocess.run = _smi(("8188, 7742\n", "8188, 117\n"), _calls)
+gguf_plan.subprocess.run = _smi(("8188, 7742\n", "8188, 117\n"))
 try:
     check(gguf_plan.free_vram_bytes() == 7742 * 1048576 and gguf_plan.gpu_total_free_bytes() == (8188 * 1048576, 7742 * 1048576),
           "LAUNCHER-1313: free VRAM is nvidia-smi memory.free (7742 MiB), not total - used (8071 MiB)")
-    check(gguf_plan.LAST_FREE_NOTE[0] == "memory.free", "LAUNCHER-1313: the figure's source is labelled memory.free")
-    gguf_plan.subprocess.run = _smi(("", "8188, 117\n"), [])
-    check(gguf_plan.free_vram_bytes() == (8188 - 117) * 1048576 and gguf_plan.LAST_FREE_NOTE[0] == "total minus used",
-          "LAUNCHER-1313: memory.free unreadable -> the labelled total - used fallback")
-    check(gguf_plan.smi_gap_gib() == gguf_plan.SMI_GAP_GIB, "LAUNCHER-1313: the total - used fallback keeps the 0.40 GiB CUDA gap")
-    gguf_plan.subprocess.run = _smi(("8188, 7742\n", None), [])
-    gguf_plan.free_vram_bytes()
-    check(abs(gguf_plan.smi_gap_gib() - 0.08) < 1e-9 and abs((7742 / 1024 - gguf_plan.smi_gap_gib()) - ((8071 / 1024) - gguf_plan.SMI_GAP_GIB)) < 0.01,
-          "LAUNCHER-1313: memory.free takes the 0.08 GiB gap: the usable room (7.48 GiB) is the same as total - used minus 0.40")
+    check(gguf_plan.LAST_FREE_SOURCE[0] == "nvidia-smi-free", "LAUNCHER-1313: the figure's source label is nvidia-smi-free (its own learned-gap key)")
+    gguf_plan.subprocess.run = _smi(("", "8188, 117\n"))
+    check(gguf_plan.free_vram_bytes() == (8188 - 117) * 1048576 and gguf_plan.LAST_FREE_SOURCE[0] == "nvidia-smi",
+          "LAUNCHER-1313: memory.free unreadable -> the total - used fallback, labelled nvidia-smi")
 finally:
     gguf_plan.subprocess.run = _run
+check(gguf_plan.smi_gap_gib("nvidia-smi") == gguf_plan.SMI_GAP_GIB and gguf_plan.smi_gap_gib(None) == gguf_plan.SMI_GAP_GIB and gguf_plan.smi_gap_gib("nvidia-smi-free") == gguf_plan.SMI_FREE_GAP_GIB,
+      "LAUNCHER-1313: the gap follows the figure's own source label (no global state)")
+check(abs((7742 / 1024 - gguf_plan.SMI_FREE_GAP_GIB) - (8071 / 1024 - gguf_plan.SMI_GAP_GIB)) < 0.01, "LAUNCHER-1313: usable room with memory.free - 0.08 equals total - used - 0.40 (7.48 GiB) on the laptop")
 _h = gguf_plan.tune(model, 524288, free=16 * GIB, want_cache=False)
 check(_h["compute_mib"] and _h["compute_mib"] >= gguf_plan.compute_buffer_mib(262144, 512), f"tune past the table: compute buffer from the scaled guess ({_h['compute_mib']})")
 

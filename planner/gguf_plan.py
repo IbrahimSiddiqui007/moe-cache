@@ -275,7 +275,7 @@ SMI_FREE_GAP_GIB = 0.08     # LAUNCHER-1313: the same gap when the figure is nvi
 DENSE_FIXED_GIB = 0.30        # CUDA context + compute buffer (-ub 512) besides the weights and the KV cache; the token embedding stays on the CPU. RTX 4060 8 GB: Qwen3-8B at 16k f16 peaked at 6.88 GiB (4.33 weights + 2.25 KV), Qwen3-14B q8_0 fits at 32k with 25 FFN layers off and not with 22
 
 
-def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
+def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, free_source=None):
     """LAUNCHER-732 / owner lever (a): a dense, pure-attention model bigger than the GPU. -> dict(first_layer, n_layers, n_off, ffn_gib, need_gib, free_gib, kv_gib, fits_all)
     with the FFN weights of the last n_off layers sent to the CPU while attention, the KV cache and the rest of the weights stay on the GPU, or None when this is not the
     right plan (MoE, hybrid recurrent model, no GPU memory known, the model plus its KV already fits, or even all FFN weights on the CPU leave it too big).
@@ -301,7 +301,7 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
     except Exception:
         return None
     per = sum(ffn.values()) / len(ffn)
-    free = free_bytes / GiB - smi_gap_gib()
+    free = free_bytes / GiB - smi_gap_gib(free_source)
     need = (total - emb) / GiB + kv / GiB + DENSE_FIXED_GIB + margin_gib
     out = {"n_layers": n_blocks, "ffn_gib": per / GiB, "need_gib": need, "free_gib": free, "kv_gib": kv / GiB, "fits_all": need <= free, "n_off": 0, "first_layer": n_blocks}
     if need <= free:
@@ -503,15 +503,15 @@ def _kv_or_flat(path, ctx, kv_q8=False):
     return kv if kv is not None else ctx * 40e3 * (0.53 if kv_q8 else 1.0)
 
 
-def smi_gap_gib():
-    """The gap to take off the last free figure read by free_vram_bytes: SMI_FREE_GAP_GIB when it was nvidia-smi's memory.free, else SMI_GAP_GIB (total - used, and AMD sysfs as before). LAUNCHER-1313."""
-    return SMI_FREE_GAP_GIB if LAST_FREE_NOTE[0] == "memory.free" else SMI_GAP_GIB
+def smi_gap_gib(free_source=None):
+    """The gap to take off a free figure by where it came from (the figure's own source label, never a global): SMI_FREE_GAP_GIB for "nvidia-smi-free" (memory.free), else SMI_GAP_GIB
+    (total - used labelled "nvidia-smi", an unknown source, AMD sysfs as before). LAUNCHER-1313."""
+    return SMI_FREE_GAP_GIB if free_source == "nvidia-smi-free" else SMI_GAP_GIB
 
 
 def nvidia_total_free_bytes():
-    """(total, free) bytes of the first NVIDIA GPU, or None. LAUNCHER-1313: free is the driver's OWN memory.free; total - used overstates it by the driver's reserve
-    (RTX 4060 8 GB: 8071 MiB by subtraction, 7742 MiB memory.free). Fallback when memory.free cannot be read (very old nvidia-smi): total - used, which is labelled in LAST_FREE_NOTE."""
-    LAST_FREE_NOTE[0] = None
+    """(total, free, how) bytes of the first NVIDIA GPU (how: "memory.free" or "total minus used"), or None. LAUNCHER-1313: free is the driver's OWN memory.free; total - used overstates it by the driver's reserve
+    (RTX 4060 8 GB: 8071 MiB by subtraction, 7742 MiB memory.free). Fallback when memory.free cannot be read (very old nvidia-smi): total - used, which is labelled 'total minus used' in `how`."""
     for fields, how in (("memory.total,memory.free", "memory.free"), ("memory.total,memory.used", "total minus used")):
         try:
             out = subprocess.run(["nvidia-smi", "--query-gpu=" + fields, "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
@@ -519,19 +519,16 @@ def nvidia_total_free_bytes():
             tot, b = float(row[0]), float(row[1])
         except Exception:
             continue
-        LAST_FREE_NOTE[0] = how
-        return tot * 1048576, ((b if how == "memory.free" else tot - b) * 1048576)
+        return tot * 1048576, ((b if how == "memory.free" else tot - b) * 1048576), how
     return None
 
-
-LAST_FREE_NOTE = [None]      # "memory.free" or "total minus used (memory.free unreadable)": which nvidia-smi figure the last read used
 
 
 def gpu_total_free_bytes():
     """(total, free) bytes of the GPU the planner uses (NVIDIA first, else the AMD GPU with the most VRAM); None when there is none."""
     nv = nvidia_total_free_bytes()
     if nv:
-        return nv
+        return nv[0], nv[1]
     best = None
     for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
         try:
@@ -738,7 +735,7 @@ def free_vram_bytes():
     LAST_FREE_SOURCE[0] = None
     nv = nvidia_total_free_bytes()
     if nv:
-        LAST_FREE_SOURCE[0] = "nvidia-smi"
+        LAST_FREE_SOURCE[0] = "nvidia-smi-free" if nv[2] == "memory.free" else "nvidia-smi"      # own label: the gap and the learned gaps (load_record) differ from total - used
         return nv[1]
     best = None
     for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
@@ -1132,7 +1129,7 @@ def plan_table_lines(rows, ctx):
 
 
 MTP_DRAFT_GIB = 0.85          # MTP's draft context on the GPU (planner/plan.py's figure, GLM on the PC, RESULTS 62); used until a load with MTP on was measured
-GAP_SOURCES = ("nvidia-smi",)  # free figures that overstate what llama.cpp can fill: nvidia-smi's (total - used) is ~0.4 GiB above CUDA's free on the RTX 4060 laptop
+GAP_SOURCES = ("nvidia-smi", "nvidia-smi-free")  # free figures that overstate what llama.cpp can fill: nvidia-smi's (total - used) is ~0.4 GiB above CUDA's free on the RTX 4060 laptop
 
 
 def gpu_fixed_weights_bytes(lay):
@@ -1306,7 +1303,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         note("gpu_overhead_mib", gap / MiB, "measured", "what the free figure overstates (driver vs CUDA total, CUDA context, buffers made after load"
              + "), from the memory tables of the last load")
     elif free_source in GAP_SOURCES:
-        gap = smi_gap_gib() * 2**30
+        gap = smi_gap_gib(free_source) * 2**30
         note("gpu_overhead_mib", gap / MiB, "constant", "nvidia-smi's free figure is about this much above what CUDA can fill (RTX 4060 laptop, 8146 vs 7745 MiB at idle); no load recorded here")
     else:
         gap = 0.0

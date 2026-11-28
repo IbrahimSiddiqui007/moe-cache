@@ -2500,7 +2500,7 @@ def load_recorder_for(a, plan_cmd, machine, ls, model, ctx, engine):
             return None                     # the user's own tensor placement or GPU split: the weights figure would not be the plan's (critic M4)
         runs[0] += 1
         free_plan = getattr(a, "plan_free_mib", None)
-        if runs[0] == 1 and free_plan and getattr(a, "plan_free_source", None) == "nvidia-smi":
+        if runs[0] == 1 and free_plan and getattr(a, "plan_free_source", None) in ("nvidia-smi", "nvidia-smi-free"):
             # the auto-tune can run up to 180 s between the plan's reading and this load: when the free memory moved meanwhile (another program), the gap is not learned (critic M5)
             try:
                 now = machine.free_vram_bytes()
@@ -2882,7 +2882,7 @@ class Machine:
         return free_vram_bytes()
 
     def free_vram_source(self):
-        """Where free_vram_bytes' last figure came from: "nvidia-smi", "amd-sysfs" or None."""
+        """Where free_vram_bytes' last figure came from: "nvidia-smi-free" (memory.free), "nvidia-smi" (total - used), "amd-sysfs" or None."""
         planner_path()
         import gguf_plan
         return gguf_plan.LAST_FREE_SOURCE[0]
@@ -3917,7 +3917,7 @@ def dense_fit_free(a, machine):
             room = getattr(a, "room_gib", None)           # LAUNCHER-1133: the room the card really gives (gpu_stage; never set for the user's own --vram)
             return (min(float(a.vram), room) if room else float(a.vram)) * 2**30, 0.0
         f = machine.free_vram_bytes()
-        return (f, smi_gap_gib()) if f else (None, 0.0)
+        return (f, smi_gap_gib(machine.free_vram_source() if hasattr(machine, "free_vram_source") else None)) if f else (None, 0.0)
     except Exception:
         return None, 0.0
 
@@ -5373,7 +5373,7 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
         margin = a.gpu_margin if a.gpu_margin is not None else 0.25
         if getattr(a, "cpu_gpu_split", None):
             margin += CPU_GPU_SPLIT_VRAM_GIB            # the split's staging tensors and its own CUDA context (measured +56 MiB on the laptop)
-        r = dense_ffn_split(model, ctx, free, kv_q8=kv_q8, margin_gib=margin)
+        r = dense_ffn_split(model, ctx, free, kv_q8=kv_q8, margin_gib=margin, free_source=(None if a.vram else (machine.free_vram_source() if hasattr(machine, "free_vram_source") else None)))
     except Exception:
         return None
     if not r:
